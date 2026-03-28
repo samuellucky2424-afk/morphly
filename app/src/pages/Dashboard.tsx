@@ -277,7 +277,7 @@ function Dashboard() {
 
   const pollSessionStatus = useCallback(async () => {
     try {
-      const response = await apiRequest<{ balance: number; secondsUsed: number; cost: number; remainingBalance?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status/${user?.id}`);
+      const response = await apiRequest<{ balance: number; secondsUsed: number; cost: number; remainingBalance?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
       
       const latestBalance = response.remainingBalance !== undefined ? response.remainingBalance : response.balance;
       setBalance(latestBalance);

@@ -50,7 +50,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (user?.id) {
       const API_URL = import.meta.env.VITE_API_URL || '/api';
-      fetch(`${API_URL}/wallet/${user.id}`)
+      fetch(`${API_URL}/wallet?userId=${user.id}`)
         .then(async res => {
           if (!res.ok) {
             throw new Error(`API returned ${res.status}`);

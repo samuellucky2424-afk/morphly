@@ -1,0 +1,34 @@
+// @ts-nocheck
+import { supabaseAdmin } from './supabase';
+
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  
+  const userId = req.query.userId || req.query.id;
+  if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+  try {
+    let { data: wallet } = await supabaseAdmin.from('wallets').select('balance').eq('user_id', userId).single();
+    let { data: txs } = await supabaseAdmin.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50);
+    
+    // Map DB columns to our frontend transaction structure
+    const mappedTxs = (txs || []).map(tx => ({
+      id: tx.id,
+      type: tx.type,
+      amount: tx.amount,
+      description: tx.description || (tx.type === 'credit' ? 'Balance added' : 'Session usage'),
+      timestamp: tx.created_at,
+    }));
+    
+    res.json({
+      balance: wallet?.balance || 0,
+      transactions: mappedTxs
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
