@@ -433,19 +433,11 @@ function Dashboard() {
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">Welcome back, {user?.name?.split(' ')[0] || 'User'}</h1>
-        <p className="text-sm text-[#a1a1aa]">AI-powered real-time video transformation</p>
-      </div>
 
       <div className="grid grid-cols-12 gap-5">
         <div className="col-span-12 lg:col-span-10 space-y-4">
           <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-white tracking-tight">Live Output</h2>
-                <p className="text-xs text-[#71717a] mt-0.5">AI-transformed video</p>
-              </div>
+            <div className="flex items-center justify-end">
               {isStreaming && (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-full shadow-lg shadow-red-500/10 animate-pulse">
                   <span className="relative flex h-2 w-2">
