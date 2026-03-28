@@ -9,7 +9,11 @@ import paymentRoutes from './routes/payment.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+try {
+  dotenv.config({ path: path.join(__dirname, '..', '.env') });
+} catch (e) {
+  // Cloud environment — env vars already available
+}
 
 const app = express();
 
