@@ -347,7 +347,7 @@ function Dashboard() {
 
   const handleStop = async () => {
     try {
-      await apiRequest('/deduct-balance', { 
+      await apiRequest('/end-session', { 
         method: 'POST',
         body: JSON.stringify({ userId: user?.id })
       });

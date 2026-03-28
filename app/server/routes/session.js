@@ -7,8 +7,6 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 const PRICE_PER_SECOND = 69.2;
 
-const activeSessions = new Map();
-
 router.post('/start-session', async (req, res) => {
   try {
     const { userId } = req.body;
@@ -28,20 +26,38 @@ router.post('/start-session', async (req, res) => {
       return res.status(400).json({ allowed: false, error: 'Wallet not found for this user' });
     }
 
-    let userData = walletData;
-
-    if (userData.balance <= 0) {
+    if (walletData.balance <= 0) {
       return res.json({ allowed: false, error: 'Insufficient balance' });
     }
 
-    activeSessions.set(userId, {
-      startTime: Date.now(),
-      balance: userData.balance,
-      isActive: true
-    });
+    // End any lingering active sessions for this user before starting a new one
+    await supabaseAdmin
+      .from('sessions')
+      .update({ status: 'ended', end_time: new Date() })
+      .eq('user_id', userId)
+      .eq('status', 'active');
+
+    // Create a new session in "active" state
+    const { data: newSession, error: sessionError } = await supabaseAdmin
+      .from('sessions')
+      .insert({
+        user_id: userId,
+        status: 'active',
+        start_time: new Date(),
+        cost: 0,
+        seconds_used: 0
+      })
+      .select('id')
+      .single();
+
+    if (sessionError) {
+      console.error('Session create error:', sessionError);
+      return res.status(500).json({ allowed: false, error: 'Failed to create session' });
+    }
 
     res.json({ 
       allowed: true, 
+      sessionId: newSession.id,
       token: process.env.DECART_API_KEY 
     });
   } catch (error) {
@@ -50,84 +66,134 @@ router.post('/start-session', async (req, res) => {
   }
 });
 
-router.get('/session-status/:userId', (req, res) => {
-  const { userId } = req.params;
-  const currentSession = activeSessions.get(userId);
-
-  if (!currentSession || !currentSession.isActive || !currentSession.startTime) {
-    return res.json({ 
-      balance: currentSession ? currentSession.balance : 0,
-      secondsUsed: 0,
-      cost: 0,
-      shouldStop: false
-    });
-  }
-
-  const elapsedSeconds = Math.floor((Date.now() - currentSession.startTime) / 1000);
-  const totalCost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
-  let remainingBalance = currentSession.balance - totalCost;
-  let shouldStop = false;
-
-  if (remainingBalance <= 0) {
-    remainingBalance = 0;
-    shouldStop = true;
-  }
-
-  res.json({
-    balance: remainingBalance,
-    secondsUsed: elapsedSeconds,
-    cost: totalCost,
-    shouldStop
-  });
-});
-
-router.post('/deduct-balance', async (req, res) => {
+router.get('/session-status/:userId', async (req, res) => {
   try {
-    const { userId } = req.body;
-    const currentSession = activeSessions.get(userId);
+    const { userId } = req.params;
 
-    if (!currentSession || !currentSession.isActive || !currentSession.startTime) {
-      return res.status(400).json({ error: 'No active session' });
+    // Fetch current true balance
+    const { data: walletData } = await supabaseAdmin
+      .from('wallets')
+      .select('balance')
+      .eq('user_id', userId)
+      .single();
+
+    const actualBalance = walletData ? walletData.balance : 0;
+
+    // Find the single active session
+    const { data: activeSession } = await supabaseAdmin
+      .from('sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!activeSession) {
+      return res.json({ 
+        balance: actualBalance,
+        secondsUsed: 0,
+        cost: 0,
+        shouldStop: false
+      });
     }
 
-    const elapsedSeconds = Math.floor((Date.now() - currentSession.startTime) / 1000);
+    // Calculate elapsed time dynamically without relying on background loops
+    const startTime = new Date(activeSession.start_time).getTime();
+    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
     const totalCost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
-    let remainingBalance = currentSession.balance - totalCost;
+    
+    let remainingBalance = actualBalance - totalCost;
+    let shouldStop = false;
 
+    if (remainingBalance <= 0) {
+      remainingBalance = 0;
+      shouldStop = true;
+    }
+
+    res.json({
+      balance: remainingBalance,
+      secondsUsed: elapsedSeconds,
+      cost: totalCost,
+      shouldStop
+    });
+  } catch (error) {
+    console.error('Session status error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/end-session', async (req, res) => {
+  try {
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Find the active session to end it
+    const { data: activeSession } = await supabaseAdmin
+      .from('sessions')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!activeSession) {
+      return res.status(400).json({ error: 'No active session found matching criteria' });
+    }
+
+    // Fetch the actual starting balance point
+    const { data: walletData } = await supabaseAdmin
+      .from('wallets')
+      .select('balance')
+      .eq('user_id', userId)
+      .single();
+
+    const actualBalance = walletData ? walletData.balance : 0;
+
+    const startTime = new Date(activeSession.start_time).getTime();
+    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+    const totalCost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    
+    let remainingBalance = actualBalance - totalCost;
     if (remainingBalance <= 0) {
       remainingBalance = 0;
     }
 
-    // Update balance in database
+    // Execute atomic deduct
     await supabaseAdmin
       .from('wallets')
       .update({ balance: remainingBalance })
       .eq('user_id', userId);
 
-    // Log session
-    await supabaseAdmin.from('sessions').insert({
-      user_id: userId,
-      start_time: new Date(currentSession.startTime),
-      end_time: new Date(),
-      cost: totalCost,
-      seconds_used: elapsedSeconds,
-      status: 'ended'
-    });
+    // Finalize the session row so polling stops charging it
+    await supabaseAdmin
+      .from('sessions')
+      .update({
+        end_time: new Date(),
+        cost: totalCost,
+        seconds_used: elapsedSeconds,
+        status: 'ended'
+      })
+      .eq('id', activeSession.id);
 
-    // Insert debit transaction
-    await supabaseAdmin.from('transactions').insert({
-      user_id: userId,
-      type: 'debit',
-      amount: totalCost,
-      status: 'success',
-      created_at: new Date()
-    });
-
-    activeSessions.delete(userId);
+    // Register receipt for transparency
+    if (totalCost > 0) {
+      await supabaseAdmin.from('transactions').insert({
+        user_id: userId,
+        type: 'debit',
+        amount: totalCost,
+        status: 'success',
+        created_at: new Date()
+      });
+    }
 
     res.json({ success: true, cost: totalCost, newBalance: remainingBalance });
   } catch (error) {
-    console.error('Deduct balance error:', error);
+    console.error('End session error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
