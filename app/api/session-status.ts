@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase';
+import { supabaseAdmin } from './supabase.js';
 
 const PRICE_PER_SECOND = 69.2;
 const MAX_SESSION_DURATION = 600;
