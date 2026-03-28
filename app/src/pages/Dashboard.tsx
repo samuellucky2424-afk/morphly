@@ -434,8 +434,8 @@ function Dashboard() {
   return (
     <div>
 
-      <div className="grid grid-cols-12 gap-5">
-        <div className="col-span-12 lg:col-span-10 space-y-4">
+      <div className="flex flex-col gap-6">
+        <div className="w-full space-y-5">
           <div className="space-y-6">
             <div className="flex items-center justify-end">
               {isStreaming && (
@@ -627,7 +627,7 @@ function Dashboard() {
             </Card>
           </div>
 
-          <div className="col-span-12 lg:col-span-2 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-xl shadow-2xl shadow-black/20">
               <CardHeader className="pb-2 border-b border-[#1f1f23] px-4 pt-4">
                 <CardTitle className="text-xs font-semibold text-white tracking-tight flex items-center gap-1.5">
