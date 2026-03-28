@@ -713,23 +713,7 @@ function Dashboard() {
               </CardContent>
             </Card>
 
-            <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-xl shadow-2xl shadow-black/20">
-              <CardHeader className="pb-2 border-b border-[#1f1f23] px-4 pt-4">
-                <CardTitle className="text-xs font-semibold text-white tracking-tight">Stream Mode</CardTitle>
-              </CardHeader>
-              <CardContent className="p-4">
-                <Select defaultValue="realtime">
-                  <SelectTrigger className="h-8 bg-[#18181b] border-[#27272a] text-white rounded-lg text-xs focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20 transition-all duration-200 shadow-lg shadow-black/10">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="bg-[#18181b] border-[#27272a] rounded-lg shadow-2xl shadow-black/40 backdrop-blur-xl">
-                    <SelectItem value="realtime" className="text-white focus:bg-[#27272a] focus:text-white text-xs py-2">Real-time</SelectItem>
-                    <SelectItem value="batch" className="text-white focus:bg-[#27272a] focus:text-white text-xs py-2">Batch</SelectItem>
-                    <SelectItem value="preview" className="text-white focus:bg-[#27272a] focus:text-white text-xs py-2">Preview</SelectItem>
-                  </SelectContent>
-                </Select>
-              </CardContent>
-            </Card>
+
 
             <div className="bg-gradient-to-r from-blue-600/10 to-purple-600/10 border border-blue-500/20 rounded-lg p-3">
               <h3 className="text-[10px] font-semibold text-white mb-1.5 flex items-center gap-1.5">
