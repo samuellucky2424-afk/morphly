@@ -6,38 +6,100 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 const PRICE_PER_SECOND = 69.2;
+const MAX_SESSION_DURATION = 600;
 
-router.post('/start-session', async (req, res) => {
+// Helper to securely calculate and close a session with cost clamping
+async function closeActiveSession(userId, activeSession) {
   try {
-    const { userId } = req.body;
-    
-    if (!userId) {
-      return res.status(400).json({ allowed: false, error: 'User ID is required' });
-    }
-    
-    const { data: walletData, error: walletError } = await supabaseAdmin
+    // 1. Fetch real wallet balance
+    const { data: walletData } = await supabaseAdmin
       .from('wallets')
       .select('balance')
       .eq('user_id', userId)
       .single();
 
-    if (walletError || !walletData) {
-      console.error('Wallet fetch error:', walletError);
-      return res.status(400).json({ allowed: false, error: 'Wallet not found for this user' });
-    }
+    const actualBalance = walletData ? walletData.balance : 0;
 
-    if (walletData.balance <= 0) {
-      return res.json({ allowed: false, error: 'Insufficient balance' });
-    }
+    // 2. Safe Cost calculation
+    const startTime = new Date(activeSession.start_time).getTime();
+    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+    const cost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    
+    const finalCost = Math.min(actualBalance, cost);
+    const newBalance = Math.max(0, actualBalance - finalCost);
 
-    // End any lingering active sessions for this user before starting a new one
+    // 3. Atomically End the Session
     await supabaseAdmin
       .from('sessions')
-      .update({ status: 'ended', end_time: new Date() })
+      .update({
+        end_time: new Date(),
+        cost: finalCost,
+        seconds_used: elapsedSeconds,
+        status: 'ended'
+      })
+      .eq('id', activeSession.id)
+      .eq('status', 'active'); // Ensure we only touch it if it's currently active to prevent double-billing
+
+    // 4. Record new wallet state
+    await supabaseAdmin
+      .from('wallets')
+      .update({ balance: newBalance })
+      .eq('user_id', userId);
+
+    // 5. Insert ONE debit transaction securely
+    if (finalCost > 0) {
+      await supabaseAdmin.from('transactions').insert({
+        user_id: userId,
+        type: 'debit',
+        amount: finalCost,
+        status: 'success',
+        created_at: new Date()
+      });
+    }
+
+    // Logging for integrity and debugging
+    console.log(`[SESSION END] User: ${userId} | Session: ${activeSession.id} | Seconds: ${elapsedSeconds} | Cost: ${finalCost} | New Balance: ${newBalance}`);
+
+    return { success: true, deducted: finalCost, remainingBalance: newBalance };
+  } catch (err) {
+    console.error(`[SESSION END ERROR] Failed to close session ${activeSession.id}:`, err);
+    return { success: false, message: 'Internal error closing session' };
+  }
+}
+
+router.post('/start-session', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ allowed: false, error: 'User ID is required' });
+    }
+    
+    // Check for any existing active session immediately to prevent overlapping costs
+    const { data: existingActiveSessions } = await supabaseAdmin
+      .from('sessions')
+      .select('*')
       .eq('user_id', userId)
       .eq('status', 'active');
 
-    // Create a new session in "active" state
+    if (existingActiveSessions && existingActiveSessions.length > 0) {
+      // Loop robustly just in case corrupt rows exist, though typically only 1
+      for (const session of existingActiveSessions) {
+        await closeActiveSession(userId, session);
+      }
+    }
+
+    // Now re-fetch genuine wallet balance after ending ghosts
+    const { data: freshWallet } = await supabaseAdmin
+      .from('wallets')
+      .select('balance')
+      .eq('user_id', userId)
+      .single();
+
+    if (!freshWallet || freshWallet.balance <= 0) {
+      return res.json({ allowed: false, error: 'Insufficient balance' });
+    }
+
+    // Create precisely one new session in "active" state
     const { data: newSession, error: sessionError } = await supabaseAdmin
       .from('sessions')
       .insert({
@@ -70,7 +132,6 @@ router.get('/session-status/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Fetch current true balance
     const { data: walletData } = await supabaseAdmin
       .from('wallets')
       .select('balance')
@@ -79,7 +140,6 @@ router.get('/session-status/:userId', async (req, res) => {
 
     const actualBalance = walletData ? walletData.balance : 0;
 
-    // Find the single active session
     const { data: activeSession } = await supabaseAdmin
       .from('sessions')
       .select('*')
@@ -91,30 +151,26 @@ router.get('/session-status/:userId', async (req, res) => {
 
     if (!activeSession) {
       return res.json({ 
-        balance: actualBalance,
+        balance: actualBalance, // Retained for compatibility during non-active UI reads
         secondsUsed: 0,
         cost: 0,
+        remainingBalance: actualBalance,
         shouldStop: false
       });
     }
 
-    // Calculate elapsed time dynamically without relying on background loops
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const totalCost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    const cost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
     
-    let remainingBalance = actualBalance - totalCost;
-    let shouldStop = false;
-
-    if (remainingBalance <= 0) {
-      remainingBalance = 0;
-      shouldStop = true;
-    }
+    const remainingBalance = Math.max(0, actualBalance - cost);
+    let shouldStop = (remainingBalance <= 0) || (elapsedSeconds > MAX_SESSION_DURATION);
 
     res.json({
-      balance: remainingBalance,
       secondsUsed: elapsedSeconds,
-      cost: totalCost,
+      cost,
+      remainingBalance,
+      balance: remainingBalance, // For frontend legacy
       shouldStop
     });
   } catch (error) {
@@ -126,12 +182,10 @@ router.get('/session-status/:userId', async (req, res) => {
 router.post('/end-session', async (req, res) => {
   try {
     const { userId } = req.body;
-
     if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
+      return res.status(400).json({ success: false, message: 'User ID is required' });
     }
 
-    // Find the active session to end it
     const { data: activeSession } = await supabaseAdmin
       .from('sessions')
       .select('*')
@@ -142,59 +196,20 @@ router.post('/end-session', async (req, res) => {
       .single();
 
     if (!activeSession) {
-      return res.status(400).json({ error: 'No active session found matching criteria' });
+      return res.json({ success: false, message: 'No active session' });
     }
 
-    // Fetch the actual starting balance point
-    const { data: walletData } = await supabaseAdmin
-      .from('wallets')
-      .select('balance')
-      .eq('user_id', userId)
-      .single();
-
-    const actualBalance = walletData ? walletData.balance : 0;
-
-    const startTime = new Date(activeSession.start_time).getTime();
-    const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const totalCost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    // Defer purely to our standardized closure routine
+    const endResult = await closeActiveSession(userId, activeSession);
     
-    let remainingBalance = actualBalance - totalCost;
-    if (remainingBalance <= 0) {
-      remainingBalance = 0;
+    if (endResult.success) {
+      res.json(endResult);
+    } else {
+      res.status(500).json(endResult);
     }
-
-    // Execute atomic deduct
-    await supabaseAdmin
-      .from('wallets')
-      .update({ balance: remainingBalance })
-      .eq('user_id', userId);
-
-    // Finalize the session row so polling stops charging it
-    await supabaseAdmin
-      .from('sessions')
-      .update({
-        end_time: new Date(),
-        cost: totalCost,
-        seconds_used: elapsedSeconds,
-        status: 'ended'
-      })
-      .eq('id', activeSession.id);
-
-    // Register receipt for transparency
-    if (totalCost > 0) {
-      await supabaseAdmin.from('transactions').insert({
-        user_id: userId,
-        type: 'debit',
-        amount: totalCost,
-        status: 'success',
-        created_at: new Date()
-      });
-    }
-
-    res.json({ success: true, cost: totalCost, newBalance: remainingBalance });
   } catch (error) {
-    console.error('End session error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('End session route error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
@@ -209,12 +224,9 @@ router.post('/upload-image', upload.single('image'), async (req, res) => {
 
     const fileName = `${mockUserId}/${Date.now()}-${file.originalname}`;
 
-    // Try to ensure bucket exists, or use a public bucket
     try {
       await supabaseAdmin.storage.createBucket('reference-images', { public: true });
-    } catch (bucketError) {
-      // Bucket might already exist, continue
-    }
+    } catch (bucketError) {}
 
     const { data, error: uploadError } = await supabaseAdmin
       .storage
@@ -225,8 +237,6 @@ router.post('/upload-image', upload.single('image'), async (req, res) => {
       });
 
     if (uploadError) {
-      console.error('Upload error:', uploadError);
-      // Return the base64 data URL instead as fallback
       const base64 = file.buffer.toString('base64');
       const dataUrl = `data:${file.mimetype};base64,${base64}`;
       return res.json({ url: dataUrl, local: true });
