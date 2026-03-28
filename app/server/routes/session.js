@@ -110,7 +110,8 @@ router.post('/deduct-balance', async (req, res) => {
       start_time: new Date(currentSession.startTime),
       end_time: new Date(),
       cost: totalCost,
-      seconds_used: elapsedSeconds
+      seconds_used: elapsedSeconds,
+      status: 'ended'
     });
 
     // Insert debit transaction

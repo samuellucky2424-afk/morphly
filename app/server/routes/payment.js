@@ -65,6 +65,20 @@ router.post('/verify-payment', async (req, res) => {
           status: 'success',
           created_at: new Date()
         });
+
+      // Record subscription
+      const planName = req.body.planName || 'Custom';
+      const planMinutes = req.body.planMinutes || Math.round(amountInNaira / 69.2 / 60);
+      await supabaseAdmin
+        .from('subscriptions')
+        .insert({
+          user_id: userId,
+          plan_name: planName,
+          amount_paid: amountInNaira,
+          credits: planMinutes,
+          status: 'active',
+          created_at: new Date()
+        });
         
       res.json({
         status: 'success',

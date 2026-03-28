@@ -87,7 +87,7 @@ function Subscription() {
                 headers: {
                   'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ reference: response.reference, userId: user?.id }),
+                body: JSON.stringify({ reference: response.reference, userId: user?.id, planName: selectedPlan.name, planMinutes: selectedPlan.minutes }),
               });
 
               if (!res.ok) {
