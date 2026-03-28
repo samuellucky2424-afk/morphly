@@ -165,13 +165,19 @@ router.get('/session-status/:userId', async (req, res) => {
     
     const remainingBalance = Math.max(0, actualBalance - cost);
     let shouldStop = (remainingBalance <= 0) || (elapsedSeconds > MAX_SESSION_DURATION);
+    let forceEnd = false;
+
+    if (remainingBalance <= 0) {
+      forceEnd = true;
+    }
 
     res.json({
       secondsUsed: elapsedSeconds,
       cost,
       remainingBalance,
       balance: remainingBalance, // For frontend legacy
-      shouldStop
+      shouldStop,
+      forceEnd
     });
   } catch (error) {
     console.error('Session status error:', error);

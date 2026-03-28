@@ -277,13 +277,15 @@ function Dashboard() {
 
   const pollSessionStatus = useCallback(async () => {
     try {
-      const response = await apiRequest<{ balance: number; secondsUsed: number; cost: number; shouldStop: boolean }>(`/session-status/${user?.id}`);
-      setBalance(response.balance);
+      const response = await apiRequest<{ balance: number; secondsUsed: number; cost: number; remainingBalance?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status/${user?.id}`);
+      
+      const latestBalance = response.remainingBalance !== undefined ? response.remainingBalance : response.balance;
+      setBalance(latestBalance);
       setElapsedSeconds(response.secondsUsed);
 
-      if (response.shouldStop) {
+      if (response.shouldStop || response.forceEnd) {
         handleStop();
-        toast.error('Session ended - Balance exhausted');
+        toast.error('Session auto-ended (Rule: Safety Constraint Met)');
       }
     } catch (error) {
       console.error('Poll error:', error);
