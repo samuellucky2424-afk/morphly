@@ -63,7 +63,7 @@ export default function Sidebar() {
 
       {/* Main Sidebar Element */}
       <aside
-        className={`fixed left-0 top-0 h-screen bg-[#0f0f10]/95 backdrop-blur-xl border-r border-[#18181b] transition-transform duration-300 ease-in-out z-50 flex flex-col w-64 shadow-2xl ${
+        className={`fixed left-0 top-0 h-screen bg-[#0f0f10]/95 backdrop-blur-xl border-r border-[#18181b] transition-transform duration-300 ease-in-out z-50 flex flex-col w-56 shadow-2xl ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >

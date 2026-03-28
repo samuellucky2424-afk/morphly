@@ -10,7 +10,7 @@ export default function Layout() {
       <Sidebar />
       <main 
         className={`flex-1 transition-all duration-300 ease-in-out ${
-          sidebarOpen ? 'lg:pl-64' : 'pl-0'
+          sidebarOpen ? 'lg:pl-56' : 'pl-0'
         }`}
       >
         <div className={`p-5 lg:p-8 transition-all duration-300 w-full ${!sidebarOpen ? 'pt-24 lg:pt-24' : 'pt-24 lg:pt-8'}`}>
