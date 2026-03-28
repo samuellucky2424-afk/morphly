@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useNavigate } from 'react-router-dom';
 import { ROUTES } from '@/lib/routes';
 import { supabase } from '@/lib/supabase';
-import type { Session, User as SupabaseUser } from '@supabase/supabase-js';
+import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 // We map Supabase's user object properties to what our frontend expects where possible
 interface User {
