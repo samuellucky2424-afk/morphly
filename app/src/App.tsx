@@ -55,10 +55,17 @@ function App() {
                     }
                   >
                     <Route index element={<Navigate to={ROUTES.DEFAULT} replace />} />
-                    <Route path={ROUTES.PROTECTED.DASHBOARD} element={<Dashboard />} />
                     <Route path={ROUTES.PROTECTED.WALLET} element={<Wallet />} />
                     <Route path={ROUTES.PROTECTED.SETTINGS} element={<Settings />} />
                   </Route>
+                  <Route
+                    path={ROUTES.PROTECTED.DASHBOARD}
+                    element={
+                      <ProtectedRoute>
+                        <Dashboard />
+                      </ProtectedRoute>
+                    }
+                  />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </Suspense>
