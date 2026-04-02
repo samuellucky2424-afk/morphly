@@ -34,10 +34,9 @@ function Dashboard() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [isObsMode, setIsObsMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   // Default prompt since the new UI doesn't have an input field yet
-  const [prompt, setPrompt] = useState('A person looking professional');
+  const [prompt] = useState('A person looking professional');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const webcamVideoRef = useRef<HTMLVideoElement>(null);
   const outputVideoRef = useRef<HTMLVideoElement>(null);
@@ -207,8 +206,6 @@ function Dashboard() {
       
       const latestBalance = response.remainingBalance !== undefined ? response.remainingBalance : response.balance;
       setBalance(latestBalance);
-      setElapsedSeconds(response.secondsUsed);
-
       if (response.shouldStop || response.forceEnd) {
         handleStop();
         toast.error('Session auto-ended (Rule: Safety Constraint Met)');
@@ -221,8 +218,6 @@ function Dashboard() {
   const handleStart = async () => {
     setIsLoading(true);
     try {
-      const importSDKPromise = import('@decartai/sdk').catch(console.error);
-
       const [startResponse, stream] = await Promise.all([
         apiRequest<{ allowed: boolean; token?: string; error?: string }>('/start-session', {
           method: 'POST',
@@ -289,8 +284,7 @@ function Dashboard() {
     
     setIsStreaming(false);
     setSessionStatus('IDLE');
-    setElapsedSeconds(0);
-    
+
     toast.info('Session stopped');
   };
 
