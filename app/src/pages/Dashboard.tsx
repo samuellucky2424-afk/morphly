@@ -286,9 +286,16 @@ function Dashboard() {
 
   const pollSessionStatus = useCallback(async () => {
     try {
-      const response = await apiRequest<{ credits: number; secondsUsed: number; creditsUsed: number; remainingCredits?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
+      const response = await apiRequest<{ credits?: number; balance?: number; secondsUsed: number; creditsUsed?: number; cost?: number; remainingCredits?: number; remainingBalance?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
       
-      const latestCredits = response.remainingCredits !== undefined ? response.remainingCredits : response.credits;
+      const latestCredits =
+        response.remainingCredits !== undefined
+          ? response.remainingCredits
+          : response.credits !== undefined
+            ? response.credits
+            : response.remainingBalance !== undefined
+              ? response.remainingBalance
+              : response.balance || 0;
       setCredits(latestCredits);
 
       if (response.shouldStop || response.forceEnd) {
@@ -356,14 +363,17 @@ function Dashboard() {
 
   const handleStop = async () => {
     try {
-      const response = await apiRequest<{ remainingCredits?: number }>('/end-session', { 
+      const response = await apiRequest<{ remainingCredits?: number; remainingBalance?: number }>('/end-session', { 
         method: 'POST',
         body: JSON.stringify({ userId: user?.id })
       });
       
       // Update credits from server response
-      if (response && response.remainingCredits !== undefined) {
-        setCredits(response.remainingCredits);
+      if (response) {
+        const latestCredits = response.remainingCredits ?? response.remainingBalance;
+        if (latestCredits !== undefined) {
+          setCredits(latestCredits);
+        }
       }
     } catch (error) {
       console.error('Stop session error:', error);

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
-const PRICE_PER_SECOND = 69.2;
+const CREDITS_PER_SECOND = 2;
 const MAX_SESSION_DURATION = 600;
 
 export default async function handler(req, res) {
@@ -20,27 +20,27 @@ export default async function handler(req, res) {
 
   try {
     const { data: walletData } = await supabaseAdmin
-      .from('wallets').select('balance').eq('user_id', userId).single();
+      .from('wallets').select('credits').eq('user_id', userId).single();
 
-    const actualBalance = walletData ? walletData.balance : 0;
+    const actualCredits = walletData ? walletData.credits || 0 : 0;
 
     const { data: activeSession } = await supabaseAdmin
       .from('sessions').select('*').eq('user_id', userId).eq('status', 'active')
       .order('created_at', { ascending: false }).limit(1).single();
 
     if (!activeSession) {
-      return res.json({ balance: actualBalance, secondsUsed: 0, cost: 0, remainingBalance: actualBalance, shouldStop: false });
+      return res.json({ credits: actualCredits, secondsUsed: 0, creditsUsed: 0, remainingCredits: actualCredits, shouldStop: false });
     }
 
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const cost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    const cost = Math.round(elapsedSeconds * CREDITS_PER_SECOND);
     
-    const remainingBalance = Math.max(0, actualBalance - cost);
-    let shouldStop = (remainingBalance <= 0) || (elapsedSeconds > MAX_SESSION_DURATION);
-    let forceEnd = remainingBalance <= 0;
+    const remainingCredits = Math.max(0, actualCredits - cost);
+    let shouldStop = (remainingCredits <= 0) || (elapsedSeconds > MAX_SESSION_DURATION);
+    let forceEnd = remainingCredits <= 0;
 
-    res.json({ secondsUsed: elapsedSeconds, cost, remainingBalance, balance: remainingBalance, shouldStop, forceEnd });
+    res.json({ secondsUsed: elapsedSeconds, creditsUsed: cost, cost, remainingCredits, credits: remainingCredits, shouldStop, forceEnd });
   } catch (error) {
     res.status(500).json({ error: 'Internal server error' });
   }

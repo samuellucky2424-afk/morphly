@@ -7,6 +7,7 @@ export interface Transaction {
   id: string;
   type: 'credit' | 'debit';
   amount: number;
+  credits?: number;
   description: string;
   timestamp: string;
 }
@@ -16,6 +17,10 @@ interface AppContextType {
   setBalance: (balance: number) => void;
   addBalance: (amount: number) => void;
   deductBalance: (amount: number) => void;
+  credits: number;
+  setCredits: (credits: number) => void;
+  addCredits: (credits: number) => void;
+  deductCredits: (credits: number) => void;
   sessionStatus: 'LIVE' | 'IDLE';
   setSessionStatus: (status: 'LIVE' | 'IDLE') => void;
   isLoading: boolean;
@@ -43,6 +48,7 @@ const TRANSACTIONS_KEY = 'morphly_transactions';
 export function AppProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const [balance, setBalanceState] = useState(0);
+  const [credits, setCreditsState] = useState(0);
   const [sessionStatus, setSessionStatus] = useState<'LIVE' | 'IDLE'>('IDLE');
   const [isLoading, setLoading] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -65,6 +71,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         .then(data => {
           if (data && data.balance !== undefined) {
             setBalanceState(data.balance);
+            setCreditsState(data.credits ?? 0);
             setTransactions(data.transactions || []);
           }
         })
@@ -121,6 +128,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const setCredits = useCallback((newCredits: number) => {
+    setCreditsState(Math.max(0, newCredits || 0));
+  }, []);
+
+  const addCredits = useCallback((amount: number) => {
+    const transaction: Transaction = {
+      id: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      type: 'credit',
+      amount: 0,
+      credits: amount,
+      description: 'Credits purchased',
+      timestamp: new Date().toISOString(),
+    };
+
+    setCreditsState(prev => Math.max(0, prev + amount));
+
+    setTransactions(prev => {
+      const updated = [transaction, ...prev].slice(0, 50);
+      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
+  const deductCredits = useCallback((amount: number) => {
+    const transaction: Transaction = {
+      id: `tx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      type: 'debit',
+      amount: 0,
+      credits: amount,
+      description: 'Session usage',
+      timestamp: new Date().toISOString(),
+    };
+
+    setCreditsState(prev => Math.max(0, prev - amount));
+
+    setTransactions(prev => {
+      const updated = [transaction, ...prev].slice(0, 50);
+      localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(updated));
+      return updated;
+    });
+  }, []);
+
   const addTransaction = useCallback((transactionData: Omit<Transaction, 'id' | 'timestamp'>) => {
     const transaction: Transaction = {
       ...transactionData,
@@ -161,6 +210,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setBalance,
     addBalance,
     deductBalance,
+    credits,
+    setCredits,
+    addCredits,
+    deductCredits,
     sessionStatus,
     setSessionStatus,
     isLoading,
@@ -170,7 +223,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     notifications,
     addNotification,
     clearNotifications,
-  }), [balance, setBalance, addBalance, deductBalance, sessionStatus, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
+  }), [balance, setBalance, addBalance, deductBalance, credits, setCredits, addCredits, deductCredits, sessionStatus, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
 
   return (
     <AppContext.Provider value={value}>

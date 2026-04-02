@@ -1,20 +1,20 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
-const PRICE_PER_SECOND = 69.2;
+const CREDITS_PER_SECOND = 2;
 
 async function closeActiveSession(userId, activeSession) {
   try {
     const { data: walletData } = await supabaseAdmin
-      .from('wallets').select('balance').eq('user_id', userId).single();
+      .from('wallets').select('credits').eq('user_id', userId).single();
 
-    const actualBalance = walletData ? walletData.balance : 0;
+    const actualCredits = walletData ? walletData.credits || 0 : 0;
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const cost = Math.round(elapsedSeconds * PRICE_PER_SECOND);
+    const cost = Math.round(elapsedSeconds * CREDITS_PER_SECOND);
     
-    const finalCost = Math.min(actualBalance, cost);
-    const newBalance = Math.max(0, actualBalance - finalCost);
+    const finalCost = Math.min(actualCredits, cost);
+    const newCredits = Math.max(0, actualCredits - finalCost);
 
     await supabaseAdmin
       .from('sessions')
@@ -23,15 +23,15 @@ async function closeActiveSession(userId, activeSession) {
       }).eq('id', activeSession.id).eq('status', 'active');
 
     await supabaseAdmin
-      .from('wallets').update({ balance: newBalance }).eq('user_id', userId);
+      .from('wallets').update({ credits: newCredits }).eq('user_id', userId);
 
     if (finalCost > 0) {
       await supabaseAdmin.from('transactions').insert({
-        user_id: userId, type: 'debit', amount: finalCost, status: 'success', created_at: new Date()
+        user_id: userId, type: 'debit', amount: 0, credits: finalCost, description: 'Session usage', status: 'success', created_at: new Date()
       });
     }
 
-    return { success: true, deducted: finalCost, remainingBalance: newBalance };
+    return { success: true, deducted: finalCost, remainingCredits: newCredits };
   } catch (err) {
     return { success: false, message: 'Internal error closing session' };
   }
