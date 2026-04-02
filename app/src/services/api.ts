@@ -1,4 +1,4 @@
-const API_BASE = '/api';
+import { apiFetch } from '@/lib/api-client';
 
 export class ApiError extends Error {
   status: number;
@@ -59,7 +59,7 @@ async function apiRequest<T>(endpoint: string, options: ApiOptions = {}): Promis
   }
 
   try {
-    const response = await fetch(`${API_BASE}${endpoint}`, {
+    const response = await apiFetch(endpoint, {
       ...fetchOptions,
       headers,
     });

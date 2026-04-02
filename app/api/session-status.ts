@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const PRICE_PER_SECOND = 69.2;
 const MAX_SESSION_DURATION = 600;
@@ -16,6 +16,7 @@ export default async function handler(req, res) {
   const userId = req.query.userId || req.query.id; 
 
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
+  if (!supabaseAdmin) return res.status(503).json({ error: supabaseAdminConfigError });
 
   try {
     const { data: walletData } = await supabaseAdmin

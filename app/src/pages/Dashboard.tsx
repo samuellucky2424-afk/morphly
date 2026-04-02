@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Video } from 'lucide-react';
+import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Camera, Coins } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
+import { apiFetch } from '@/lib/api-client';
+import { VirtualCameraService } from '@/services/VirtualCameraService';
 
 interface RealtimeClient {
   disconnect: () => void;
@@ -11,10 +13,8 @@ interface RealtimeClient {
   setPrompt: (text: string, options?: { enhance?: boolean }) => Promise<void>;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || '/api';
-
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${endpoint}`, {
+  const response = await apiFetch(endpoint, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -22,19 +22,23 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
     },
   });
   if (!response.ok) {
-    throw new Error(`API Error: ${response.statusText}`);
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || errorData.message || `API Error: ${response.statusText}`);
   }
   return response.json();
 }
 
 function Dashboard() {
   const { user } = useAuth();
-  const { balance, setBalance, setSessionStatus } = useApp();
+  const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
   const [isStreaming, setIsStreaming] = useState(false);
   const [isObsMode, setIsObsMode] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isVirtualCamActive, setIsVirtualCamActive] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   // Default prompt since the new UI doesn't have an input field yet
   const [prompt] = useState('A person looking professional');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -43,9 +47,10 @@ function Dashboard() {
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const realtimeClientRef = useRef<RealtimeClient | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const virtualCamRef = useRef<VirtualCameraService | null>(null);
 
-  const PRICE_PER_SECOND = 69.2;
-  const POLLING_INTERVAL = 2000;
+  const CREDITS_PER_SECOND = 2;
+  const POLLING_INTERVAL = 10000; // 10s to reduce network/CPU overhead during streaming
 
   useEffect(() => {
     return () => {
@@ -57,6 +62,9 @@ function Dashboard() {
       }
       if (realtimeClientRef.current) {
         realtimeClientRef.current.disconnect();
+      }
+      if (virtualCamRef.current) {
+        virtualCamRef.current.stop();
       }
     };
   }, []);
@@ -71,23 +79,99 @@ function Dashboard() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isObsMode]);
 
+  const enumerateCameras = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      setCameraDevices(videoDevices);
+      if (videoDevices.length > 0 && !selectedCameraId) {
+        const builtin = videoDevices.find(d =>
+          d.label.toLowerCase().includes('integrated') ||
+          d.label.toLowerCase().includes('built-in') ||
+          d.label.toLowerCase().includes('facetime') ||
+          d.label.toLowerCase().includes('internal')
+        );
+        setSelectedCameraId(builtin?.deviceId || videoDevices[0].deviceId);
+      }
+    } catch (err) {
+      console.error('Failed to enumerate cameras:', err);
+    }
+  }, [selectedCameraId]);
+
+  useEffect(() => {
+    enumerateCameras();
+    navigator.mediaDevices.addEventListener('devicechange', enumerateCameras);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', enumerateCameras);
+  }, [enumerateCameras]);
+
   useEffect(() => {
     if (isStreaming && outputVideoRef.current) {
       outputVideoRef.current.play().catch((err) => console.error('Play failed after streaming activated:', err));
+    } else if (!isStreaming) {
+      if (virtualCamRef.current) {
+        virtualCamRef.current.stop();
+        virtualCamRef.current = null;
+      }
+      setIsVirtualCamActive(false);
     }
   }, [isStreaming]);
 
+  const toggleVirtualCamera = async (activate?: boolean) => {
+    const shouldActivate = activate !== undefined ? activate : !isVirtualCamActive;
+    
+    if (shouldActivate) {
+      if (!outputVideoRef.current) return;
+      
+      virtualCamRef.current = new VirtualCameraService();
+      const stream = await virtualCamRef.current.start(outputVideoRef.current);
+      
+      if (stream) {
+        setIsVirtualCamActive(true);
+        // Notify Electron main process
+        try {
+          // @ts-ignore - electron bridge
+          if (window.electron) {
+            // @ts-ignore
+            await window.electron.invoke('virtual-camera:start');
+          }
+        } catch (e) { console.log('Electron bridge not available'); }
+        
+        toast.success('Virtual Camera started - Select "Morphly Virtual Cam" in your app');
+      }
+    } else {
+      if (virtualCamRef.current) {
+        virtualCamRef.current.stop();
+        virtualCamRef.current = null;
+      }
+      setIsVirtualCamActive(false);
+      
+      try {
+        // @ts-ignore
+        if (window.electron) {
+          // @ts-ignore
+          await window.electron.invoke('virtual-camera:stop');
+        }
+      } catch (e) {}
+      
+      toast.info('Virtual Camera stopped');
+    }
+  };
+
   const startWebcam = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 }, 
-          frameRate: { ideal: 30 },
-          facingMode: 'user' 
+      const constraints: MediaStreamConstraints = {
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { max: 30, ideal: 24 },
+          facingMode: 'user'
         },
         audio: false
-      });
+      };
+      if (selectedCameraId) {
+        (constraints.video as MediaTrackConstraints).deviceId = { exact: selectedCameraId };
+      }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       webcamStreamRef.current = stream;
       if (webcamVideoRef.current) {
         webcamVideoRef.current.srcObject = stream;
@@ -202,13 +286,14 @@ function Dashboard() {
 
   const pollSessionStatus = useCallback(async () => {
     try {
-      const response = await apiRequest<{ balance: number; secondsUsed: number; cost: number; remainingBalance?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
+      const response = await apiRequest<{ credits: number; secondsUsed: number; creditsUsed: number; remainingCredits?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
       
-      const latestBalance = response.remainingBalance !== undefined ? response.remainingBalance : response.balance;
-      setBalance(latestBalance);
+      const latestCredits = response.remainingCredits !== undefined ? response.remainingCredits : response.credits;
+      setCredits(latestCredits);
+
       if (response.shouldStop || response.forceEnd) {
         handleStop();
-        toast.error('Session auto-ended (Rule: Safety Constraint Met)');
+        toast.error('Session auto-ended - Insufficient credits');
       }
     } catch (error) {
       console.error('Poll error:', error);
@@ -219,7 +304,7 @@ function Dashboard() {
     setIsLoading(true);
     try {
       const [startResponse, stream] = await Promise.all([
-        apiRequest<{ allowed: boolean; token?: string; error?: string }>('/start-session', {
+        apiRequest<{ allowed: boolean; token?: string; error?: string; credits?: number; maxSeconds?: number }>('/start-session', {
           method: 'POST',
           body: JSON.stringify({ userId: user?.id })
         }).catch(e => {
@@ -229,12 +314,17 @@ function Dashboard() {
       ]);
         
       if (!startResponse.allowed) {
-        toast.error(startResponse.error || 'Insufficient balance');
+        toast.error(startResponse.error || 'Insufficient credits');
         if (stream) {
           stream.getTracks().forEach(track => track.stop());
         }
         setIsLoading(false);
         return;
+      }
+
+      // Update credits from server response
+      if (startResponse.credits !== undefined) {
+        setCredits(startResponse.credits);
       }
         
       const sessionToken = startResponse.token || '';
@@ -266,10 +356,15 @@ function Dashboard() {
 
   const handleStop = async () => {
     try {
-      await apiRequest('/end-session', { 
+      const response = await apiRequest<{ remainingCredits?: number }>('/end-session', { 
         method: 'POST',
         body: JSON.stringify({ userId: user?.id })
       });
+      
+      // Update credits from server response
+      if (response && response.remainingCredits !== undefined) {
+        setCredits(response.remainingCredits);
+      }
     } catch (error) {
       console.error('Stop session error:', error);
     }
@@ -284,7 +379,7 @@ function Dashboard() {
     
     setIsStreaming(false);
     setSessionStatus('IDLE');
-
+    
     toast.info('Session stopped');
   };
 
@@ -329,7 +424,16 @@ function Dashboard() {
   };
 
   const getRemainingSeconds = () => {
-    return Math.floor(balance / PRICE_PER_SECOND);
+    return Math.floor(credits / CREDITS_PER_SECOND);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins > 0) {
+      return `~${mins}m ${secs}s`;
+    }
+    return `~${secs}s`;
   };
 
   return (
@@ -353,9 +457,14 @@ function Dashboard() {
             autoPlay 
             playsInline
             muted
-            disablePictureInPicture
             className={isObsMode ? "w-full h-full object-cover" : "w-full h-full object-contain"}
-            style={{ display: isStreaming ? 'block' : 'none', willChange: 'contents' }}
+            style={{ 
+              display: isStreaming ? 'block' : 'none', 
+              willChange: 'transform', 
+              transform: 'translateZ(0)',
+              backfaceVisibility: 'hidden',
+              imageRendering: 'auto'
+            }}
           />
 
          {!isStreaming && (
@@ -409,17 +518,40 @@ function Dashboard() {
               <span className="font-medium text-[13px]">OBS</span>
             </button>
 
-            <button 
-              onClick={() => fileInputRef.current?.click()}
-              className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all"
-            >
-              <Upload className="w-3.5 h-3.5 opacity-80" />
-              <span className="font-medium text-[13px]">{uploadedImage ? 'Change Image' : 'Upload Image'}</span>
-            </button>
+             <button 
+               onClick={() => fileInputRef.current?.click()}
+               className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all"
+             >
+               <Upload className="w-3.5 h-3.5 opacity-80" />
+               <span className="font-medium text-[13px]">{uploadedImage ? 'Change Image' : 'Upload Image'}</span>
+             </button>
 
-            <button className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all ml-1">
-              <Video className="w-3.5 h-3.5 opacity-80" />
-              <span className="font-medium text-[13px]">720p</span>
+            {cameraDevices.length > 1 && (
+              <select
+                value={selectedCameraId}
+                onChange={(e) => setSelectedCameraId(e.target.value)}
+                title="Select camera"
+                className="h-[34px] px-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#A3A3A3] text-[12px] ml-1 cursor-pointer focus:outline-none focus:border-[#3A3A3A]"
+              >
+                {cameraDevices.map((device) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Camera ${cameraDevices.indexOf(device) + 1}`}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <button 
+              onClick={() => toggleVirtualCamera()}
+              disabled={!isStreaming}
+              className={`h-[34px] px-3.5 flex items-center gap-2 rounded-sm border transition-all ml-1 ${
+                isVirtualCamActive 
+                  ? 'bg-[#122A1F] border-[#133C29] text-[#22C55E]' 
+                  : 'bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3]'
+              }`}
+            >
+              <Camera className="w-3.5 h-3.5 opacity-80" />
+              <span className="font-medium text-[13px]">{isVirtualCamActive ? 'Cam Active' : 'Virtual Cam'}</span>
             </button>
          </div>
 
@@ -429,7 +561,7 @@ function Dashboard() {
                <div className="flex flex-col justify-center gap-[2px]">
                   <span className="text-[8px] text-[#A1A1AA] font-bold tracking-widest uppercase">Usage Rate</span>
                   <div className="flex items-baseline gap-1">
-                     <span className="text-xs font-bold text-[#E5E5E5] uppercase">₦{PRICE_PER_SECOND}</span>
+                     <span className="text-xs font-bold text-[#E5E5E5] uppercase">2 credits</span>
                      <span className="text-[9px] text-[#737373] font-medium">/sec</span>
                   </div>
                </div>
@@ -437,15 +569,18 @@ function Dashboard() {
             
             <div className="flex items-center h-full gap-3 px-5 border-l border-[#222222]">
                <div className="flex flex-col justify-center gap-[2px]">
-                  <span className="text-[8px] text-[#A1A1AA] font-bold tracking-widest uppercase">Balance</span>
-                  <span className="text-xs font-bold text-[#22C55E]">₦{Math.round(balance).toLocaleString()}.00</span>
+                  <span className="text-[8px] text-[#A1A1AA] font-bold tracking-widest uppercase">Credits</span>
+                  <div className="flex items-center gap-1.5">
+                    <Coins className="w-3.5 h-3.5 text-blue-400" />
+                    <span className="text-xs font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
+                  </div>
                </div>
                <button 
-                  onClick={() => navigate('/wallet')}
+                  onClick={() => navigate('/subscription')}
                   className="h-[28px] px-2.5 bg-[#FFFFFF] text-[#000000] hover:bg-[#E5E5E5] transition-colors rounded-sm text-[11px] font-bold flex items-center gap-1 shadow-sm ml-1"
                >
                   <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                  Recharge
+                  Buy Credits
                </button>
             </div>
 
@@ -453,7 +588,7 @@ function Dashboard() {
                <Clock className="w-4 h-4 text-[#3B82F6] stroke-[2.5]" />
                <div className="flex flex-col justify-center gap-[2px]">
                   <span className="text-[8px] text-[#60A5FA] font-bold tracking-widest uppercase">Remaining</span>
-                  <span className="text-xs font-bold text-[#E5E5E5]">~{getRemainingSeconds()} sec</span>
+                  <span className="text-xs font-bold text-[#E5E5E5]">{formatTime(getRemainingSeconds())}</span>
                </div>
             </div>
          </div>

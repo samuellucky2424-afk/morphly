@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
 import type { ReactNode } from 'react';
+import { apiFetch } from '@/lib/api-client';
 import { useAuth } from './AuthContext';
 
 export interface Transaction {
@@ -49,8 +50,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (user?.id) {
-      const API_URL = import.meta.env.VITE_API_URL || '/api';
-      fetch(`${API_URL}/wallet?userId=${user.id}`)
+      apiFetch(`/wallet?userId=${user.id}`)
         .then(async res => {
           if (!res.ok) {
             throw new Error(`API returned ${res.status}`);

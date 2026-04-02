@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const PRICE_PER_SECOND = 69.2;
 const MAX_SESSION_DURATION = 600;
@@ -52,6 +52,7 @@ export default async function handler(req, res) {
   
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (!supabaseAdmin) return res.status(503).json({ allowed: false, error: supabaseAdminConfigError });
 
   try {
     const { userId } = req.body;

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -11,6 +11,7 @@ export default async function handler(req, res) {
 
   const { reference, userId, planName, planMinutes } = req.body;
   if (!reference || !userId) return res.status(400).json({ status: 'failed', message: 'Missing reference or userId' });
+  if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
   try {
     const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY;
