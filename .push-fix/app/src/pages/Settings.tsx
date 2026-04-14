@@ -29,7 +29,7 @@ function Settings() {
       const response = await fetch('https://api.github.com/repos/samuellucky2424-afk/morphly/releases/latest');
       const data = await response.json();
       const latestVersion = data.tag_name;
-      const currentVersion = 'v1.0.3'; // This should match package.json version
+      const currentVersion = 'v1.0.4'; // This should match package.json version
       
       if (latestVersion === currentVersion) {
         toast.success('You are running the latest version!');
@@ -66,7 +66,7 @@ function Settings() {
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label className="text-sm font-medium text-white">Current Version</Label>
-                <p className="text-xs text-[#71717a]">v1.0.3</p>
+                <p className="text-xs text-[#71717a]">v1.0.4</p>
               </div>
               <Button 
                 onClick={handleCheckForUpdates}
