@@ -6,7 +6,7 @@ import { AppProvider } from '@/context/AppContext';
 import { ProtectedRoute, PublicRoute } from '@/components/ProtectedRoute';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Toaster } from '@/components/ui/sonner';
-import { AppLayout } from '@/components/AppLayout';
+import { Navigation } from '@/components/Navigation';
 import LoadingScreen from '@/components/LoadingScreen';
 import { ROUTES } from '@/lib/routes';
 
@@ -43,17 +43,45 @@ function App() {
                     }
                   />
                   <Route
+                    path={ROUTES.PROTECTED.DASHBOARD}
                     element={
                       <ProtectedRoute>
-                        <AppLayout />
+                        <Navigation>
+                          <Dashboard />
+                        </Navigation>
                       </ProtectedRoute>
                     }
-                  >
-                    <Route path={ROUTES.PROTECTED.DASHBOARD} element={<Dashboard />} />
-                    <Route path={ROUTES.PROTECTED.WALLET} element={<Wallet />} />
-                    <Route path={ROUTES.PROTECTED.SUBSCRIPTION} element={<Subscription />} />
-                    <Route path={ROUTES.PROTECTED.SETTINGS} element={<Settings />} />
-                  </Route>
+                  />
+                  <Route
+                    path={ROUTES.PROTECTED.WALLET}
+                    element={
+                      <ProtectedRoute>
+                        <Navigation>
+                          <Wallet />
+                        </Navigation>
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path={ROUTES.PROTECTED.SUBSCRIPTION}
+                    element={
+                      <ProtectedRoute>
+                        <Navigation>
+                          <Subscription />
+                        </Navigation>
+                      </ProtectedRoute>
+                    }
+                  />
+                  <Route
+                    path={ROUTES.PROTECTED.SETTINGS}
+                    element={
+                      <ProtectedRoute>
+                        <Navigation>
+                          <Settings />
+                        </Navigation>
+                      </ProtectedRoute>
+                    }
+                  />
                   <Route
                     path="/"
                     element={<Navigate to={ROUTES.DEFAULT} replace />}
