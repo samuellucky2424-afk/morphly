@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: .push-fix/app/package-lock.json
+
+    - name: Install dependencies
+      working-directory: .push-fix/app
+      run: npm ci
+
+    - name: Install electron-builder
+      working-directory: .push-fix/app
+      run: npm install --save-dev electron-builder electron
+
+    - name: Build Electron app
+      working-directory: .push-fix/app
+      run: npm run electron:build
+
+    - name: Get version from package.json
+      id: package-version
+      working-directory: .push-fix/app
+      run: |
+        $version = (Get-Content package.json | ConvertFrom-Json).version
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+      shell: pwsh
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ steps.package-version.outputs.VERSION }}
+        release_name: Release v${{ steps.package-version.outputs.VERSION }}
+        draft: false
+        prerelease: false
+
+    - name: Upload NSIS Installer
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: .push-fix/app/release/Morphly Desktop Setup ${{ steps.package-version.outputs.VERSION }}.exe
+        asset_name: Morphly-Desktop-Setup-v${{ steps.package-version.outputs.VERSION }}.exe
+        asset_content_type: application/octet-stream
+
+    - name: Upload Portable Version
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: .push-fix/app/release/Morphly Desktop ${{ steps.package-version.outputs.VERSION }}.exe
+        asset_name: Morphly-Desktop-Portable-v${{ steps.package-version.outputs.VERSION }}.exe
+        asset_content_type: application/octet-stream

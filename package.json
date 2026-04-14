@@ -1,0 +1,9 @@
+{
+  "name": "morphly-api",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.100.1",
+    "concurrently": "^9.2.1"
+  }
+}
