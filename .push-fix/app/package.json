@@ -12,16 +12,22 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "public/icon.png"
     ],
     "extraResources": [
       {
         "from": ".env",
         "to": "."
+      },
+      {
+        "from": "public/icon.png",
+        "to": "icon.png"
       }
     ],
     "win": {
-      "target": ["nsis", "portable"]
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.ico"
     }
   },
   "scripts": {

@@ -17,14 +17,23 @@ if (fs.existsSync(envPath)) {
 }
 
 function createWindow() {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(__dirname, '../public/icon.png');
+
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
+    icon: iconPath,
+    autoHideMenuBar: true, // Hide menu bar
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
     }
   });
+
+  // Remove menu bar completely
+  mainWindow.setMenuBarVisibility(false);
 
   if (app.isPackaged) {
     // Ensure routing works for nested paths if hash router isn't used

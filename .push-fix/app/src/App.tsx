@@ -6,7 +6,7 @@ import { AppProvider } from '@/context/AppContext';
 import { ProtectedRoute, PublicRoute } from '@/components/ProtectedRoute';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Toaster } from '@/components/ui/sonner';
-import Layout from '@/components/Layout';
+import { AppLayout } from '@/components/AppLayout';
 import LoadingScreen from '@/components/LoadingScreen';
 import { ROUTES } from '@/lib/routes';
 
@@ -43,28 +43,20 @@ function App() {
                     }
                   />
                   <Route
-                    path={ROUTES.PROTECTED.SUBSCRIPTION}
-                    element={<Subscription />}
-                  />
-                  <Route
-                    path="/"
                     element={
                       <ProtectedRoute>
-                        <Layout />
+                        <AppLayout />
                       </ProtectedRoute>
                     }
                   >
-                    <Route index element={<Navigate to={ROUTES.DEFAULT} replace />} />
+                    <Route path={ROUTES.PROTECTED.DASHBOARD} element={<Dashboard />} />
                     <Route path={ROUTES.PROTECTED.WALLET} element={<Wallet />} />
+                    <Route path={ROUTES.PROTECTED.SUBSCRIPTION} element={<Subscription />} />
                     <Route path={ROUTES.PROTECTED.SETTINGS} element={<Settings />} />
                   </Route>
                   <Route
-                    path={ROUTES.PROTECTED.DASHBOARD}
-                    element={
-                      <ProtectedRoute>
-                        <Dashboard />
-                      </ProtectedRoute>
-                    }
+                    path="/"
+                    element={<Navigate to={ROUTES.DEFAULT} replace />}
                   />
                   <Route path="*" element={<NotFound />} />
                 </Routes>
