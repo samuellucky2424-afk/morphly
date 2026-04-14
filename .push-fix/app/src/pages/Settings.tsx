@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Download, RefreshCw } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 
@@ -13,12 +14,39 @@ function Settings() {
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [isSaving, setIsSaving] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
     await new Promise(resolve => setTimeout(resolve, 1000));
     toast.success('Profile updated successfully');
     setIsSaving(false);
+  };
+
+  const handleCheckForUpdates = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const response = await fetch('https://api.github.com/repos/samuellucky2424-afk/morphly/releases/latest');
+      const data = await response.json();
+      const latestVersion = data.tag_name;
+      const currentVersion = 'v1.0.3'; // This should match package.json version
+      
+      if (latestVersion === currentVersion) {
+        toast.success('You are running the latest version!');
+      } else {
+        toast.info(`New version ${latestVersion} is available!`, {
+          description: 'Click to download the latest version',
+          action: {
+            label: 'Download',
+            onClick: () => window.open(data.html_url, '_blank')
+          }
+        });
+      }
+    } catch (error) {
+      toast.error('Failed to check for updates');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
   };
 
   return (
@@ -29,6 +57,38 @@ function Settings() {
       </div>
 
       <div className="space-y-6">
+        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
+          <CardHeader className="border-b border-[#1f1f23]">
+            <CardTitle className="text-lg font-semibold text-white tracking-tight">App Updates</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">Check for and install the latest version</CardDescription>
+          </CardHeader>
+          <CardContent className="p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium text-white">Current Version</Label>
+                <p className="text-xs text-[#71717a]">v1.0.3</p>
+              </div>
+              <Button 
+                onClick={handleCheckForUpdates}
+                disabled={isCheckingUpdate}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
+              >
+                {isCheckingUpdate ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                    Checking...
+                  </>
+                ) : (
+                  <>
+                    <Download className="w-4 h-4 mr-2" />
+                    Check for Updates
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
         <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
             <CardTitle className="text-lg font-semibold text-white tracking-tight">Profile Information</CardTitle>
