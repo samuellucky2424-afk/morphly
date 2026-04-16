@@ -1,7 +1,7 @@
 {
   "name": "my-app",
   "private": true,
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Morphly desktop app for AI-powered real-time video transformations.",
   "author": "Samuel Lucky",
   "type": "module",
@@ -40,8 +40,7 @@
       "target": [
         "nsis",
         "portable"
-      ],
-      "differentialPackage": true
+      ]
     },
     "publish": [
       {
