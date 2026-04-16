@@ -1,7 +1,7 @@
 {
   "name": "my-app",
   "private": true,
-  "version": "1.0.19",
+  "version": "1.0.20",
   "description": "Morphly desktop app for AI-powered real-time video transformations.",
   "author": "Samuel Lucky",
   "type": "module",
@@ -14,9 +14,9 @@
     "build:app": "cross-env NODE_OPTIONS=--max-old-space-size=4096 tsc -b && vite build",
     "preview": "vite preview",
     "electron:dev": "electron .",
-    "electron:build": "npm run clean:build && npm run build:app && electron-builder --win --publish never",
+    "electron:build": "npm run clean:build && npm run build:app && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false ELECTRON_BUILDER_CACHE=./.cache/electron-builder electron-builder --win --publish never",
     "clean:build": "node scripts/clean-build.cjs",
-    "electron:release": "npm run clean:build && npm run build:app && electron-builder --win --publish always"
+    "electron:release": "npm run clean:build && npm run build:app && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false ELECTRON_BUILDER_CACHE=./.cache/electron-builder electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.morphly.app",
