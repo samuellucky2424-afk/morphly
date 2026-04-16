@@ -1,4 +1,4 @@
-import { app, BrowserWindow, systemPreferences, ipcMain } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -32,12 +32,18 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
     }
   });
+
+  // Completely remove the default white menu bar
+  Menu.setApplicationMenu(null);
+  mainWindow.setMenuBarVisibility(false);
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`Failed to load ${validatedURL}: ${errorCode} ${errorDescription}`);
