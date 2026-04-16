@@ -46,7 +46,9 @@
       {
         "provider": "github",
         "owner": "samuellucky2424-afk",
-        "repo": "morphly"
+        "repo": "morphly",
+        "releaseType": "release",
+        "tagNamePrefix": "v"
       }
     ],
     "nsis": {
