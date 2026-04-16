@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
 
@@ -9,6 +9,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (!supabaseAdmin) return res.status(503).json({ error: supabaseAdminConfigError });
   
   const userId = req.query.userId || req.query.id; 
 

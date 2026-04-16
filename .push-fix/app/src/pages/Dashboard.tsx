@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Camera, Coins } from 'lucide-react';
+import { Upload, Play, Square, Clock, Zap, Monitor, Plus, Camera, Coins } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
@@ -447,20 +447,9 @@ function Dashboard() {
   };
 
   return (
-    <div className="w-screen h-screen bg-[#111111] flex flex-col font-sans text-white overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 flex-shrink-0 relative z-10">
-        <div className="flex items-center gap-[2px]">
-          <span className="text-xl font-bold tracking-widest text-[#FFFFFF]">MORPHLY</span>
-          <span className="text-xl font-medium tracking-widest text-[#71717A]">.CAM</span>
-        </div>
-        <button title="Settings" className="p-2 text-[#71717A] hover:text-white transition-colors">
-          <Settings className="w-[18px] h-[18px]" />
-        </button>
-      </header>
-
+    <div className="w-screen h-screen bg-black flex flex-col font-sans text-white overflow-hidden">
       {/* Main Content Area */}
-      <main className="flex-1 relative flex items-center justify-center bg-[#171717] rounded-tl-lg rounded-tr-lg border-t border-l border-r border-[#222222] sm:mx-0 mx-0 mt-2 overflow-hidden shadow-inner">
+      <main className="flex-1 relative flex items-center justify-center bg-[#0a0a0a] sm:mx-0 mx-0 overflow-hidden">
          <video 
             id="output"
             ref={outputVideoRef}
@@ -496,7 +485,7 @@ function Dashboard() {
       </main>
 
       {/* Bottom Bar */}
-      <footer className="h-[52px] bg-[#0A0A0A] flex items-stretch justify-between px-0 flex-shrink-0 relative z-10">
+      <footer className="h-[52px] bg-black flex items-stretch justify-between px-0 flex-shrink-0 relative z-10 border-t border-[#1f1f1f]">
          <div className="flex items-center gap-1.5 px-4">
             <button 
               onClick={handleStart}

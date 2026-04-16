@@ -26,10 +26,28 @@ function Settings() {
   const handleCheckForUpdates = async () => {
     setIsCheckingUpdate(true);
     try {
-      const response = await fetch('https://api.github.com/repos/samuellucky2424-afk/morphly/releases/latest');
+      const response = await fetch('https://api.github.com/repos/samuellucky2424-afk/morphly/releases/latest', {
+        headers: {
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'Morphly-App'
+        }
+      });
+      
+      if (!response.ok) {
+        if (response.status === 403) {
+          toast.error('Update check rate limited. Please try again later.');
+        } else if (response.status === 404) {
+          toast.error('Release repository not found.');
+        } else {
+          toast.error(`Failed to check for updates (${response.status})`);
+        }
+        setIsCheckingUpdate(false);
+        return;
+      }
+      
       const data = await response.json();
       const latestVersion = data.tag_name;
-      const currentVersion = 'v1.0.4'; // This should match package.json version
+      const currentVersion = 'v1.0.4';
       
       if (latestVersion === currentVersion) {
         toast.success('You are running the latest version!');
@@ -43,7 +61,8 @@ function Settings() {
         });
       }
     } catch (error) {
-      toast.error('Failed to check for updates');
+      console.error('Update check error:', error);
+      toast.error('Failed to check for updates. Please check your internet connection.');
     } finally {
       setIsCheckingUpdate(false);
     }
