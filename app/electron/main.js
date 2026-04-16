@@ -141,23 +141,9 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('install-update', async () => {
     try {
-      console.log('Install update requested. Launching installer manually...');
+      console.log('Install update requested. Launching installer...');
       
-      // Get the path to the downloaded installer
-      // electron-updater downloads to a specific cache folder
-      const updateInfo = await autoUpdater.checkForUpdates();
-      if (!updateInfo || !updateInfo.downloadPromise) {
-         // If we can't find it via API, we use the default quitAndInstall which is safer
-         // but we wrap it in a timeout to ensure app closes visibly
-         setTimeout(() => {
-           autoUpdater.quitAndInstall(false, true);
-         }, 1500);
-         return { success: true, method: 'quitAndInstall' };
-      }
-
-      // If we want to be extremely explicit to avoid Defender:
-      // 1. App stays open for 1.5s to show "Launching..."
-      // 2. We call quitAndInstall with isSilent: false
+      // Delay to allow UI to show "Launching..." and ensure app is ready to close
       setTimeout(() => {
         autoUpdater.quitAndInstall(false, true); // isSilent: false, isForceRunAfter: true
       }, 1500);
