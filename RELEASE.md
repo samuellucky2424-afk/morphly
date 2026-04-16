@@ -19,21 +19,21 @@ The release version comes from `app/package.json`. The Git tag and the app versi
 2. **Commit your changes**:
    ```bash
    git add .
-   git commit -m "Release version 1.0.7"
+   git commit -m "Release version 1.0.8"
    ```
 
 3. **Create and push a matching version tag**:
    ```bash
-   git tag v1.0.7
-   git push origin v1.0.7
+   git tag v1.0.8
+   git push origin v1.0.8
    ```
 
 4. **GitHub Actions will automatically**:
    - Build the Electron app
    - Create or update the GitHub release for the version tag
    - Upload two EXE files:
-     - `Morphly Desktop Setup 1.0.7.exe` (NSIS installer)
-     - `Morphly Desktop 1.0.7.exe` (Portable version)
+     - `Morphly Desktop Setup 1.0.8.exe` (NSIS installer)
+     - `Morphly Desktop 1.0.8.exe` (Portable version)
 
 ### Manual Trigger
 
@@ -55,4 +55,4 @@ The workflow creates two types of Windows executables:
 - Use semantic versioning: `MAJOR.MINOR.PATCH`
 - Tag format: `v1.0.0`
 - Example tags: `v1.0.0`, `v1.0.1`, `v1.1.0`, `v2.0.0`
-- Example: if `app/package.json` is `1.0.7`, the tag must be `v1.0.7`
+- Example: if `app/package.json` is `1.0.8`, the tag must be `v1.0.8`

@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "buildCommand": "cd app && npm ci && npm run build:app",
-  "outputDirectory": "app/dist",
+  "buildCommand": "npm run build:app",
+  "outputDirectory": "dist",
   "installCommand": "npm ci",
   "functions": {
     "api/**/*.ts": {
