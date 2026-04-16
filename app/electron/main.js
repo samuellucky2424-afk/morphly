@@ -85,10 +85,11 @@ app.whenReady().then(async () => {
 
   // Update handlers
   ipcMain.handle('check-for-updates', async () => {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are only available in the packaged app.' };
+    }
     console.log('Update check requested...');
     try {
-      // If we're in development, auto-updater won't work normally without a dev-app-update.yml
-      // However, we can still try to check and return the error if it fails.
       const result = await autoUpdater.checkForUpdates();
       
       if (!result) {
@@ -130,9 +131,12 @@ app.whenReady().then(async () => {
   autoUpdater.autoInstallOnAppQuit = false;
 
   ipcMain.handle('download-update', async () => {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are only available in the packaged app.' };
+    }
     try {
       console.log('Starting manual download...');
-      const downloadPromise = autoUpdater.downloadUpdate();
+      await autoUpdater.downloadUpdate();
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
@@ -140,6 +144,9 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('install-update', async () => {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates are only available in the packaged app.' };
+    }
     try {
       console.log('Install update requested. Launching installer...');
       

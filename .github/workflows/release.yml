@@ -30,7 +30,9 @@ jobs:
 
     - name: Build Electron app
       working-directory: app
-      run: npm run electron:build
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: npm run electron:release
 
     - name: Resolve release version
       id: release-version
@@ -56,15 +58,21 @@ jobs:
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         echo "TAG_NAME=$tagName" >> $env:GITHUB_OUTPUT
 
-    - name: Create or update Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ steps.release-version.outputs.TAG_NAME }}
-        name: Release ${{ steps.release-version.outputs.TAG_NAME }}
-        target_commitish: ${{ github.sha }}
-        draft: false
-        prerelease: false
-        fail_on_unmatched_files: true
-        files: |
-          app/release/Morphly Desktop Setup ${{ steps.release-version.outputs.VERSION }}.exe
-          app/release/Morphly Desktop ${{ steps.release-version.outputs.VERSION }}.exe
+    - name: Verify release artifacts
+      shell: pwsh
+      run: |
+        $version = "${{ steps.release-version.outputs.VERSION }}"
+        $dir = "app/release"
+
+        if (!(Test-Path $dir)) { throw "Missing output directory: $dir" }
+
+        $latest = Get-ChildItem -Path $dir -Filter "latest.yml" -ErrorAction SilentlyContinue
+        if (!$latest) { throw "Missing latest.yml in $dir" }
+
+        $blockmaps = Get-ChildItem -Path $dir -Filter "*.blockmap" -ErrorAction SilentlyContinue
+        if (!$blockmaps) { throw "Missing .blockmap files in $dir" }
+
+        $exe1 = Join-Path $dir "Morphly Desktop Setup $version.exe"
+        $exe2 = Join-Path $dir "Morphly Desktop $version.exe"
+        if (!(Test-Path $exe1)) { throw "Missing installer: $exe1" }
+        if (!(Test-Path $exe2)) { throw "Missing portable: $exe2" }
