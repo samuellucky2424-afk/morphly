@@ -2,13 +2,15 @@
 
 ## Creating a New Release
 
-This project uses GitHub Actions to automatically build and release the Electron app as an EXE file.
+This project uses GitHub Actions to automatically build and release the Electron app as Windows EXE files.
 
-### Current Version: 1.0.0
+### Version Source
+
+The release version comes from `.push-fix/app/package.json`. The Git tag and the app version must match.
 
 ### How to Create a Release
 
-1. **Update the version in package.json** (if needed):
+1. **Update the version in `.push-fix/app/package.json`**:
    ```bash
    cd .push-fix/app
    # Edit package.json and update the "version" field
@@ -17,28 +19,30 @@ This project uses GitHub Actions to automatically build and release the Electron
 2. **Commit your changes**:
    ```bash
    git add .
-   git commit -m "Release version 1.0.0"
+   git commit -m "Release version 1.0.6"
    ```
 
-3. **Create and push a version tag**:
+3. **Create and push a matching version tag**:
    ```bash
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag v1.0.6
+   git push origin v1.0.6
    ```
 
 4. **GitHub Actions will automatically**:
    - Build the Electron app
-   - Create a GitHub release with the version tag
+   - Create or update the GitHub release for the version tag
    - Upload two EXE files:
-     - `Morphly-Desktop-Setup-v1.0.0.exe` (NSIS installer)
-     - `Morphly-Desktop-Portable-v1.0.0.exe` (Portable version)
+     - `Morphly Desktop Setup 1.0.6.exe` (NSIS installer)
+     - `Morphly Desktop 1.0.6.exe` (Portable version)
 
 ### Manual Trigger
 
 You can also manually trigger the release workflow from the GitHub Actions tab:
-1. Go to Actions → Release
-2. Click "Run workflow"
-3. Select the branch and click "Run workflow"
+1. Go to `Actions` -> `Release`
+2. Click `Run workflow`
+3. Select the branch and click `Run workflow`
+
+If the workflow is re-run for the same tag, it updates the existing GitHub release instead of failing.
 
 ### Build Outputs
 
@@ -51,3 +55,4 @@ The workflow creates two types of Windows executables:
 - Use semantic versioning: `MAJOR.MINOR.PATCH`
 - Tag format: `v1.0.0`
 - Example tags: `v1.0.0`, `v1.0.1`, `v1.1.0`, `v2.0.0`
+- Example: if `.push-fix/app/package.json` is `1.0.6`, the tag must be `v1.0.6`

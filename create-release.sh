@@ -3,7 +3,7 @@
 # Script to create a new release
 # Usage: ./create-release.sh
 
-VERSION="1.0.0"
+VERSION=$(node -p "require('./.push-fix/app/package.json').version")
 TAG="v${VERSION}"
 
 echo "Creating release for version ${VERSION}"

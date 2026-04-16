@@ -6,6 +6,9 @@ on:
       - 'v*.*.*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -33,41 +36,39 @@ jobs:
       working-directory: .push-fix/app
       run: npm run electron:build
 
-    - name: Get version from package.json
-      id: package-version
+    - name: Resolve release version
+      id: release-version
       working-directory: .push-fix/app
-      run: |
-        $version = (Get-Content package.json | ConvertFrom-Json).version
-        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
       shell: pwsh
+      run: |
+        $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
 
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if ("${{ github.ref_type }}" -eq "tag") {
+          $tagName = "${{ github.ref_name }}"
+          $tagVersion = $tagName.TrimStart('v')
+
+          if ($tagVersion -ne $packageVersion) {
+            throw "Tag $tagName does not match .push-fix/app/package.json version $packageVersion. Update the app version before creating the tag."
+          }
+
+          $version = $tagVersion
+        } else {
+          $version = $packageVersion
+          $tagName = "v$packageVersion"
+        }
+
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "TAG_NAME=$tagName" >> $env:GITHUB_OUTPUT
+
+    - name: Create or update Release
+      uses: softprops/action-gh-release@v2
       with:
-        tag_name: v${{ steps.package-version.outputs.VERSION }}
-        release_name: Release v${{ steps.package-version.outputs.VERSION }}
+        tag_name: ${{ steps.release-version.outputs.TAG_NAME }}
+        name: Release ${{ steps.release-version.outputs.TAG_NAME }}
+        target_commitish: ${{ github.sha }}
         draft: false
         prerelease: false
-
-    - name: Upload NSIS Installer
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: .push-fix/app/release/Morphly Desktop Setup ${{ steps.package-version.outputs.VERSION }}.exe
-        asset_name: Morphly-Desktop-Setup-v${{ steps.package-version.outputs.VERSION }}.exe
-        asset_content_type: application/octet-stream
-
-    - name: Upload Portable Version
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: .push-fix/app/release/Morphly Desktop ${{ steps.package-version.outputs.VERSION }}.exe
-        asset_name: Morphly-Desktop-Portable-v${{ steps.package-version.outputs.VERSION }}.exe
-        asset_content_type: application/octet-stream
+        fail_on_unmatched_files: true
+        files: |
+          .push-fix/app/release/Morphly Desktop Setup ${{ steps.release-version.outputs.VERSION }}.exe
+          .push-fix/app/release/Morphly Desktop ${{ steps.release-version.outputs.VERSION }}.exe
