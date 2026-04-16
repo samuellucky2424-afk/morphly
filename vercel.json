@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "buildCommand": "cd app && npm install && npm run build",
+  "buildCommand": "cd app && npm ci && npm run build:app",
   "outputDirectory": "app/dist",
-  "installCommand": "npm install",
+  "installCommand": "npm ci",
   "functions": {
     "api/**/*.ts": {
       "memory": 1024,

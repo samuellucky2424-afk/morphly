@@ -22,23 +22,19 @@ jobs:
       with:
         node-version: '20'
         cache: 'npm'
-        cache-dependency-path: .push-fix/app/package-lock.json
+        cache-dependency-path: app/package-lock.json
 
     - name: Install dependencies
-      working-directory: .push-fix/app
+      working-directory: app
       run: npm ci
 
-    - name: Install electron-builder
-      working-directory: .push-fix/app
-      run: npm install --save-dev electron-builder electron
-
     - name: Build Electron app
-      working-directory: .push-fix/app
+      working-directory: app
       run: npm run electron:build
 
     - name: Resolve release version
       id: release-version
-      working-directory: .push-fix/app
+      working-directory: app
       shell: pwsh
       run: |
         $packageVersion = (Get-Content package.json | ConvertFrom-Json).version
@@ -48,7 +44,7 @@ jobs:
           $tagVersion = $tagName.TrimStart('v')
 
           if ($tagVersion -ne $packageVersion) {
-            throw "Tag $tagName does not match .push-fix/app/package.json version $packageVersion. Update the app version before creating the tag."
+            throw "Tag $tagName does not match app/package.json version $packageVersion. Update the app version before creating the tag."
           }
 
           $version = $tagVersion
@@ -70,5 +66,5 @@ jobs:
         prerelease: false
         fail_on_unmatched_files: true
         files: |
-          .push-fix/app/release/Morphly Desktop Setup ${{ steps.release-version.outputs.VERSION }}.exe
-          .push-fix/app/release/Morphly Desktop ${{ steps.release-version.outputs.VERSION }}.exe
+          app/release/Morphly Desktop Setup ${{ steps.release-version.outputs.VERSION }}.exe
+          app/release/Morphly Desktop ${{ steps.release-version.outputs.VERSION }}.exe
