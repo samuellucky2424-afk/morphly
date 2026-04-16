@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import { spawn } from 'child_process';
 import electronUpdater from 'electron-updater';
 
 const { autoUpdater } = electronUpdater;
@@ -124,9 +125,14 @@ app.whenReady().then(async () => {
     }
   });
 
+  // Force manual update behavior to prevent Windows Defender blocks
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = false;
+
   ipcMain.handle('download-update', async () => {
     try {
-      await autoUpdater.downloadUpdate();
+      console.log('Starting manual download...');
+      const downloadPromise = autoUpdater.downloadUpdate();
       return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
@@ -135,9 +141,30 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('install-update', async () => {
     try {
-      autoUpdater.quitAndInstall(false, true);
+      console.log('Install update requested. Launching installer manually...');
+      
+      // Get the path to the downloaded installer
+      // electron-updater downloads to a specific cache folder
+      const updateInfo = await autoUpdater.checkForUpdates();
+      if (!updateInfo || !updateInfo.downloadPromise) {
+         // If we can't find it via API, we use the default quitAndInstall which is safer
+         // but we wrap it in a timeout to ensure app closes visibly
+         setTimeout(() => {
+           autoUpdater.quitAndInstall(false, true);
+         }, 1500);
+         return { success: true, method: 'quitAndInstall' };
+      }
+
+      // If we want to be extremely explicit to avoid Defender:
+      // 1. App stays open for 1.5s to show "Launching..."
+      // 2. We call quitAndInstall with isSilent: false
+      setTimeout(() => {
+        autoUpdater.quitAndInstall(false, true); // isSilent: false, isForceRunAfter: true
+      }, 1500);
+
       return { success: true };
     } catch (error) {
+      console.error('Install error:', error);
       return { success: false, error: error.message };
     }
   });

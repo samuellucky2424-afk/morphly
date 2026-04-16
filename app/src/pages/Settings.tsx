@@ -212,22 +212,27 @@ function Settings() {
         </Card>
 
         <Dialog open={isInstallReady} onOpenChange={setIsInstallReady}>
-          <DialogContent>
+          <DialogContent className="bg-[#131316] border-[#27272a] text-white">
             <DialogHeader>
-              <DialogTitle>Update Available</DialogTitle>
-              <DialogDescription>New version {availableVersion || ''} is ready to install.</DialogDescription>
+              <DialogTitle className="text-xl font-bold">Update Available</DialogTitle>
+              <DialogDescription className="text-[#a1a1aa]">
+                New version {availableVersion || ''} is ready to install.
+              </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 pt-2 text-sm text-[#a1a1aa]">
-              <p>The update has been downloaded and will install after you confirm.</p>
-              <p>If Windows blocks the update, click "More info" then "Run anyway".</p>
+            <div className="space-y-4 pt-4 text-sm text-[#a1a1aa]">
+              <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
+                <p className="font-semibold mb-1">Installer Instructions:</p>
+                <p>If Windows blocks the update, click <strong>"More info"</strong> then <strong>"Run anyway"</strong>.</p>
+              </div>
+              <p>The app will close and launch the installer. Please approve the Windows permission prompt to complete the update.</p>
             </div>
-            <DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-0">
               <Button
                 onClick={handleInstallUpdate}
                 disabled={isInstalling}
-                className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
+                className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-8"
               >
-                {isInstalling ? 'Installing...' : 'Install Update'}
+                {isInstalling ? 'Launching...' : 'Install Update'}
               </Button>
               <Button
                 variant="outline"
