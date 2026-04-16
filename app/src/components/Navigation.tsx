@@ -45,8 +45,8 @@ export function Navigation({ children }: NavigationProps) {
   };
 
   return (
-    <div className="min-h-screen bg-[#09090b]">
-      <header className="h-16 border-b border-[#18181b] bg-[#09090b]/80 backdrop-blur-2xl sticky top-0 z-50">
+    <div className="min-h-screen bg-black">
+      <header className="h-16 border-b border-[#18181b] bg-black sticky top-0 z-50">
         <div className="h-full max-w-[1600px] mx-auto px-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <NavLink to={ROUTES.PROTECTED.DASHBOARD} className="flex items-center gap-3">

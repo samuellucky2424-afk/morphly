@@ -384,20 +384,9 @@ function Dashboard() {
   };
 
   return (
-    <div className="w-screen h-screen bg-[#111111] flex flex-col font-sans text-white overflow-hidden">
-      {/* Header */}
-      <header className="flex items-center justify-between px-6 py-4 flex-shrink-0 relative z-10">
-        <div className="flex items-center gap-[2px]">
-          <span className="text-xl font-bold tracking-widest text-[#FFFFFF]">MORPHLY</span>
-          <span className="text-xl font-medium tracking-widest text-[#71717A]">.CAM</span>
-        </div>
-        <button title="Settings" className="p-2 text-[#71717A] hover:text-white transition-colors">
-          <Settings className="w-[18px] h-[18px]" />
-        </button>
-      </header>
-
+    <div className="w-screen h-screen bg-black flex flex-col font-sans text-white overflow-hidden">
       {/* Main Content Area */}
-      <main className="flex-1 relative flex items-center justify-center bg-[#171717] rounded-tl-lg rounded-tr-lg border-t border-l border-r border-[#222222] sm:mx-0 mx-0 mt-2 overflow-hidden shadow-inner">
+      <main className="flex-1 relative flex items-center justify-center bg-[#000000] sm:mx-0 mx-0 overflow-hidden shadow-inner">
          <video 
             id="output"
             ref={outputVideoRef}
@@ -416,7 +405,7 @@ function Dashboard() {
 
          {!isStreaming && (
             <div className="flex flex-col items-center justify-center text-[#3F3F46] gap-5">
-               <Monitor className="w-[50px] h-[50px] stroke-[1]" />
+               <Monitor className="w-[60px] h-[60px] stroke-[1]" />
                <span className="text-xs font-semibold tracking-[0.2em] text-[#4A4A4A]">CAMERA FEED OFFLINE</span>
             </div>
          )}
@@ -430,6 +419,14 @@ function Dashboard() {
             className="hidden"
             id="image-upload"
           />
+
+          <button 
+            title="Settings" 
+            onClick={() => navigate('/settings')}
+            className="absolute top-6 right-6 p-2.5 bg-black/40 backdrop-blur-md rounded-full text-[#71717A] hover:text-white transition-all hover:scale-110 z-20 border border-white/5"
+          >
+            <Settings className="w-5 h-5" />
+          </button>
       </main>
 
       {/* Bottom Bar */}

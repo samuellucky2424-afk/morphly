@@ -78,13 +78,50 @@ app.whenReady().then(async () => {
 
   // Update handlers
   ipcMain.handle('check-for-updates', async () => {
+    console.log('Update check requested...');
     try {
+      // If we're in development, auto-updater won't work normally without a dev-app-update.yml
+      // However, we can still try to check and return the error if it fails.
       const result = await autoUpdater.checkForUpdates();
-      if (result.updateInfo.version > app.getVersion()) {
-        await autoUpdater.downloadUpdate();
-        return { success: true, updateAvailable: true, version: result.updateInfo.version };
+      
+      if (!result) {
+        console.log('Update check returned no result');
+        return { success: false, error: 'No response from update server' };
       }
-      return { success: true, updateAvailable: false };
+
+      console.log('Update check result:', result.updateInfo.version);
+      
+      const currentVersion = app.getVersion();
+      const latestVersion = result.updateInfo.version;
+
+      if (latestVersion > currentVersion) {
+        console.log(`Update available: ${latestVersion} (Current: ${currentVersion})`);
+        // We don't download immediately here to give user control, 
+        // but the SDK might start it automatically depending on config.
+        return { 
+          success: true, 
+          updateAvailable: true, 
+          version: latestVersion,
+          currentVersion: currentVersion
+        };
+      }
+      
+      console.log('No updates available');
+      return { success: true, updateAvailable: false, currentVersion };
+    } catch (error) {
+      console.error('Update check error details:', error);
+      return { 
+        success: false, 
+        error: error.message || 'Unknown update error',
+        details: error.stack
+      };
+    }
+  });
+
+  ipcMain.handle('download-update', async () => {
+    try {
+      await autoUpdater.downloadUpdate();
+      return { success: true };
     } catch (error) {
       return { success: false, error: error.message };
     }

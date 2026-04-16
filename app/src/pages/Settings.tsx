@@ -37,19 +37,35 @@ function Settings() {
     try {
       toast('Checking for updates...');
       const result = await window.electron.invoke('check-for-updates');
+      
       if (result.success) {
         if (result.updateAvailable) {
           setAvailableVersion(result.version);
-          setIsInstallReady(true);
-          toast.success(`New version ${result.version} downloaded and ready to install.`);
+          toast.info(`Version ${result.version} found. Downloading...`);
+          
+          const downloadResult = await window.electron.invoke('download-update');
+          if (downloadResult.success) {
+            setIsInstallReady(true);
+            toast.success(`New version ${result.version} is ready to install.`);
+          } else {
+            toast.error(`Download failed: ${downloadResult.error}`);
+          }
         } else {
           toast.info('You are using the latest version');
         }
       } else {
-        toast.error('Failed to check for updates');
+        // Detailed error message from our new handler
+        const errorMsg = result.error || 'Failed to check for updates';
+        console.error('Update Error:', result);
+        toast.error(errorMsg);
+        
+        if (result.error?.includes('dev-app-update.yml')) {
+          toast.info('Note: Updates are disabled in development mode.');
+        }
       }
-    } catch (error) {
-      toast.error('Update check failed');
+    } catch (error: any) {
+      console.error('IPC Error:', error);
+      toast.error('Communication with update service failed');
     }
     setIsCheckingUpdate(false);
   };
