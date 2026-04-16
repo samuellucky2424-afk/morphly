@@ -20,7 +20,7 @@ async function closeActiveSession(userId, activeSession) {
       .from('sessions')
       .update({
         end_time: new Date(),
-        credits_used: finalCreditsUsed,
+        cost: finalCreditsUsed,
         seconds_used: elapsedSeconds,
         status: 'ended'
       })
@@ -86,7 +86,7 @@ export default async function handler(req, res) {
         user_id: userId, 
         status: 'active', 
         start_time: new Date(), 
-        credits_used: 0, 
+        cost: 0, 
         seconds_used: 0
       }).select('id').single();
 

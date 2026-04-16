@@ -20,7 +20,7 @@ async function closeActiveSession(userId, activeSession) {
       .from('sessions')
       .update({
         end_time: new Date(), 
-        credits_used: finalCreditsUsed, 
+        cost: finalCreditsUsed, 
         seconds_used: elapsedSeconds, 
         status: 'ended'
       }).eq('id', activeSession.id).eq('status', 'active');
