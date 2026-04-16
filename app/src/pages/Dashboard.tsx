@@ -1,12 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Camera, Coins, Video } from 'lucide-react';
+import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Coins } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetch } from '@/lib/api-client';
-import { VirtualCameraService } from '@/services/VirtualCameraService';
-import { StreamGuideModal } from '@/components/StreamGuideModal';
 
 interface RealtimeClient {
   disconnect: () => void;
@@ -35,10 +33,8 @@ function Dashboard() {
   const navigate = useNavigate();
   const [isStreaming, setIsStreaming] = useState(false);
   const [isObsMode, setIsObsMode] = useState(false);
-  const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isVirtualCamActive, setIsVirtualCamActive] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   // Default prompt since the new UI doesn't have an input field yet
@@ -49,7 +45,6 @@ function Dashboard() {
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const realtimeClientRef = useRef<RealtimeClient | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const virtualCamRef = useRef<VirtualCameraService | null>(null);
 
   const CREDITS_PER_SECOND = 2;
   const POLLING_INTERVAL = 10000; // 10s to reduce network/CPU overhead during streaming
@@ -64,9 +59,6 @@ function Dashboard() {
       }
       if (realtimeClientRef.current) {
         realtimeClientRef.current.disconnect();
-      }
-      if (virtualCamRef.current) {
-        virtualCamRef.current.stop();
       }
     };
   }, []);
@@ -109,55 +101,8 @@ function Dashboard() {
   useEffect(() => {
     if (isStreaming && outputVideoRef.current) {
       outputVideoRef.current.play().catch((err) => console.error('Play failed after streaming activated:', err));
-    } else if (!isStreaming) {
-      if (virtualCamRef.current) {
-        virtualCamRef.current.stop();
-        virtualCamRef.current = null;
-      }
-      setIsVirtualCamActive(false);
     }
   }, [isStreaming]);
-
-  const toggleVirtualCamera = async (activate?: boolean) => {
-    const shouldActivate = activate !== undefined ? activate : !isVirtualCamActive;
-    
-    if (shouldActivate) {
-      if (!outputVideoRef.current) return;
-      
-      virtualCamRef.current = new VirtualCameraService();
-      const stream = await virtualCamRef.current.start(outputVideoRef.current);
-      
-      if (stream) {
-        setIsVirtualCamActive(true);
-        // Notify Electron main process
-        try {
-          // @ts-ignore - electron bridge
-          if (window.electron) {
-            // @ts-ignore
-            await window.electron.invoke('virtual-camera:start');
-          }
-        } catch (e) { console.log('Electron bridge not available'); }
-        
-        toast.success('Virtual Camera started - Select "Morphly Virtual Cam" in your app');
-      }
-    } else {
-      if (virtualCamRef.current) {
-        virtualCamRef.current.stop();
-        virtualCamRef.current = null;
-      }
-      setIsVirtualCamActive(false);
-      
-      try {
-        // @ts-ignore
-        if (window.electron) {
-          // @ts-ignore
-          await window.electron.invoke('virtual-camera:stop');
-        }
-      } catch (e) {}
-      
-      toast.info('Virtual Camera stopped');
-    }
-  };
 
   const startWebcam = async () => {
     try {
@@ -341,13 +286,6 @@ function Dashboard() {
       setIsStreaming(true);
       setSessionStatus('LIVE');
 
-      // Auto-show guide logic on first stream start
-      const hasSeenGuide = localStorage.getItem('seen_obs_guide');
-      if (!hasSeenGuide) {
-        localStorage.setItem('seen_obs_guide', 'true');
-        setIsGuideModalOpen(true);
-      }
-      
       try {
         pollIntervalRef.current = setInterval(pollSessionStatus, POLLING_INTERVAL);
       } catch {
@@ -519,22 +457,6 @@ function Dashboard() {
               <span className="font-medium text-[13px]">Stop</span>
             </button>
 
-            <button 
-              onClick={() => setIsObsMode(!isObsMode)}
-              className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all ml-2"
-            >
-              <Monitor className="w-3.5 h-3.5 opacity-80" />
-              <span className="font-medium text-[13px]">OBS</span>
-            </button>
-
-            <button 
-              onClick={() => setIsGuideModalOpen(true)}
-              className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all"
-            >
-              <Video className="w-3.5 h-3.5 opacity-80 text-blue-400" />
-              <span className="font-medium text-[13px] text-blue-400 hover:text-blue-300">Stream to OBS</span>
-            </button>
-
              <button 
                onClick={() => fileInputRef.current?.click()}
                className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all"
@@ -557,19 +479,6 @@ function Dashboard() {
                 ))}
               </select>
             )}
-
-            <button 
-              onClick={() => toggleVirtualCamera()}
-              disabled={!isStreaming}
-              className={`h-[34px] px-3.5 flex items-center gap-2 rounded-sm border transition-all ml-1 ${
-                isVirtualCamActive 
-                  ? 'bg-[#122A1F] border-[#133C29] text-[#22C55E]' 
-                  : 'bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3]'
-              }`}
-            >
-              <Camera className="w-3.5 h-3.5 opacity-80" />
-              <span className="font-medium text-[13px]">{isVirtualCamActive ? 'Cam Active' : 'Virtual Cam'}</span>
-            </button>
          </div>
 
          <div className="flex items-center h-full">
@@ -610,11 +519,6 @@ function Dashboard() {
             </div>
          </div>
       </footer>
-
-      <StreamGuideModal 
-        isOpen={isGuideModalOpen} 
-        onClose={() => setIsGuideModalOpen(false)} 
-      />
     </div>
   );
 }

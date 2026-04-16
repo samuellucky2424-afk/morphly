@@ -8,6 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
+import { StreamGuideModal } from '@/components/StreamGuideModal';
 
 function Settings() {
   const { user, logout } = useAuth();
@@ -18,6 +19,7 @@ function Settings() {
   const [isInstallReady, setIsInstallReady] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
+  const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
@@ -152,6 +154,27 @@ function Settings() {
 
         <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
+            <CardTitle className="text-lg font-semibold text-white tracking-tight">Streaming / OBS Setup</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">Learn how to stream Morphly to OBS, Zoom, WhatsApp & more</CardDescription>
+          </CardHeader>
+          <CardContent className="p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium text-white">OBS Streaming Guide</Label>
+                <p className="text-xs text-[#71717a]">Step-by-step instructions for connecting Morphly to OBS Studio and video call apps</p>
+              </div>
+              <Button 
+                onClick={() => setIsGuideModalOpen(true)}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
+              >
+                View Guide
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
+          <CardHeader className="border-b border-[#1f1f23]">
             <CardTitle className="text-lg font-semibold text-white tracking-tight">Software Updates</CardTitle>
             <CardDescription className="text-xs text-[#71717a]">Check for and install new versions</CardDescription>
           </CardHeader>
@@ -200,6 +223,11 @@ function Settings() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <StreamGuideModal 
+          isOpen={isGuideModalOpen} 
+          onClose={() => setIsGuideModalOpen(false)} 
+        />
 
         <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
