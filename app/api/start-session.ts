@@ -90,7 +90,10 @@ export default async function handler(req, res) {
         seconds_used: 0
       }).select('id').single();
 
-    if (sessionError) return res.status(500).json({ allowed: false, error: 'Failed to create session' });
+    if (sessionError) {
+      console.error('Session Insert Error:', sessionError);
+      return res.status(500).json({ allowed: false, error: `Failed to create session: ${sessionError.message || JSON.stringify(sessionError)}` });
+    }
 
     // Calculate max session duration based on credits (2 credits/second)
     const maxSeconds = Math.floor(userCredits / CREDITS_PER_SECOND);
