@@ -17,6 +17,7 @@ import verifyPaymentRouter from './api/verify-payment.ts';
 import startSessionRouter from './api/start-session.ts';
 import sessionStatusRouter from './api/session-status.ts';
 import endSessionRouter from './api/end-session.ts';
+import versionRouter from './api/version.ts';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,6 +33,7 @@ app.use('/api/verify-payment', verifyPaymentRouter);
 app.use('/api/start-session', startSessionRouter);
 app.use('/api/session-status', sessionStatusRouter);
 app.use('/api/end-session', endSessionRouter);
+app.use('/api/version', versionRouter);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {

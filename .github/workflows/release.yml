@@ -62,7 +62,7 @@ jobs:
       shell: pwsh
       run: |
         $version = "${{ steps.release-version.outputs.VERSION }}"
-        $dir = "app/release"
+        $dir = "app/release-build"
 
         if (!(Test-Path $dir)) { throw "Missing output directory: $dir" }
 
@@ -72,7 +72,7 @@ jobs:
         $blockmaps = Get-ChildItem -Path $dir -Filter "*.blockmap" -ErrorAction SilentlyContinue
         if (!$blockmaps) { throw "Missing .blockmap files in $dir" }
 
-        $exe1 = Join-Path $dir "Morphly Desktop Setup $version.exe"
-        $exe2 = Join-Path $dir "Morphly Desktop $version.exe"
+        $exe1 = Join-Path $dir "Morphly Setup $version.exe"
+        $exe2 = Join-Path $dir "Morphly $version.exe"
         if (!(Test-Path $exe1)) { throw "Missing installer: $exe1" }
         if (!(Test-Path $exe2)) { throw "Missing portable: $exe2" }

@@ -32,8 +32,8 @@ The release version comes from `app/package.json`. The Git tag and the app versi
    - Build the Electron app
    - Create or update the GitHub release for the version tag
    - Upload two EXE files:
-     - `Morphly Desktop Setup 1.0.10.exe` (NSIS installer)
-     - `Morphly Desktop 1.0.10.exe` (Portable version)
+     - `Morphly Setup 1.0.10.exe` (NSIS installer)
+     - `Morphly 1.0.10.exe` (Portable version)
 
 ### Manual Trigger
 
