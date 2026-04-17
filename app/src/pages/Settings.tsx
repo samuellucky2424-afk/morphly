@@ -16,7 +16,6 @@ import {
   getDesktopUpdateState,
   installUpdate as installDesktopUpdate,
   isDesktopUpdaterAvailable,
-  openReleasePage as openDesktopReleasePage,
   subscribeToDesktopUpdateState,
   formatUpdateInstallMode,
   formatUpdatePackageType,
@@ -178,17 +177,7 @@ function Settings() {
     }
   };
 
-  const handleOpenReleasePage = async () => {
-    if (!isDesktopUpdatesAvailable) {
-      toast.error('Desktop updates are only available in the Electron app');
-      return;
-    }
 
-    const result = await openDesktopReleasePage();
-    if (!result.success) {
-      toast.error(result.error || 'Failed to open the release page');
-    }
-  };
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
@@ -355,11 +344,6 @@ function Settings() {
 
               <div className="mt-4 grid gap-3 text-xs text-[#a1a1aa] sm:grid-cols-2">
                 <div>
-                  <p className="text-[#71717a]">Source</p>
-                  <p className="mt-1 font-medium text-white">{desktopUpdateState.sourceLabel || 'Unknown source'}</p>
-                  <p className="mt-1 break-all text-[#a1a1aa]">{desktopUpdateState.releasePageUrl || 'No release page loaded yet'}</p>
-                </div>
-                <div>
                   <p className="text-[#71717a]">Downloaded file</p>
                   <p className="mt-1 font-medium text-white">
                     {desktopUpdateState.downloadedFileName || 'Waiting for download'}
@@ -371,10 +355,6 @@ function Settings() {
                         ? 'Validated and ready to install'
                         : 'The updater will fill this in once the file arrives.'}
                   </p>
-                </div>
-                <div>
-                  <p className="text-[#71717a]">Manifest URL</p>
-                  <p className="mt-1 break-all text-white">{desktopUpdateState.manifestUrl || 'Not loaded yet'}</p>
                 </div>
                 <div>
                   <p className="text-[#71717a]">Checksum</p>
@@ -389,7 +369,7 @@ function Settings() {
               </div>
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
+            <div className="grid gap-4 lg:grid-cols-1">
               <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -399,36 +379,6 @@ function Settings() {
                 </div>
                 <div className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-[#27272a] bg-black/20 p-3 text-xs leading-6 text-[#d4d4d8]">
                   {desktopUpdateState.releaseNotes || 'No release notes were provided with this manifest.'}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
-                <p className="text-sm font-semibold text-white">Source Details</p>
-                <p className="mt-1 text-xs text-[#71717a]">Where the updater fetched this build from.</p>
-                <div className="mt-4 space-y-3 text-xs text-[#a1a1aa]">
-                  <div>
-                    <p className="text-[#71717a]">Package Type</p>
-                    <p className="mt-1 text-white">{formatUpdatePackageType(desktopUpdateState.packageType)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#71717a]">Install Mode</p>
-                    <p className="mt-1 text-white">{formatUpdateInstallMode(desktopUpdateState.installMode)}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#71717a]">Download URL</p>
-                    {desktopUpdateState.downloadUrl ? (
-                      <a
-                        href={desktopUpdateState.downloadUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-1 block break-all text-blue-400 hover:text-blue-300"
-                      >
-                        {desktopUpdateState.downloadUrl}
-                      </a>
-                    ) : (
-                      <p className="mt-1 text-white">No download URL yet</p>
-                    )}
-                  </div>
                 </div>
               </div>
             </div>
@@ -475,14 +425,6 @@ function Settings() {
                   : desktopUpdateState.canAutoInstall
                     ? 'Restart to Install'
                     : 'Show Download'}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleOpenReleasePage}
-                disabled={!isDesktopUpdatesAvailable}
-                className="border-[#27272a] text-[#a1a1aa] hover:bg-[#27272a] hover:text-white"
-              >
-                Open Release Page
               </Button>
             </div>
           </CardContent>
