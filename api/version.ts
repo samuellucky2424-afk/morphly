@@ -4,7 +4,7 @@
  * IMPORTANT: Keep LATEST_VERSION in sync with app/package.json "version" field.
  * This file is fully self-contained - no external imports that could fail on Vercel serverless.
  */
-const LATEST_VERSION = '1.1.4';
+const LATEST_VERSION = '1.1.5';
 
 const GITHUB_OWNER = 'samuellucky2424-afk';
 const GITHUB_REPO = 'morphly';
