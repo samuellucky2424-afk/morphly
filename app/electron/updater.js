@@ -4,7 +4,19 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { once } from 'events';
-import { GITHUB_RELEASES_URL, buildAssetName, normalizePackageType } from '../../shared/update-manifest.ts';
+
+const GITHUB_RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
+
+function normalizePackageType(value) {
+  return value === 'portable' ? 'portable' : 'installer';
+}
+
+function buildAssetName(version, packageType) {
+  const safeVersion = typeof version === 'string' ? version.trim() : String(version ?? '').trim();
+  return packageType === 'portable'
+    ? `Morphly ${safeVersion}.exe`
+    : `Morphly Setup ${safeVersion}.exe`;
+}
 
 const DEFAULT_MANIFEST_URL = process.env.MORPHLY_UPDATE_MANIFEST_URL
   || process.env.VITE_UPDATE_MANIFEST_URL
