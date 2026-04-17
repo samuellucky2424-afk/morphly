@@ -1,7 +1,5 @@
-// @ts-nocheck
-
 // IMPORTANT: Keep LATEST_VERSION in sync with app/package.json "version" field.
-// This file is fully self-contained so it works on Vercel serverless (no fs imports).
+// This file is fully self-contained so it works on Vercel serverless.
 const LATEST_VERSION = '1.1.3';
 
 const GITHUB_OWNER = 'samuellucky2424-afk';
@@ -47,11 +45,11 @@ function createVersionManifest(options) {
 }
 
 function getBuildType(req) {
-  const candidate = req?.query?.build ?? req?.query?.packageType ?? req?.query?.mode;
+  const candidate = req.query.build || req.query.packageType || req.query.mode;
   return normalizePackageType(candidate);
 }
 
-export default function handler(req, res) {
+module.exports = function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -79,4 +77,4 @@ export default function handler(req, res) {
     const message = error instanceof Error ? error.message : String(error);
     return res.status(500).json({ error: message });
   }
-}
+};
