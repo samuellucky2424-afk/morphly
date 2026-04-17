@@ -3,31 +3,35 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import fs from 'fs';
-import { spawn } from 'child_process';
-import electronUpdater from 'electron-updater';
-
-const { autoUpdater } = electronUpdater;
+import { createDesktopUpdater } from './updater.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== 'production';
-const rendererDevUrl = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
-let mainWindow = null;
+const RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
 
-// Explicitly load the .env file as requested
-const envPath = app.isPackaged 
-    ? path.join(process.resourcesPath, '.env') 
+let mainWindow = null;
+let desktopUpdater = null;
+
+function loadEnvironmentVariables() {
+  const envPath = app.isPackaged
+    ? path.join(process.resourcesPath, '.env')
     : path.join(__dirname, '../.env');
 
-if (fs.existsSync(envPath)) {
+  if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath });
+  }
 }
 
-// Enable hardware acceleration BEFORE app ready (must be before any window creation)
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('enable-zero-copy');
-app.commandLine.appendSwitch('ignore-gpu-blocklist');
-app.commandLine.appendSwitch('disable-software-rasterizer');
+function resolveUpdateManifestUrl() {
+  return process.env.MORPHLY_UPDATE_MANIFEST_URL
+    || process.env.VITE_UPDATE_MANIFEST_URL
+    || 'https://morphly-alpha.vercel.app/api/version';
+}
+
+function resolveRendererDevUrl() {
+  return process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -42,7 +46,6 @@ function createWindow() {
     }
   });
 
-  // Completely remove the default white menu bar
   Menu.setApplicationMenu(null);
   mainWindow.setMenuBarVisibility(false);
 
@@ -51,10 +54,11 @@ function createWindow() {
   });
 
   if (isDevelopment) {
-    void mainWindow.loadURL(rendererDevUrl);
+    void mainWindow.loadURL(resolveRendererDevUrl());
   } else {
     const packagedIndexHtml = path.resolve(app.getAppPath(), 'dist', 'index.html');
     void mainWindow.loadFile(packagedIndexHtml);
+
     if (process.env.ELECTRON_OPEN_DEVTOOLS === '1') {
       mainWindow.webContents.once('did-finish-load', () => {
         mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -63,17 +67,8 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(async () => {
-  // Request camera access inherently for WebRTC dependencies
-  if (process.platform === 'darwin') {
-    await systemPreferences.askForMediaAccess('camera');
-  }
-  
-  // Virtual Camera IPC Handlers
+function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:start', async () => {
-    // In a full implementation, this would trigger the OBS Virtual Camera SDK
-    // or a native add-on. For now, we return success to allow the renderer
-    // to proceed with its canvas-based stream which acts as the source.
     console.log('Virtual Camera start requested');
     return { success: true, message: 'Virtual Camera stream initialized' };
   });
@@ -82,106 +77,95 @@ app.whenReady().then(async () => {
     console.log('Virtual Camera stop requested');
     return { success: true };
   });
+}
 
-  // Update handlers
+function registerUpdaterHandlers() {
+  ipcMain.handle('get-update-state', async () => desktopUpdater?.getStateSnapshot() ?? null);
+
   ipcMain.handle('check-for-updates', async () => {
-    if (!app.isPackaged) {
-      return { success: false, error: 'Updates are only available in the packaged app.' };
+    if (!desktopUpdater) {
+      return { success: false, error: 'Updater not initialized.' };
     }
-    console.log('Update check requested...');
-    try {
-      const result = await autoUpdater.checkForUpdates();
-      
-      if (!result) {
-        console.log('Update check returned no result');
-        return { success: false, error: 'No response from update server' };
-      }
-
-      console.log('Update check result:', result.updateInfo.version);
-      
-      const currentVersion = app.getVersion();
-      const latestVersion = result.updateInfo.version;
-
-      if (latestVersion > currentVersion) {
-        console.log(`Update available: ${latestVersion} (Current: ${currentVersion})`);
-        // We don't download immediately here to give user control, 
-        // but the SDK might start it automatically depending on config.
-        return { 
-          success: true, 
-          updateAvailable: true, 
-          version: latestVersion,
-          currentVersion: currentVersion
-        };
-      }
-      
-      console.log('No updates available');
-      return { success: true, updateAvailable: false, currentVersion };
-    } catch (error) {
-      console.error('Update check error details:', error);
-      return { 
-        success: false, 
-        error: error.message || 'Unknown update error',
-        details: error.stack
-      };
-    }
+    return desktopUpdater.checkForUpdates('ipc');
   });
 
-  // Force manual update behavior to prevent Windows Defender blocks
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-
   ipcMain.handle('download-update', async () => {
-    if (!app.isPackaged) {
-      return { success: false, error: 'Updates are only available in the packaged app.' };
+    if (!desktopUpdater) {
+      return { success: false, error: 'Updater not initialized.' };
     }
-    try {
-      console.log('Starting manual download...');
-      await autoUpdater.downloadUpdate();
-      return { success: true };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
+    return desktopUpdater.downloadUpdate('ipc');
   });
 
   ipcMain.handle('install-update', async () => {
-    if (!app.isPackaged) {
-      return { success: false, error: 'Updates are only available in the packaged app.' };
+    if (!desktopUpdater) {
+      return { success: false, error: 'Updater not initialized.' };
     }
-    try {
-      console.log('Install update requested. Launching installer...');
-      
-      // Delay to allow UI to show "Launching..." and ensure app is ready to close
-      setTimeout(() => {
-        autoUpdater.quitAndInstall(false, true); // isSilent: false, isForceRunAfter: true
-      }, 1500);
+    return desktopUpdater.installUpdate('ipc');
+  });
 
-      return { success: true };
-    } catch (error) {
-      console.error('Install error:', error);
-      return { success: false, error: error.message };
+  ipcMain.handle('open-release-page', async () => {
+    if (!desktopUpdater) {
+      return { success: false, error: 'Updater not initialized.' };
+    }
+    return desktopUpdater.openReleasePage('ipc', true);
+  });
+}
+
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+
+app.whenReady().then(async () => {
+  loadEnvironmentVariables();
+
+  if (process.platform === 'darwin') {
+    await systemPreferences.askForMediaAccess('camera');
+  }
+
+  registerVirtualCameraHandlers();
+
+  desktopUpdater = createDesktopUpdater({
+    manifestUrl: resolveUpdateManifestUrl(),
+    releasePageUrl: RELEASES_URL,
+    logPath: path.join(app.getPath('userData'), 'updater.log'),
+    currentVersion: app.getVersion(),
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    sendState: (state) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('desktop-updater:state', state);
+      }
     }
   });
 
+  registerUpdaterHandlers();
   createWindow();
-
-  // Auto-updater event listeners
-  autoUpdater.on('update-available', (info) => {
-    console.log('Update available:', info.version);
-  });
-
-  autoUpdater.on('update-downloaded', (info) => {
-    console.log('Update downloaded:', info.updateInfo.version);
-  });
-
-  autoUpdater.on('error', (err) => {
-    console.error('Update error:', err);
-  });
+  desktopUpdater.startBackgroundChecks();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  if (desktopUpdater) {
+    desktopUpdater.dispose();
+  }
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('uncaughtException in Electron main process:', error);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection in Electron main process:', reason);
 });

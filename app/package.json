@@ -1,7 +1,7 @@
 {
   "name": "my-app",
   "private": true,
-  "version": "1.0.20",
+  "version": "1.1.2",
   "description": "Morphly desktop app for AI-powered real-time video transformations.",
   "author": "Samuel Lucky",
   "type": "module",
@@ -20,9 +20,9 @@
   },
   "build": {
     "appId": "com.morphly.app",
-    "productName": "Morphly Desktop",
+    "productName": "Morphly",
     "directories": {
-      "output": "release"
+      "output": "release-build"
     },
     "icon": "build/icon.ico",
     "files": [
