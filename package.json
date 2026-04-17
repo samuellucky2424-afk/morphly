@@ -5,5 +5,8 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.100.1",
     "concurrently": "^9.2.1"
+  },
+  "scripts": {
+    "build:app": "npm install --prefix app && npm run build:app --prefix app"
   }
 }
