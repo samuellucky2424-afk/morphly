@@ -1,9 +1,50 @@
 // @ts-nocheck
-import { createVersionManifest, normalizePackageType, resolveChecksum, resolveReleaseNotes } from '../shared/update-manifest.ts';
 
-// IMPORTANT: Keep this in sync with app/package.json "version" field.
-// On Vercel serverless, fs.readFileSync cannot reach ../app/package.json at runtime.
+// IMPORTANT: Keep LATEST_VERSION in sync with app/package.json "version" field.
+// This file is fully self-contained so it works on Vercel serverless (no fs imports).
 const LATEST_VERSION = '1.1.3';
+
+const GITHUB_OWNER = 'samuellucky2424-afk';
+const GITHUB_REPO = 'morphly';
+const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`;
+
+function normalizePackageType(value) {
+  return value === 'portable' ? 'portable' : 'installer';
+}
+
+function buildAssetName(version, packageType) {
+  const safeVersion = version.trim();
+  return packageType === 'portable'
+    ? `Morphly ${safeVersion}.exe`
+    : `Morphly Setup ${safeVersion}.exe`;
+}
+
+function buildReleasePageUrl(version) {
+  return `${GITHUB_REPOSITORY_URL}/releases/tag/v${version.trim()}`;
+}
+
+function buildDownloadUrl(version, packageType) {
+  const assetName = buildAssetName(version, packageType);
+  return `${GITHUB_REPOSITORY_URL}/releases/download/v${version.trim()}/${encodeURIComponent(assetName)}`;
+}
+
+function createVersionManifest(options) {
+  const version = options.version.trim();
+  const packageType = options.packageType || 'installer';
+  const assetName = buildAssetName(version, packageType);
+
+  return {
+    latestVersion: version,
+    downloadUrl: buildDownloadUrl(version, packageType),
+    packageType,
+    checksum: options.checksum || null,
+    releaseNotes: options.releaseNotes || null,
+    releasePageUrl: buildReleasePageUrl(version),
+    sourceLabel: 'GitHub Releases',
+    assetName,
+    generatedAt: new Date().toISOString()
+  };
+}
 
 function getBuildType(req) {
   const candidate = req?.query?.build ?? req?.query?.packageType ?? req?.query?.mode;
@@ -29,8 +70,8 @@ export default function handler(req, res) {
     const manifest = createVersionManifest({
       version: LATEST_VERSION,
       packageType,
-      releaseNotes: resolveReleaseNotes(),
-      checksum: resolveChecksum(packageType)
+      releaseNotes: null,
+      checksum: null
     });
 
     return res.status(200).json(manifest);
