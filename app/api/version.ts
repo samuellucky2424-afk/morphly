@@ -1,21 +1,9 @@
 // @ts-nocheck
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { createVersionManifest, normalizePackageType, resolveChecksum, resolveReleaseNotes } from '../../shared/update-manifest.ts';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const packageJsonPath = path.join(__dirname, '../package.json');
-
-function readVersionFromPackageJson() {
-  const raw = fs.readFileSync(packageJsonPath, 'utf8');
-  const packageJson = JSON.parse(raw);
-  if (!packageJson?.version) {
-    throw new Error('Missing version in app/package.json');
-  }
-  return String(packageJson.version);
-}
+// IMPORTANT: Keep this in sync with app/package.json "version" field.
+// On Vercel serverless, fs.readFileSync cannot reach ../package.json at runtime.
+const LATEST_VERSION = '1.1.3';
 
 function getBuildType(req) {
   const candidate = req?.query?.build ?? req?.query?.packageType ?? req?.query?.mode;
@@ -37,10 +25,9 @@ export default function handler(req, res) {
   }
 
   try {
-    const latestVersion = readVersionFromPackageJson();
     const packageType = getBuildType(req);
     const manifest = createVersionManifest({
-      version: latestVersion,
+      version: LATEST_VERSION,
       packageType,
       releaseNotes: resolveReleaseNotes(),
       checksum: resolveChecksum(packageType)
@@ -52,4 +39,3 @@ export default function handler(req, res) {
     return res.status(500).json({ error: message });
   }
 }
-
