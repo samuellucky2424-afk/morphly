@@ -72,7 +72,17 @@ jobs:
         $blockmaps = Get-ChildItem -Path $dir -Filter "*.blockmap" -ErrorAction SilentlyContinue
         if (!$blockmaps) { throw "Missing .blockmap files in $dir" }
 
-        $exe1 = Join-Path $dir "Morphly Setup $version.exe"
-        $exe2 = Join-Path $dir "Morphly $version.exe"
-        if (!(Test-Path $exe1)) { throw "Missing installer: $exe1" }
-        if (!(Test-Path $exe2)) { throw "Missing portable: $exe2" }
+        $installerCandidates = @(
+          (Join-Path $dir "Morphly-Setup-$version.exe"),
+          (Join-Path $dir "Morphly Setup $version.exe")
+        )
+        $portableCandidates = @(
+          (Join-Path $dir "Morphly-$version.exe"),
+          (Join-Path $dir "Morphly $version.exe")
+        )
+
+        $exe1 = $installerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+        $exe2 = $portableCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
+        if (!$exe2) { throw "Missing portable build. Checked: $($portableCandidates -join ', ')" }
