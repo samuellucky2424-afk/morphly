@@ -9,6 +9,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== 'production';
 const RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
+const MORPHLY_CAM_WINDOW_NAME = 'Morphly cam';
+const MORPHLY_CAM_WINDOW_WIDTH = 640;
+const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 
 let mainWindow = null;
 let desktopUpdater = null;
@@ -33,6 +36,60 @@ function resolveRendererDevUrl() {
   return process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
 }
 
+function isMorphlyCamPopup(details) {
+  return details.frameName === MORPHLY_CAM_WINDOW_NAME;
+}
+
+function createMorphlyCamWindowOptions() {
+  return {
+    title: MORPHLY_CAM_WINDOW_NAME,
+    width: MORPHLY_CAM_WINDOW_WIDTH,
+    height: MORPHLY_CAM_WINDOW_HEIGHT,
+    minWidth: 360,
+    minHeight: 220,
+    backgroundColor: '#000000',
+    autoHideMenuBar: true,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    parent: mainWindow ?? undefined,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js')
+    }
+  };
+}
+
+function keepWindowVisibleOnTop(window) {
+  if (window.isDestroyed()) {
+    return;
+  }
+
+  window.setMenuBarVisibility(false);
+  window.setAlwaysOnTop(true);
+
+  if (typeof window.moveTop === 'function') {
+    window.moveTop();
+  }
+}
+
+function configureMorphlyCamPopup(window) {
+  keepWindowVisibleOnTop(window);
+  window.setTitle(MORPHLY_CAM_WINDOW_NAME);
+
+  window.on('show', () => {
+    keepWindowVisibleOnTop(window);
+  });
+
+  window.on('focus', () => {
+    keepWindowVisibleOnTop(window);
+  });
+
+  window.on('blur', () => {
+    keepWindowVisibleOnTop(window);
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -48,6 +105,21 @@ function createWindow() {
 
   Menu.setApplicationMenu(null);
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    if (isMorphlyCamPopup(details)) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: createMorphlyCamWindowOptions()
+      };
+    }
+
+    return { action: 'allow' };
+  });
+  mainWindow.webContents.on('did-create-window', (window, details) => {
+    if (isMorphlyCamPopup(details)) {
+      configureMorphlyCamPopup(window);
+    }
+  });
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`Failed to load ${validatedURL}: ${errorCode} ${errorDescription}`);

@@ -1,15 +1,190 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Play, Square, Clock, Zap, Monitor, Settings, Plus, Coins } from 'lucide-react';
+import {
+  Upload,
+  Play,
+  Square,
+  Clock,
+  Monitor,
+  Settings,
+  Plus,
+  Coins,
+  LoaderCircle,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetch } from '@/lib/api-client';
+import { Progress } from '@/components/ui/progress';
+import {
+  QUALITY_MODE_PROFILES,
+  buildVideoInputConstraints,
+  buildVideoTrackConstraints,
+  clampQualityMode,
+  downgradeQualityMode,
+  getAdaptiveQualityMode,
+  type QualityMode,
+  upgradeQualityMode,
+} from '@/lib/realtime-quality';
+
+type ConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
+
+type RealtimeStats = {
+  timestamp: number;
+  video: {
+    framesPerSecond: number;
+    frameWidth: number;
+    frameHeight: number;
+    framesDroppedDelta: number;
+    freezeCountDelta: number;
+    bitrate: number;
+  } | null;
+  outboundVideo: {
+    qualityLimitationReason: string;
+    framesPerSecond: number;
+    frameWidth: number;
+    frameHeight: number;
+    bitrate: number;
+  } | null;
+  connection: {
+    currentRoundTripTime: number | null;
+    availableOutgoingBitrate: number | null;
+  };
+};
+
+type RealtimeClientEventMap = {
+  connectionChange: ConnectionState;
+  stats: RealtimeStats;
+  error: { message: string };
+  generationTick: { seconds: number };
+  diagnostic: unknown;
+};
 
 interface RealtimeClient {
   disconnect: () => void;
-  set: (config: { prompt?: string; enhance?: boolean; image?: string | Blob | File }) => Promise<void>;
+  set: (config: {
+    prompt?: string | null;
+    enhance?: boolean;
+    image?: string | Blob | File | null;
+  }) => Promise<void>;
   setPrompt: (text: string, options?: { enhance?: boolean }) => Promise<void>;
+  getConnectionState?: () => ConnectionState;
+  on: <K extends keyof RealtimeClientEventMap>(
+    event: K,
+    listener: (data: RealtimeClientEventMap[K]) => void,
+  ) => void;
+  off: <K extends keyof RealtimeClientEventMap>(
+    event: K,
+    listener: (data: RealtimeClientEventMap[K]) => void,
+  ) => void;
+}
+
+type ReferenceImage = {
+  file: File;
+  name: string;
+  signature: string;
+};
+
+type TransformState = {
+  prompt: string;
+  enhance: boolean;
+  image: File | null;
+  imageSignature: string | null;
+};
+
+type StreamMetrics = {
+  fps: number;
+  frameWidth: number;
+  frameHeight: number;
+  rttMs: number | null;
+  limitation: string;
+  bitrateKbps: number;
+};
+
+type NetworkInformationLike = EventTarget & {
+  downlink?: number;
+  addEventListener?: (type: 'change', listener: EventListenerOrEventListenerObject) => void;
+  removeEventListener?: (type: 'change', listener: EventListenerOrEventListenerObject) => void;
+};
+
+type VideoElementWithFrameCallbacks = HTMLVideoElement & {
+  requestVideoFrameCallback?: (callback: VideoFrameRequestCallback) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+  latencyHint?: string;
+};
+
+const DEFAULT_PROMPT = 'A person looking professional';
+const CREDITS_PER_SECOND = 2;
+const POLLING_INTERVAL = 10000;
+const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
+const FRAME_STALE_THRESHOLD_MS = 1500;
+const SOFT_RECONNECT_DELAY_MS = 6000;
+const AUTO_DOWNGRADE_SAMPLES = 3;
+const AUTO_UPGRADE_SAMPLES = 10;
+const MORPHLY_CAM_WINDOW_WIDTH = 640;
+const MORPHLY_CAM_WINDOW_HEIGHT = 360;
+
+function createEmptyStreamMetrics(): StreamMetrics {
+  return {
+    fps: 0,
+    frameWidth: 0,
+    frameHeight: 0,
+    rttMs: null,
+    limitation: 'none',
+    bitrateKbps: 0,
+  };
+}
+
+function buildTransformSignature(transform: TransformState): string {
+  return [
+    transform.prompt,
+    transform.enhance ? 'enhance' : 'base',
+    transform.imageSignature ?? 'no-image',
+  ].join('|');
+}
+
+function getNavigatorConnection(): NetworkInformationLike | null {
+  const nav = navigator as Navigator & {
+    connection?: NetworkInformationLike;
+    mozConnection?: NetworkInformationLike;
+    webkitConnection?: NetworkInformationLike;
+  };
+
+  return nav.connection ?? nav.mozConnection ?? nav.webkitConnection ?? null;
+}
+
+function getStreamProgress(
+  isLoading: boolean,
+  isSyncingTransform: boolean,
+  hasRemoteFrame: boolean,
+  isFrameStale: boolean,
+  connectionState: ConnectionState,
+): number {
+  if (!hasRemoteFrame && (isLoading || connectionState === 'connecting')) {
+    return 28;
+  }
+
+  if (connectionState === 'connecting') {
+    return 46;
+  }
+
+  if (connectionState === 'connected') {
+    return 62;
+  }
+
+  if (connectionState === 'reconnecting' || isFrameStale) {
+    return 54;
+  }
+
+  if (isSyncingTransform) {
+    return 82;
+  }
+
+  if (connectionState === 'generating') {
+    return 100;
+  }
+
+  return 0;
 }
 
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
@@ -20,10 +195,12 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
       ...options?.headers,
     },
   });
+
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || errorData.message || `API Error: ${response.statusText}`);
   }
+
   return response.json();
 }
 
@@ -31,286 +208,863 @@ function Dashboard() {
   const { user } = useAuth();
   const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
+
   const [isStreaming, setIsStreaming] = useState(false);
   const [isObsMode, setIsObsMode] = useState(false);
-  const [uploadedImage, setUploadedImage] = useState<string | null>(null);
+  const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  // Default prompt since the new UI doesn't have an input field yet
-  const [prompt] = useState('A person looking professional');
+  const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [prompt] = useState(DEFAULT_PROMPT);
+  const [preferredMode, setPreferredMode] = useState<QualityMode>('balanced');
+  const [networkModeCap, setNetworkModeCap] = useState<QualityMode>('balanced');
+  const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
+  const [downlinkMbps, setDownlinkMbps] = useState<number | null>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
+  const [isSyncingTransform, setIsSyncingTransform] = useState(false);
+  const [hasRemoteFrame, setHasRemoteFrame] = useState(false);
+  const [isFrameStale, setIsFrameStale] = useState(false);
+  const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(() => createEmptyStreamMetrics());
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const webcamVideoRef = useRef<HTMLVideoElement>(null);
   const outputVideoRef = useRef<HTMLVideoElement>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const realtimeClientRef = useRef<RealtimeClient | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transformSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTransformRef = useRef<TransformState | null>(null);
+  const lastAppliedTransformRef = useRef<TransformState | null>(null);
+  const transformInFlightRef = useRef(false);
+  const clientSubscriptionsCleanupRef = useRef<(() => void) | null>(null);
+  const sessionTokenRef = useRef('');
+  const frameCallbackHandleRef = useRef<number | null>(null);
+  const lastRemoteFrameAtRef = useRef(0);
+  const softReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const softReconnectInFlightRef = useRef(false);
+  const healthCountersRef = useRef({ poorSamples: 0, healthySamples: 0 });
+  const userSelectedModeRef = useRef(false);
+  const previousCameraIdRef = useRef('');
+  const morphlyCamWindowRef = useRef<Window | null>(null);
+  const morphlyCamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const morphlyCamStatusRef = useRef<HTMLDivElement | null>(null);
+  const morphlyCamPopupWarnedRef = useRef(false);
+  const latestRemoteStreamRef = useRef<MediaStream | null>(null);
 
-  const CREDITS_PER_SECOND = 2;
-  const POLLING_INTERVAL = 10000; // 10s to reduce network/CPU overhead during streaming
+  const promptRef = useRef(prompt);
+  const referenceImageRef = useRef(referenceImage);
+  const isStreamingRef = useRef(isStreaming);
+  const hasRemoteFrameRef = useRef(hasRemoteFrame);
+  const isFrameStaleRef = useRef(isFrameStale);
+  const connectionStateRef = useRef<ConnectionState>(connectionState);
+  const activeModeRef = useRef<QualityMode>('balanced');
+  const preferredModeRef = useRef(preferredMode);
+
+  const activeMode = clampQualityMode(preferredMode, runtimeModeCap);
+  const activeProfile = QUALITY_MODE_PROFILES[activeMode];
+  const streamProgress = getStreamProgress(
+    isLoading,
+    isSyncingTransform,
+    hasRemoteFrame,
+    isFrameStale,
+    connectionState,
+  );
+
+  const streamStatusLabel = !isStreaming
+    ? 'Camera Feed Offline'
+    : isLoading || (!hasRemoteFrame && connectionState === 'connecting')
+      ? 'Starting stream'
+      : isSyncingTransform
+        ? 'Updating style'
+        : connectionState === 'reconnecting' || isFrameStale
+          ? 'Recovering stream'
+          : connectionState === 'connected'
+            ? 'Connected'
+            : connectionState === 'generating'
+              ? 'Live'
+              : 'Connecting';
+  const streamStatusTone =
+    connectionState === 'generating' && !isFrameStale
+      ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200'
+      : connectionState === 'reconnecting' || isFrameStale
+        ? 'border-amber-400/20 bg-amber-500/10 text-amber-100'
+        : 'border-white/10 bg-white/5 text-white';
+
+  const activeResolutionLabel =
+    streamMetrics.frameWidth > 0 && streamMetrics.frameHeight > 0
+      ? `${streamMetrics.frameWidth}x${streamMetrics.frameHeight}`
+      : `${activeProfile.width}x${activeProfile.height}`;
+  const activeFpsLabel = streamMetrics.fps > 0 ? `${streamMetrics.fps} FPS` : `${activeProfile.targetFps} FPS`;
+  const activeNetworkLabel = downlinkMbps ? `${downlinkMbps.toFixed(1)} Mbps` : 'Adaptive';
+  const networkRecommendedLabel = QUALITY_MODE_PROFILES[networkModeCap].label;
+  const performanceHint = userSelectedModeRef.current
+    ? preferredMode === networkModeCap
+      ? `${activeProfile.label} selected manually`
+      : `${QUALITY_MODE_PROFILES[preferredMode].label} selected manually, network suggests ${networkRecommendedLabel}`
+    : `${activeProfile.label} selected automatically from network conditions`;
 
   useEffect(() => {
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
+    promptRef.current = prompt;
+  }, [prompt]);
+
+  useEffect(() => {
+    referenceImageRef.current = referenceImage;
+  }, [referenceImage]);
+
+  useEffect(() => {
+    isStreamingRef.current = isStreaming;
+  }, [isStreaming]);
+
+  useEffect(() => {
+    hasRemoteFrameRef.current = hasRemoteFrame;
+  }, [hasRemoteFrame]);
+
+  useEffect(() => {
+    isFrameStaleRef.current = isFrameStale;
+  }, [isFrameStale]);
+
+  useEffect(() => {
+    connectionStateRef.current = connectionState;
+  }, [connectionState]);
+
+  useEffect(() => {
+    activeModeRef.current = activeMode;
+  }, [activeMode]);
+
+  useEffect(() => {
+    preferredModeRef.current = preferredMode;
+  }, [preferredMode]);
+
+  const resetMorphlyCamRefs = useCallback(() => {
+    morphlyCamWindowRef.current = null;
+    morphlyCamVideoRef.current = null;
+    morphlyCamStatusRef.current = null;
+  }, []);
+
+  const updateMorphlyCamStatus = useCallback((message: string | null) => {
+    const status = morphlyCamStatusRef.current;
+
+    if (!status) {
+      return;
+    }
+
+    if (!message) {
+      status.textContent = '';
+      status.style.opacity = '0';
+      return;
+    }
+
+    status.textContent = message;
+    status.style.opacity = '1';
+  }, []);
+
+  const renderMorphlyCamWindowShell = useCallback((popup: Window) => {
+    const doc = popup.document;
+
+    doc.open();
+    doc.write(`
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>Morphly cam</title>
+          <style>
+            html, body {
+              width: 100%;
+              height: 100%;
+              margin: 0;
+              background: #000;
+              overflow: hidden;
+              font-family: Arial, sans-serif;
+            }
+
+            body {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+
+            #morphly-cam-root {
+              position: relative;
+              width: 100vw;
+              height: 100vh;
+              background: #000;
+            }
+
+            #morphly-cam-output {
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              background: #000;
+            }
+
+            #morphly-cam-status {
+              position: absolute;
+              left: 50%;
+              bottom: 24px;
+              transform: translateX(-50%);
+              padding: 10px 14px;
+              border: 1px solid rgba(255, 255, 255, 0.12);
+              border-radius: 999px;
+              background: rgba(10, 10, 10, 0.7);
+              color: #f4f4f5;
+              font-size: 12px;
+              letter-spacing: 0.04em;
+              backdrop-filter: blur(10px);
+              transition: opacity 180ms ease;
+            }
+          </style>
+        </head>
+        <body>
+          <div id="morphly-cam-root">
+            <video id="morphly-cam-output" autoplay playsinline muted></video>
+            <div id="morphly-cam-status">Connecting Morphly cam...</div>
+          </div>
+        </body>
+      </html>
+    `);
+    doc.close();
+    doc.title = 'Morphly cam';
+
+    morphlyCamVideoRef.current = doc.getElementById('morphly-cam-output') as HTMLVideoElement | null;
+    morphlyCamStatusRef.current = doc.getElementById('morphly-cam-status') as HTMLDivElement | null;
+
+    if (latestRemoteStreamRef.current && morphlyCamVideoRef.current) {
+      morphlyCamVideoRef.current.srcObject = latestRemoteStreamRef.current;
+      void morphlyCamVideoRef.current.play().catch(() => {});
+      updateMorphlyCamStatus(null);
+    }
+
+    popup.onbeforeunload = () => {
+      resetMorphlyCamRefs();
+    };
+  }, [resetMorphlyCamRefs, updateMorphlyCamStatus]);
+
+  const ensureMorphlyCamWindow = useCallback((statusMessage: string) => {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+
+    let popup = morphlyCamWindowRef.current;
+    const isFreshWindow = !popup || popup.closed;
+
+    if (isFreshWindow) {
+      popup = window.open(
+        '',
+        'Morphly cam',
+        `popup=yes,width=${MORPHLY_CAM_WINDOW_WIDTH},height=${MORPHLY_CAM_WINDOW_HEIGHT},resizable=yes,scrollbars=no,toolbar=no,location=no,status=no,menubar=no`,
+      );
+
+      if (!popup) {
+        if (!morphlyCamPopupWarnedRef.current) {
+          morphlyCamPopupWarnedRef.current = true;
+          toast.error('Morphly cam could not open. Please allow popup windows for Morphly.');
+        }
+
+        return null;
       }
-      if (webcamStreamRef.current) {
-        webcamStreamRef.current.getTracks().forEach(track => track.stop());
-      }
-      if (realtimeClientRef.current) {
-        realtimeClientRef.current.disconnect();
-      }
+
+      morphlyCamWindowRef.current = popup;
+      renderMorphlyCamWindowShell(popup);
+      popup.focus();
+    }
+
+    if (!popup) {
+      return null;
+    }
+
+    if (!popup.document.getElementById('morphly-cam-output')) {
+      renderMorphlyCamWindowShell(popup);
+    }
+
+    popup.document.title = 'Morphly cam';
+    updateMorphlyCamStatus(statusMessage);
+
+    return popup;
+  }, [renderMorphlyCamWindowShell, updateMorphlyCamStatus]);
+
+  const syncMorphlyCamStream = useCallback((stream: MediaStream, statusMessage?: string | null) => {
+    latestRemoteStreamRef.current = stream;
+
+    const popup = ensureMorphlyCamWindow(statusMessage ?? 'Preparing Morphly cam...');
+    if (!popup) {
+      return;
+    }
+
+    const popupVideo = morphlyCamVideoRef.current;
+    if (!popupVideo) {
+      return;
+    }
+
+    if (popupVideo.srcObject !== stream) {
+      popupVideo.srcObject = stream;
+    }
+
+    popupVideo.playbackRate = 1;
+    popupVideo.onloadedmetadata = () => {
+      void popupVideo.play().catch(() => {});
+      updateMorphlyCamStatus(null);
+    };
+
+    if (popupVideo.readyState >= 2) {
+      void popupVideo.play().catch(() => {});
+      updateMorphlyCamStatus(null);
+    }
+  }, [ensureMorphlyCamWindow, updateMorphlyCamStatus]);
+
+  const closeMorphlyCamWindow = useCallback(() => {
+    latestRemoteStreamRef.current = null;
+
+    if (morphlyCamVideoRef.current) {
+      morphlyCamVideoRef.current.srcObject = null;
+    }
+
+    const popup = morphlyCamWindowRef.current;
+    if (popup && !popup.closed) {
+      popup.close();
+    }
+
+    resetMorphlyCamRefs();
+  }, [resetMorphlyCamRefs]);
+
+  const clearSoftReconnectTimer = useCallback(() => {
+    if (softReconnectTimerRef.current) {
+      clearTimeout(softReconnectTimerRef.current);
+      softReconnectTimerRef.current = null;
+    }
+  }, []);
+
+  const resetHealthCounters = useCallback(() => {
+    healthCountersRef.current = {
+      poorSamples: 0,
+      healthySamples: 0,
     };
   }, []);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && isObsMode) {
-        setIsObsMode(false);
-      }
+  const cleanupClientSubscriptions = useCallback(() => {
+    clientSubscriptionsCleanupRef.current?.();
+    clientSubscriptionsCleanupRef.current = null;
+  }, []);
+
+  const cancelRemoteFrameMonitor = useCallback(() => {
+    const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
+
+    if (video?.cancelVideoFrameCallback && frameCallbackHandleRef.current !== null) {
+      video.cancelVideoFrameCallback(frameCallbackHandleRef.current);
+    }
+
+    frameCallbackHandleRef.current = null;
+  }, []);
+
+  const markRemoteFrameFresh = useCallback(() => {
+    lastRemoteFrameAtRef.current = performance.now();
+
+    if (!hasRemoteFrameRef.current) {
+      hasRemoteFrameRef.current = true;
+      setHasRemoteFrame(true);
+    }
+
+    if (isFrameStaleRef.current) {
+      isFrameStaleRef.current = false;
+      setIsFrameStale(false);
+    }
+  }, []);
+
+  const startRemoteFrameMonitor = useCallback(() => {
+    cancelRemoteFrameMonitor();
+
+    const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
+    if (!video?.requestVideoFrameCallback) {
+      return;
+    }
+
+    const onFrame: VideoFrameRequestCallback = () => {
+      markRemoteFrameFresh();
+      frameCallbackHandleRef.current = video.requestVideoFrameCallback?.(onFrame) ?? null;
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isObsMode]);
 
-  const enumerateCameras = useCallback(async () => {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      setCameraDevices(videoDevices);
-      if (videoDevices.length > 0 && !selectedCameraId) {
-        const builtin = videoDevices.find(d =>
-          d.label.toLowerCase().includes('integrated') ||
-          d.label.toLowerCase().includes('built-in') ||
-          d.label.toLowerCase().includes('facetime') ||
-          d.label.toLowerCase().includes('internal')
-        );
-        setSelectedCameraId(builtin?.deviceId || videoDevices[0].deviceId);
-      }
-    } catch (err) {
-      console.error('Failed to enumerate cameras:', err);
-    }
-  }, [selectedCameraId]);
+    frameCallbackHandleRef.current = video.requestVideoFrameCallback(onFrame);
+  }, [cancelRemoteFrameMonitor, markRemoteFrameFresh]);
 
-  useEffect(() => {
-    enumerateCameras();
-    navigator.mediaDevices.addEventListener('devicechange', enumerateCameras);
-    return () => navigator.mediaDevices.removeEventListener('devicechange', enumerateCameras);
-  }, [enumerateCameras]);
-
-  useEffect(() => {
-    if (isStreaming && outputVideoRef.current) {
-      outputVideoRef.current.play().catch((err) => console.error('Play failed after streaming activated:', err));
-    }
-  }, [isStreaming]);
-
-  const startWebcam = async () => {
-    try {
-      const constraints: MediaStreamConstraints = {
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { max: 30, ideal: 24 },
-          facingMode: 'user'
-        },
-        audio: false
-      };
-      if (selectedCameraId) {
-        (constraints.video as MediaTrackConstraints).deviceId = { exact: selectedCameraId };
-      }
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      webcamStreamRef.current = stream;
-      if (webcamVideoRef.current) {
-        webcamVideoRef.current.srcObject = stream;
-      }
-      return stream;
-    } catch (error) {
-      console.error('Webcam error:', error);
-      toast.error('Failed to access webcam. Please allow camera permissions.');
-      return null;
-    }
-  };
-
-  const stopWebcam = () => {
+  const stopWebcam = useCallback(() => {
     if (webcamStreamRef.current) {
-      webcamStreamRef.current.getTracks().forEach(track => track.stop());
+      webcamStreamRef.current.getTracks().forEach((track) => track.stop());
       webcamStreamRef.current = null;
     }
+
     if (webcamVideoRef.current) {
       webcamVideoRef.current.srcObject = null;
     }
-  };
+  }, []);
 
-  const connectToDecart = async (stream: MediaStream, apiToken: string): Promise<RealtimeClient | null> => {
+  const disconnectFromDecart = useCallback((options?: { preserveVideo?: boolean }) => {
+    clearSoftReconnectTimer();
+    cleanupClientSubscriptions();
+
+    if (transformSyncTimerRef.current) {
+      clearTimeout(transformSyncTimerRef.current);
+      transformSyncTimerRef.current = null;
+    }
+
+    transformInFlightRef.current = false;
+    pendingTransformRef.current = null;
+    setIsSyncingTransform(false);
+
+    if (realtimeClientRef.current) {
+      realtimeClientRef.current.disconnect();
+      realtimeClientRef.current = null;
+    }
+
+    if (!options?.preserveVideo) {
+      cancelRemoteFrameMonitor();
+      lastRemoteFrameAtRef.current = 0;
+      hasRemoteFrameRef.current = false;
+      isFrameStaleRef.current = false;
+      setHasRemoteFrame(false);
+      setIsFrameStale(false);
+
+      if (outputVideoRef.current) {
+        outputVideoRef.current.srcObject = null;
+      }
+
+      closeMorphlyCamWindow();
+    }
+
+    lastAppliedTransformRef.current = null;
+    setStreamMetrics(createEmptyStreamMetrics());
+    setConnectionState('disconnected');
+  }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearSoftReconnectTimer, closeMorphlyCamWindow]);
+
+  const getDesiredTransformState = useCallback((): TransformState => ({
+    prompt: promptRef.current,
+    enhance: QUALITY_MODE_PROFILES[activeModeRef.current].enhance,
+    image: referenceImageRef.current?.file ?? null,
+    imageSignature: referenceImageRef.current?.signature ?? null,
+  }), []);
+
+  const applyTrackProfileWithFallback = useCallback(async (
+    track: MediaStreamTrack,
+    requestedMode: QualityMode,
+  ): Promise<QualityMode> => {
+    let attemptedMode = requestedMode;
+
+    while (true) {
+      try {
+        track.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+        await track.applyConstraints(buildVideoTrackConstraints(attemptedMode));
+        return attemptedMode;
+      } catch (error) {
+        if (attemptedMode === 'fast') {
+          throw error;
+        }
+
+        attemptedMode = downgradeQualityMode(attemptedMode);
+      }
+    }
+  }, []);
+
+  const startWebcam = useCallback(async (
+    requestedMode: QualityMode,
+    options?: { forceNewStream?: boolean; silent?: boolean },
+  ): Promise<MediaStream | null> => {
+    if (!options?.forceNewStream && webcamStreamRef.current) {
+      const existingTrack = webcamStreamRef.current.getVideoTracks()[0];
+
+      if (existingTrack && existingTrack.readyState === 'live') {
+        try {
+          const appliedMode = await applyTrackProfileWithFallback(existingTrack, requestedMode);
+
+          if (appliedMode !== requestedMode) {
+            setRuntimeModeCap((currentMode) => clampQualityMode(currentMode, appliedMode));
+          }
+
+          if (webcamVideoRef.current) {
+            webcamVideoRef.current.srcObject = webcamStreamRef.current;
+          }
+
+          return webcamStreamRef.current;
+        } catch (error) {
+          console.warn('Failed to update camera constraints in place:', error);
+        }
+      }
+    }
+
+    let attemptedMode = requestedMode;
+
+    while (true) {
+      try {
+        const nextStream = await navigator.mediaDevices.getUserMedia(
+          buildVideoInputConstraints(attemptedMode, selectedCameraId || undefined),
+        );
+        const nextTrack = nextStream.getVideoTracks()[0];
+
+        if (nextTrack) {
+          nextTrack.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+        }
+
+        const previousStream = webcamStreamRef.current;
+        webcamStreamRef.current = nextStream;
+
+        if (webcamVideoRef.current) {
+          webcamVideoRef.current.srcObject = nextStream;
+        }
+
+        if (previousStream && previousStream !== nextStream) {
+          previousStream.getTracks().forEach((track) => track.stop());
+        }
+
+        if (attemptedMode !== requestedMode) {
+          setRuntimeModeCap((currentMode) => clampQualityMode(currentMode, attemptedMode));
+        }
+
+        return nextStream;
+      } catch (error) {
+        if (attemptedMode === 'fast') {
+          console.error('Webcam error:', error);
+
+          if (!options?.silent) {
+            toast.error('Failed to access webcam. Please allow camera permissions.');
+          }
+
+          return null;
+        }
+
+        attemptedMode = downgradeQualityMode(attemptedMode);
+      }
+    }
+  }, [applyTrackProfileWithFallback, selectedCameraId]);
+
+  const flushTransformSync = useCallback(async (nextTransform: TransformState) => {
+    const realtimeClient = realtimeClientRef.current;
+    if (!realtimeClient) {
+      return;
+    }
+
+    const nextSignature = buildTransformSignature(nextTransform);
+    const lastSignature = lastAppliedTransformRef.current
+      ? buildTransformSignature(lastAppliedTransformRef.current)
+      : null;
+
+    if (nextSignature === lastSignature) {
+      return;
+    }
+
+    if (transformInFlightRef.current) {
+      pendingTransformRef.current = nextTransform;
+      return;
+    }
+
+    transformInFlightRef.current = true;
+    setIsSyncingTransform(true);
+
     try {
+      const previouslyHadImage = Boolean(lastAppliedTransformRef.current?.imageSignature);
+
+      if (nextTransform.image || previouslyHadImage) {
+        await realtimeClient.set({
+          prompt: nextTransform.prompt,
+          enhance: nextTransform.enhance,
+          image: nextTransform.image ?? null,
+        });
+      } else {
+        await realtimeClient.setPrompt(nextTransform.prompt, { enhance: nextTransform.enhance });
+      }
+
+      lastAppliedTransformRef.current = nextTransform;
+    } catch (error) {
+      console.error('Failed to sync live transformation:', error);
+      toast.error('Live style update stalled. Recovering stream...');
+    } finally {
+      transformInFlightRef.current = false;
+      setIsSyncingTransform(false);
+
+      if (pendingTransformRef.current) {
+        const queuedTransform = pendingTransformRef.current;
+        pendingTransformRef.current = null;
+
+        if (
+          !lastAppliedTransformRef.current ||
+          buildTransformSignature(queuedTransform) !== buildTransformSignature(lastAppliedTransformRef.current)
+        ) {
+          void flushTransformSync(queuedTransform);
+        }
+      }
+    }
+  }, []);
+
+  const queueTransformSync = useCallback((nextTransform: TransformState, immediate = false) => {
+    pendingTransformRef.current = nextTransform;
+
+    if (transformSyncTimerRef.current) {
+      clearTimeout(transformSyncTimerRef.current);
+    }
+
+    transformSyncTimerRef.current = setTimeout(() => {
+      transformSyncTimerRef.current = null;
+      const queuedTransform = pendingTransformRef.current;
+      pendingTransformRef.current = null;
+
+      if (queuedTransform) {
+        void flushTransformSync(queuedTransform);
+      }
+    }, immediate ? 0 : TRANSFORM_SYNC_DEBOUNCE_MS);
+  }, [flushTransformSync]);
+
+  const evaluateStreamHealth = useCallback((stats: RealtimeStats) => {
+    const profile = QUALITY_MODE_PROFILES[activeModeRef.current];
+    const inboundFps = stats.video?.framesPerSecond ?? 0;
+    const outboundFps = stats.outboundVideo?.framesPerSecond ?? 0;
+    const observedFps = inboundFps || outboundFps;
+    const rttMs = stats.connection.currentRoundTripTime !== null
+      ? stats.connection.currentRoundTripTime * 1000
+      : null;
+    const droppedFrames = stats.video?.framesDroppedDelta ?? 0;
+    const freezeCount = stats.video?.freezeCountDelta ?? 0;
+    const limitation = stats.outboundVideo?.qualityLimitationReason ?? 'none';
+    const availableOutgoingBitrate = stats.connection.availableOutgoingBitrate ?? null;
+    const counters = healthCountersRef.current;
+
+    const severeDegradation =
+      freezeCount > 0 ||
+      droppedFrames > 8 ||
+      observedFps < Math.max(8, profile.targetFps - 12) ||
+      (rttMs !== null && rttMs > 450) ||
+      (availableOutgoingBitrate !== null && availableOutgoingBitrate < 900000);
+
+    const poorQuality =
+      severeDegradation ||
+      limitation === 'bandwidth' ||
+      limitation === 'cpu' ||
+      droppedFrames > 3 ||
+      observedFps < profile.targetFps - 5 ||
+      (rttMs !== null && rttMs > 260);
+
+    const healthyQuality =
+      !poorQuality &&
+      limitation === 'none' &&
+      observedFps >= Math.max(18, profile.targetFps - 2) &&
+      freezeCount === 0 &&
+      droppedFrames <= 1 &&
+      (rttMs === null || rttMs < 180);
+
+    if (poorQuality) {
+      counters.poorSamples += severeDegradation ? 2 : 1;
+      counters.healthySamples = 0;
+    } else if (healthyQuality) {
+      counters.healthySamples += 1;
+      counters.poorSamples = Math.max(0, counters.poorSamples - 1);
+    } else {
+      counters.poorSamples = Math.max(0, counters.poorSamples - 1);
+      counters.healthySamples = 0;
+    }
+
+    if (counters.poorSamples >= AUTO_DOWNGRADE_SAMPLES) {
+      counters.poorSamples = 0;
+      counters.healthySamples = 0;
+      setRuntimeModeCap((currentMode) => downgradeQualityMode(currentMode));
+    }
+
+    if (counters.healthySamples >= AUTO_UPGRADE_SAMPLES) {
+      counters.healthySamples = 0;
+      setRuntimeModeCap((currentMode) => upgradeQualityMode(currentMode, preferredModeRef.current));
+    }
+  }, []);
+
+  const handleRealtimeStats = useCallback((stats: RealtimeStats) => {
+    const inboundFps = Math.round(stats.video?.framesPerSecond ?? 0);
+    const outboundFps = Math.round(stats.outboundVideo?.framesPerSecond ?? 0);
+    const bitrate = stats.video?.bitrate ?? stats.outboundVideo?.bitrate ?? 0;
+
+    setStreamMetrics({
+      fps: inboundFps || outboundFps,
+      frameWidth: stats.video?.frameWidth ?? stats.outboundVideo?.frameWidth ?? 0,
+      frameHeight: stats.video?.frameHeight ?? stats.outboundVideo?.frameHeight ?? 0,
+      rttMs: stats.connection.currentRoundTripTime !== null
+        ? Math.round(stats.connection.currentRoundTripTime * 1000)
+        : null,
+      limitation: stats.outboundVideo?.qualityLimitationReason ?? 'none',
+      bitrateKbps: Math.round(bitrate / 1000),
+    });
+
+    if ((stats.video?.framesPerSecond ?? 0) > 1 || (stats.outboundVideo?.framesPerSecond ?? 0) > 1) {
+      markRemoteFrameFresh();
+    }
+
+    evaluateStreamHealth(stats);
+  }, [evaluateStreamHealth, markRemoteFrameFresh]);
+
+  const connectToDecart = useCallback(async (
+    stream: MediaStream,
+    apiToken: string,
+    initialTransform: TransformState,
+    options?: { isRecovery?: boolean },
+  ): Promise<RealtimeClient | null> => {
+    try {
+      ensureMorphlyCamWindow(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
+
       const { createDecartClient, models } = await import('@decartai/sdk');
-      
-      const client = createDecartClient({
-        apiKey: apiToken
-      });
-      
+      const client = createDecartClient({ apiKey: apiToken });
       const model = models.realtime('lucy_2_rt');
 
       const realtimeClient = await client.realtime.connect(stream, {
         model,
         onRemoteStream: (editedStream: MediaStream) => {
-          const video = outputVideoRef.current;
-          if (!video) return;
-
-          if (video.srcObject) {
-            video.srcObject = null;
+          const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
+          if (!video) {
+            return;
           }
 
-          video.srcObject = editedStream;
-          video.playbackRate = 1.0;
-          (video as any).latencyHint = 'interactive';
+          if (video.srcObject !== editedStream) {
+            video.srcObject = editedStream;
+          }
 
-          video.onloadedmetadata = () => {
-            video.play().catch(() => {});
+          video.playbackRate = 1;
+          video.latencyHint = 'interactive';
+
+          const playRemote = () => {
+            void video.play().catch(() => {});
+            markRemoteFrameFresh();
+            startRemoteFrameMonitor();
           };
 
+          video.onloadedmetadata = playRemote;
+
           if (video.readyState >= 2) {
-            video.play().catch(() => {});
+            playRemote();
           }
+
+          syncMorphlyCamStream(
+            editedStream,
+            options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...',
+          );
         },
         initialState: {
           prompt: {
-            text: prompt,
-            enhance: true
-          }
-        }
+            text: initialTransform.prompt,
+            enhance: initialTransform.enhance,
+          },
+          image: initialTransform.image ?? undefined,
+        },
       });
 
-      realtimeClientRef.current = realtimeClient as any;
-      toast.success('Connected to AI!');
+      cleanupClientSubscriptions();
 
-      try {
-        if (uploadedImage) {
-          const imgResponse = await fetch(uploadedImage);
-          const imgBlob = await imgResponse.blob();
-          await (realtimeClient as any).set({
-            prompt: prompt,
-            enhance: true,
-            image: imgBlob
-          });
-        } else {
-          await (realtimeClient as any).setPrompt(prompt, { enhance: true });
+      const onConnectionChange = (nextState: ConnectionState) => {
+        connectionStateRef.current = nextState;
+        setConnectionState(nextState);
+
+        if (nextState === 'connected' || nextState === 'generating') {
+          clearSoftReconnectTimer();
         }
-      } catch (setError) {
-        console.error('[Decart] Failed to apply initial transformation:', setError);
-      }
 
-      return realtimeClient as any;
-    } catch (error: any) {
-      console.error('[Decart] SDK error:', error);
-      toast.error('Failed to connect to AI');
-      
-      if (outputVideoRef.current) {
-        outputVideoRef.current.srcObject = stream;
-        outputVideoRef.current.play().catch(() => {});
-      }
-      
-      const mockClient: RealtimeClient = {
-        disconnect: () => {},
-        set: async () => {},
-        setPrompt: async () => {}
+        if (nextState === 'reconnecting' && !isFrameStaleRef.current) {
+          isFrameStaleRef.current = true;
+          setIsFrameStale(true);
+        }
       };
-      
-      realtimeClientRef.current = mockClient;
-      return mockClient;
-    }
-  };
 
-  const disconnectFromDecart = () => {
-    if (realtimeClientRef.current) {
-      realtimeClientRef.current.disconnect();
-      realtimeClientRef.current = null;
-    }
-    if (outputVideoRef.current) {
-      outputVideoRef.current.srcObject = null;
-    }
-  };
+      const onStats = (stats: RealtimeStats) => {
+        handleRealtimeStats(stats);
+      };
 
-  const pollSessionStatus = useCallback(async () => {
+      const onError = (error: { message: string }) => {
+        console.error('[Decart] realtime error:', error);
+      };
+
+      realtimeClient.on('connectionChange', onConnectionChange);
+      realtimeClient.on('stats', onStats);
+      realtimeClient.on('error', onError);
+
+      clientSubscriptionsCleanupRef.current = () => {
+        realtimeClient.off('connectionChange', onConnectionChange);
+        realtimeClient.off('stats', onStats);
+        realtimeClient.off('error', onError);
+      };
+
+      realtimeClientRef.current = realtimeClient as RealtimeClient;
+      lastAppliedTransformRef.current = initialTransform;
+      resetHealthCounters();
+      setConnectionState(realtimeClient.getConnectionState?.() ?? 'connecting');
+      setStreamMetrics(createEmptyStreamMetrics());
+      hasRemoteFrameRef.current = false;
+      isFrameStaleRef.current = false;
+      setHasRemoteFrame(false);
+      setIsFrameStale(false);
+      lastRemoteFrameAtRef.current = performance.now();
+
+      if (!options?.isRecovery) {
+        toast.success('Connected to AI!');
+      }
+
+      return realtimeClient as RealtimeClient;
+    } catch (error) {
+      console.error('[Decart] SDK error:', error);
+
+      if (!options?.isRecovery) {
+        toast.error('Failed to connect to AI');
+      }
+
+      return null;
+    }
+  }, [
+    cleanupClientSubscriptions,
+    clearSoftReconnectTimer,
+    ensureMorphlyCamWindow,
+    handleRealtimeStats,
+    markRemoteFrameFresh,
+    resetHealthCounters,
+    syncMorphlyCamStream,
+    startRemoteFrameMonitor,
+  ]);
+
+  const softReconnect = useCallback(async (reason: string) => {
+    if (!isStreamingRef.current || softReconnectInFlightRef.current || !sessionTokenRef.current) {
+      return;
+    }
+
+    softReconnectInFlightRef.current = true;
+
     try {
-      const response = await apiRequest<{ credits: number; secondsUsed: number; creditsUsed: number; remainingCredits?: number; shouldStop: boolean; forceEnd?: boolean }>(`/session-status?userId=${user?.id}`);
-      
-      const latestCredits = response.remainingCredits !== undefined ? response.remainingCredits : response.credits;
-      setCredits(latestCredits);
+      const existingTrack = webcamStreamRef.current?.getVideoTracks()[0];
+      const currentStream = webcamStreamRef.current && existingTrack?.readyState === 'live'
+        ? webcamStreamRef.current
+        : await startWebcam(activeModeRef.current, { forceNewStream: true, silent: true });
 
-      if (response.shouldStop || response.forceEnd) {
-        handleStop();
-        toast.error('Session auto-ended - Insufficient credits');
+      if (!currentStream) {
+        return;
+      }
+
+      disconnectFromDecart({ preserveVideo: true });
+
+      const reconnectedClient = await connectToDecart(
+        currentStream,
+        sessionTokenRef.current,
+        getDesiredTransformState(),
+        { isRecovery: true },
+      );
+
+      if (!reconnectedClient) {
+        throw new Error(`Soft reconnect failed: ${reason}`);
       }
     } catch (error) {
-      console.error('Poll error:', error);
+      console.error('[Decart] Soft reconnect failed:', error);
+    } finally {
+      softReconnectInFlightRef.current = false;
     }
-  }, []);
+  }, [connectToDecart, disconnectFromDecart, getDesiredTransformState, startWebcam]);
 
-  const handleStart = async () => {
-    setIsLoading(true);
+  const handleStop = useCallback(async (options?: { silent?: boolean }) => {
     try {
-      const [startResponse, stream] = await Promise.all([
-        apiRequest<{ allowed: boolean; token?: string; error?: string; credits?: number; maxSeconds?: number }>('/start-session', {
+      if (sessionTokenRef.current) {
+        const response = await apiRequest<{ remainingCredits?: number }>('/end-session', {
           method: 'POST',
-          body: JSON.stringify({ userId: user?.id })
-        }).catch(e => {
-          throw e; // Handled by outer catch
-        }),
-        startWebcam()
-      ]);
-        
-      if (!startResponse.allowed) {
-        toast.error(startResponse.error || 'Insufficient credits');
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
+          body: JSON.stringify({ userId: user?.id }),
+        });
+
+        if (response.remainingCredits !== undefined) {
+          setCredits(response.remainingCredits);
         }
-        setIsLoading(false);
-        return;
-      }
-
-      // Update credits from server response
-      if (startResponse.credits !== undefined) {
-        setCredits(startResponse.credits);
-      }
-        
-      const sessionToken = startResponse.token || '';
-
-      if (!stream) {
-        setIsLoading(false);
-        return;
-      }
-
-      await connectToDecart(stream, sessionToken);
-
-      setIsStreaming(true);
-      setSessionStatus('LIVE');
-
-      try {
-        pollIntervalRef.current = setInterval(pollSessionStatus, POLLING_INTERVAL);
-      } catch {
-        console.warn('Polling not available');
-      }
-      
-    } catch (error) {
-      console.error('Start session error:', error);
-      toast.error('Failed to start session');
-      stopWebcam();
-      disconnectFromDecart();
-    }
-    setIsLoading(false);
-  };
-
-  const handleStop = async () => {
-    try {
-      const response = await apiRequest<{ remainingCredits?: number }>('/end-session', { 
-        method: 'POST',
-        body: JSON.stringify({ userId: user?.id })
-      });
-      
-      // Update credits from server response
-      if (response && response.remainingCredits !== undefined) {
-        setCredits(response.remainingCredits);
       }
     } catch (error) {
       console.error('Stop session error:', error);
@@ -321,200 +1075,569 @@ function Dashboard() {
       pollIntervalRef.current = null;
     }
 
+    sessionTokenRef.current = '';
+    setRuntimeModeCap('hd');
+    resetHealthCounters();
+    clearSoftReconnectTimer();
     disconnectFromDecart();
     stopWebcam();
-    
     setIsStreaming(false);
     setSessionStatus('IDLE');
-    
-    toast.info('Session stopped');
-  };
 
-  const applyTransformation = async (imageUrl: string | null) => {
-    if (!realtimeClientRef.current) return;
-    
+    if (!options?.silent) {
+      toast.info('Session stopped');
+    }
+  }, [
+    clearSoftReconnectTimer,
+    disconnectFromDecart,
+    resetHealthCounters,
+    setCredits,
+    setSessionStatus,
+    stopWebcam,
+    user?.id,
+  ]);
+
+  const pollSessionStatus = useCallback(async () => {
     try {
-      if (imageUrl) {
-        toast.info('Applying image transformation...');
-        const response = await fetch(imageUrl);
-        const blob = await response.blob();
-        await realtimeClientRef.current.set({
-          prompt: prompt,
-          enhance: true,
-          image: blob
-        });
-        toast.success('Image applied to stream!');
-      } else {
-        await realtimeClientRef.current.setPrompt(prompt, { enhance: true });
+      const response = await apiRequest<{
+        credits: number;
+        secondsUsed: number;
+        creditsUsed: number;
+        remainingCredits?: number;
+        shouldStop: boolean;
+        forceEnd?: boolean;
+      }>(`/session-status?userId=${user?.id}`);
+
+      const latestCredits = response.remainingCredits !== undefined
+        ? response.remainingCredits
+        : response.credits;
+      setCredits(latestCredits);
+
+      if (response.shouldStop || response.forceEnd) {
+        await handleStop({ silent: true });
+        toast.error('Session auto-ended - Insufficient credits');
       }
-    } catch (err) {
-      console.error('Failed to apply transformation:', err);
-      toast.error('Failed to update stream with image');
+    } catch (error) {
+      console.error('Poll error:', error);
     }
-  };
+  }, [handleStop, setCredits, user?.id]);
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        const result = reader.result as string;
-        setUploadedImage(result);
-        if (isStreaming) {
-          await applyTransformation(result);
-        } else {
-          toast.success('Image selected. Click Start to begin streaming.');
-        }
+  const enumerateCameras = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter((device) => device.kind === 'videoinput');
+      setCameraDevices(videoDevices);
+
+      if (videoDevices.length > 0 && !selectedCameraId) {
+        const builtinCamera = videoDevices.find((device) =>
+          device.label.toLowerCase().includes('integrated') ||
+          device.label.toLowerCase().includes('built-in') ||
+          device.label.toLowerCase().includes('facetime') ||
+          device.label.toLowerCase().includes('internal'),
+        );
+
+        setSelectedCameraId(builtinCamera?.deviceId || videoDevices[0].deviceId);
+      }
+    } catch (error) {
+      console.error('Failed to enumerate cameras:', error);
+    }
+  }, [selectedCameraId]);
+
+  useEffect(() => () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+
+    if (transformSyncTimerRef.current) {
+      clearTimeout(transformSyncTimerRef.current);
+    }
+
+    clearSoftReconnectTimer();
+    cleanupClientSubscriptions();
+    cancelRemoteFrameMonitor();
+    closeMorphlyCamWindow();
+    realtimeClientRef.current?.disconnect();
+    webcamStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearSoftReconnectTimer, closeMorphlyCamWindow]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isObsMode) {
+        setIsObsMode(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isObsMode]);
+
+  useEffect(() => {
+    enumerateCameras();
+    navigator.mediaDevices.addEventListener('devicechange', enumerateCameras);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', enumerateCameras);
+  }, [enumerateCameras]);
+
+  useEffect(() => {
+    const connection = getNavigatorConnection();
+
+    const updateAdaptiveNetworkMode = () => {
+      const nextDownlink = connection?.downlink ?? null;
+      const recommendedMode = getAdaptiveQualityMode(nextDownlink);
+
+      setDownlinkMbps(nextDownlink);
+      setNetworkModeCap(recommendedMode);
+
+      if (!userSelectedModeRef.current) {
+        setPreferredMode(recommendedMode);
+      }
+    };
+
+    updateAdaptiveNetworkMode();
+
+    if (connection?.addEventListener) {
+      connection.addEventListener('change', updateAdaptiveNetworkMode);
+
+      return () => {
+        connection.removeEventListener?.('change', updateAdaptiveNetworkMode);
       };
-      reader.readAsDataURL(file);
+    }
+
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      hasRemoteFrameRef.current = false;
+      isFrameStaleRef.current = false;
+      setHasRemoteFrame(false);
+      setIsFrameStale(false);
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const currentState = connectionStateRef.current;
+      if (!['connected', 'generating', 'reconnecting'].includes(currentState)) {
+        return;
+      }
+
+      if (performance.now() - lastRemoteFrameAtRef.current > FRAME_STALE_THRESHOLD_MS && !isFrameStaleRef.current) {
+        isFrameStaleRef.current = true;
+        setIsFrameStale(true);
+      }
+    }, 500);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isStreaming]);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      clearSoftReconnectTimer();
+      return;
+    }
+
+    if (connectionState === 'disconnected') {
+      clearSoftReconnectTimer();
+      softReconnectTimerRef.current = setTimeout(() => {
+        void softReconnect('connection-state-disconnected');
+      }, SOFT_RECONNECT_DELAY_MS);
+      return clearSoftReconnectTimer;
+    }
+
+    if (connectionState === 'connected' || connectionState === 'generating' || connectionState === 'connecting') {
+      clearSoftReconnectTimer();
+    }
+
+    return undefined;
+  }, [clearSoftReconnectTimer, connectionState, isStreaming, softReconnect]);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      return;
+    }
+
+    void startWebcam(activeMode, { silent: true }).catch((error) => {
+      console.error('Failed to apply camera profile:', error);
+    });
+  }, [activeMode, isStreaming, startWebcam]);
+
+  useEffect(() => {
+    if (!isStreaming || !realtimeClientRef.current) {
+      return;
+    }
+
+    queueTransformSync({
+      prompt,
+      enhance: activeProfile.enhance,
+      image: referenceImage?.file ?? null,
+      imageSignature: referenceImage?.signature ?? null,
+    });
+  }, [
+    activeProfile.enhance,
+    isStreaming,
+    prompt,
+    queueTransformSync,
+    referenceImage?.file,
+    referenceImage?.signature,
+  ]);
+
+  useEffect(() => {
+    if (!selectedCameraId) {
+      return;
+    }
+
+    if (!previousCameraIdRef.current) {
+      previousCameraIdRef.current = selectedCameraId;
+      return;
+    }
+
+    if (previousCameraIdRef.current === selectedCameraId) {
+      return;
+    }
+
+    previousCameraIdRef.current = selectedCameraId;
+
+    if (!isStreaming) {
+      return;
+    }
+
+    void (async () => {
+      const stream = await startWebcam(activeMode, {
+        forceNewStream: true,
+        silent: true,
+      });
+
+      if (stream) {
+        await softReconnect('camera-switched');
+      }
+    })();
+  }, [activeMode, isStreaming, selectedCameraId, softReconnect, startWebcam]);
+
+  const handleStart = async () => {
+    setIsLoading(true);
+    setConnectionState('connecting');
+    setRuntimeModeCap('hd');
+    resetHealthCounters();
+    ensureMorphlyCamWindow('Connecting Morphly cam...');
+
+    try {
+      const [startResponse, stream] = await Promise.all([
+        apiRequest<{
+          allowed: boolean;
+          token?: string;
+          error?: string;
+          credits?: number;
+          maxSeconds?: number;
+        }>('/start-session', {
+          method: 'POST',
+          body: JSON.stringify({ userId: user?.id }),
+        }),
+        startWebcam(activeMode, { forceNewStream: true }),
+      ]);
+
+      if (!startResponse.allowed) {
+        toast.error(startResponse.error || 'Insufficient credits');
+        stopWebcam();
+        closeMorphlyCamWindow();
+        setIsLoading(false);
+        return;
+      }
+
+      if (startResponse.credits !== undefined) {
+        setCredits(startResponse.credits);
+      }
+
+      const sessionToken = startResponse.token || '';
+
+      if (!stream || !sessionToken) {
+        throw new Error('Missing session token or webcam stream');
+      }
+
+      sessionTokenRef.current = sessionToken;
+
+      const realtimeClient = await connectToDecart(
+        stream,
+        sessionToken,
+        getDesiredTransformState(),
+      );
+
+      if (!realtimeClient) {
+        throw new Error('Decart connection was not established');
+      }
+
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+
+      pollIntervalRef.current = setInterval(pollSessionStatus, POLLING_INTERVAL);
+      setIsStreaming(true);
+      setSessionStatus('LIVE');
+    } catch (error) {
+      console.error('Start session error:', error);
+      toast.error('Failed to start session');
+
+      if (sessionTokenRef.current) {
+        await apiRequest('/end-session', {
+          method: 'POST',
+          body: JSON.stringify({ userId: user?.id }),
+        }).catch((rollbackError) => {
+          console.error('Failed to roll back session start:', rollbackError);
+        });
+      }
+
+      sessionTokenRef.current = '';
+      stopWebcam();
+      disconnectFromDecart();
+      closeMorphlyCamWindow();
+      setIsStreaming(false);
+      setSessionStatus('IDLE');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const getRemainingSeconds = () => {
-    return Math.floor(credits / CREDITS_PER_SECOND);
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    setReferenceImage({
+      file,
+      name: file.name,
+      signature: `${file.name}:${file.size}:${file.lastModified}`,
+    });
+
+    if (isStreaming) {
+      toast.info('Updating reference image...');
+    } else {
+      toast.success('Reference image selected. Click Start to begin streaming.');
+    }
   };
+
+  const handleModeChange = (mode: string) => {
+    if (!mode) {
+      return;
+    }
+
+    userSelectedModeRef.current = true;
+    setPreferredMode(mode as QualityMode);
+  };
+
+  const getRemainingSeconds = () => Math.floor(credits / CREDITS_PER_SECOND);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
+
     if (mins > 0) {
       return `~${mins}m ${secs}s`;
     }
+
     return `~${secs}s`;
   };
 
   return (
-    <div className="w-screen h-screen bg-black flex flex-col font-sans text-white overflow-hidden">
-      {/* Main Content Area */}
-      <main className="flex-1 relative flex items-center justify-center bg-[#000000] sm:mx-0 mx-0 overflow-hidden shadow-inner">
-         <video 
-            id="output"
-            ref={outputVideoRef}
-            autoPlay 
-            playsInline
-            muted
-            className={isObsMode ? "w-full h-full object-cover" : "w-full h-full object-contain"}
-            style={{ 
-              display: isStreaming ? 'block' : 'none', 
-              willChange: 'transform', 
-              transform: 'translateZ(0)',
-              backfaceVisibility: 'hidden',
-              imageRendering: 'auto'
-            }}
-          />
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-black font-sans text-white">
+      <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#000000] shadow-inner">
+        <video
+          id="output"
+          ref={outputVideoRef}
+          autoPlay
+          playsInline
+          muted
+          onLoadedData={markRemoteFrameFresh}
+          onPlaying={markRemoteFrameFresh}
+          className={`transition-[opacity,filter] duration-200 ${
+            isObsMode ? 'h-full w-full object-cover' : 'h-full w-full object-contain'
+          }`}
+          style={{
+            display: isStreaming ? 'block' : 'none',
+            opacity: hasRemoteFrame ? 1 : 0.85,
+            filter: isFrameStale ? 'brightness(0.9) saturate(0.92)' : 'none',
+            willChange: 'transform, opacity',
+            transform: 'translateZ(0)',
+            backfaceVisibility: 'hidden',
+            imageRendering: 'auto',
+          }}
+        />
 
-         {!isStreaming && (
-            <div className="flex flex-col items-center justify-center text-[#3F3F46] gap-5">
-               <Monitor className="w-[60px] h-[60px] stroke-[1]" />
-               <span className="text-xs font-semibold tracking-[0.2em] text-[#4A4A4A]">CAMERA FEED OFFLINE</span>
+        {!isStreaming && (
+          <div className="flex flex-col items-center justify-center gap-5 text-[#3F3F46]">
+            <Monitor className="h-[60px] w-[60px] stroke-[1]" />
+            <span className="text-xs font-semibold tracking-[0.2em] text-[#4A4A4A]">CAMERA FEED OFFLINE</span>
+          </div>
+        )}
+
+        <input
+          type="file"
+          title="Upload image"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          accept="image/*"
+          className="hidden"
+          id="image-upload"
+        />
+
+        {isStreaming && (
+          <div className="pointer-events-none absolute left-5 top-5 z-20 w-[min(360px,calc(100%-2.5rem))] rounded-2xl border border-white/10 bg-black/45 p-4 shadow-2xl shadow-black/30 backdrop-blur-md">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-white/55">Realtime Status</p>
+                <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs ${streamStatusTone}`}>
+                  {(isLoading || isSyncingTransform || connectionState === 'reconnecting' || isFrameStale) && (
+                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                  )}
+                  <span>{streamStatusLabel}</span>
+                </div>
+                <p className="text-xs text-white/70">{performanceHint}</p>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-right">
+                <p className="text-[10px] uppercase tracking-[0.24em] text-white/45">Mode</p>
+                <p className="text-sm font-semibold text-white">{activeProfile.label}</p>
+              </div>
             </div>
-         )}
-         
-         <input
-            type="file"
-            title="Upload image"
-            ref={fileInputRef}
-            onChange={handleFileChange}
-            accept="image/*"
-            className="hidden"
-            id="image-upload"
-          />
 
-          <button 
-            title="Settings" 
-            onClick={() => navigate('/settings')}
-            className="absolute top-6 right-6 p-2.5 bg-black/40 backdrop-blur-md rounded-full text-[#71717A] hover:text-white transition-all hover:scale-110 z-20 border border-white/5"
-          >
-            <Settings className="w-5 h-5" />
-          </button>
+            <Progress value={streamProgress} className="mt-4 h-1.5 bg-white/10 [&_[data-slot=progress-indicator]]:bg-white" />
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-white/70 sm:grid-cols-4">
+              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
+                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Resolution</p>
+                <p className="mt-1 font-semibold text-white">{activeResolutionLabel}</p>
+              </div>
+              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
+                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Frame Rate</p>
+                <p className="mt-1 font-semibold text-white">{activeFpsLabel}</p>
+              </div>
+              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
+                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Network</p>
+                <p className="mt-1 font-semibold text-white">{activeNetworkLabel}</p>
+              </div>
+              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
+                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">RTT</p>
+                <p className="mt-1 font-semibold text-white">
+                  {streamMetrics.rttMs !== null ? `${streamMetrics.rttMs} ms` : '--'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isStreaming && (isLoading || isSyncingTransform || connectionState === 'reconnecting' || isFrameStale || !hasRemoteFrame) && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-8 z-20 flex justify-center px-6">
+            <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-xs text-white/90 shadow-xl shadow-black/30 backdrop-blur-md">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              <span>
+                {isSyncingTransform
+                  ? 'Applying prompt/image changes without reconnecting...'
+                  : connectionState === 'reconnecting' || isFrameStale
+                    ? 'Holding the last frame while the stream recovers...'
+                    : 'Preparing realtime output...'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <button
+          title="Settings"
+          onClick={() => navigate('/settings')}
+          className="absolute right-6 top-6 z-20 rounded-full border border-white/5 bg-black/40 p-2.5 text-[#71717A] backdrop-blur-md transition-all hover:scale-110 hover:text-white"
+        >
+          <Settings className="h-5 w-5" />
+        </button>
       </main>
 
-      {/* Bottom Bar */}
-      <footer className="h-[52px] bg-[#0A0A0A] flex items-stretch justify-between px-0 flex-shrink-0 relative z-10">
-         <div className="flex items-center gap-1.5 px-4">
-            <button 
-              onClick={handleStart}
-              disabled={isStreaming || isLoading}
-              className={`h-[34px] px-3.5 rounded-sm flex items-center gap-2 border transition-all ${
-                isStreaming 
-                  ? 'bg-[#122A1F] border-[#133C29] text-[#22C55E] opacity-50' 
-                  : 'bg-[#122A1F] border-[#133C29] text-[#22C55E] hover:bg-[#153828]'
-              }`}
+      <footer className="relative z-10 flex flex-col gap-2 border-t border-white/5 bg-[#0A0A0A] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleStart}
+            disabled={isStreaming || isLoading}
+            className={`flex h-[34px] items-center gap-2 rounded-sm border px-3.5 transition-all ${
+              isStreaming
+                ? 'border-[#133C29] bg-[#122A1F] text-[#22C55E] opacity-50'
+                : 'border-[#133C29] bg-[#122A1F] text-[#22C55E] hover:bg-[#153828]'
+            }`}
+          >
+            <Play className="h-3.5 w-3.5 fill-current" />
+            <span className="text-[13px] font-semibold tracking-wide">{isLoading ? 'STARTING' : 'Start'}</span>
+          </button>
+
+          <button
+            onClick={() => void handleStop()}
+            disabled={!isStreaming}
+            className="flex h-[34px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3.5 text-[#737373] transition-all hover:text-[#A3A3A3]"
+          >
+            <Square className="h-3.5 w-3.5 fill-current opacity-70" />
+            <span className="text-[13px] font-medium">Stop</span>
+          </button>
+
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex h-[34px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3.5 text-[#737373] transition-all hover:text-[#A3A3A3]"
+          >
+            <Upload className="h-3.5 w-3.5 opacity-80" />
+            <span className="text-[13px] font-medium">{referenceImage ? 'Change Image' : 'Upload Image'}</span>
+          </button>
+
+          <select
+            value={preferredMode}
+            onChange={(event) => handleModeChange(event.target.value)}
+            title="Select performance mode"
+            aria-label="Select performance mode"
+            className="h-[30px] min-w-[128px] rounded-sm border border-[#2A2A2A] bg-[#1A1A1A] px-2 text-[11px] font-medium text-[#D4D4D8] transition-colors focus:border-[#3A3A3A] focus:outline-none"
+          >
+            <option value="fast">Fast Mode</option>
+            <option value="balanced">Balanced Mode</option>
+            <option value="hd">HD Mode</option>
+          </select>
+
+          {cameraDevices.length > 1 && (
+            <select
+              value={selectedCameraId}
+              onChange={(event) => setSelectedCameraId(event.target.value)}
+              title="Select camera"
+              className="h-[34px] rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[12px] text-[#A3A3A3] transition-colors focus:border-[#3A3A3A] focus:outline-none"
             >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span className="font-semibold text-[13px] tracking-wide">{isLoading ? 'STARTING' : 'Start'}</span>
-            </button>
+              {cameraDevices.map((device, index) => (
+                <option key={device.deviceId} value={device.deviceId}>
+                  {device.label || `Camera ${index + 1}`}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
 
-            <button 
-              onClick={handleStop}
-              disabled={!isStreaming}
-              className={`h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all`}
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <div className="flex items-center gap-3 rounded-xl border border-[#222222] bg-[#111111] px-3 py-2">
+            <div className="flex flex-col gap-[2px]">
+              <span className="text-[8px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
+              <div className="flex items-center gap-1.5">
+                <Coins className="h-3.5 w-3.5 text-blue-400" />
+                <span className="text-xs font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/subscription')}
+              className="ml-1 flex h-[28px] items-center gap-1 rounded-sm bg-[#FFFFFF] px-2.5 text-[11px] font-bold text-[#000000] shadow-sm transition-colors hover:bg-[#E5E5E5]"
             >
-              <Square className="w-3.5 h-3.5 fill-current opacity-70" />
-              <span className="font-medium text-[13px]">Stop</span>
+              <Plus className="h-3.5 w-3.5 stroke-[3]" />
+              Buy Credits
             </button>
+          </div>
 
-             <button 
-               onClick={() => fileInputRef.current?.click()}
-               className="h-[34px] px-3.5 flex items-center gap-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#737373] hover:text-[#A3A3A3] transition-all"
-             >
-               <Upload className="w-3.5 h-3.5 opacity-80" />
-               <span className="font-medium text-[13px]">{uploadedImage ? 'Change Image' : 'Upload Image'}</span>
-             </button>
-
-            {cameraDevices.length > 1 && (
-              <select
-                value={selectedCameraId}
-                onChange={(e) => setSelectedCameraId(e.target.value)}
-                title="Select camera"
-                className="h-[34px] px-2 rounded-sm border bg-[#1E1E1E] border-[#2A2A2A] text-[#A3A3A3] text-[12px] ml-1 cursor-pointer focus:outline-none focus:border-[#3A3A3A]"
-              >
-                {cameraDevices.map((device) => (
-                  <option key={device.deviceId} value={device.deviceId}>
-                    {device.label || `Camera ${cameraDevices.indexOf(device) + 1}`}
-                  </option>
-                ))}
-              </select>
-            )}
-         </div>
-
-         <div className="flex items-center h-full">
-            <div className="flex items-center h-full gap-2 px-5">
-               <Zap className="w-3.5 h-3.5 text-[#F59E0B] fill-[#F59E0B]" />
-               <div className="flex flex-col justify-center gap-[2px]">
-                  <span className="text-[8px] text-[#A1A1AA] font-bold tracking-widest uppercase">Usage Rate</span>
-                  <div className="flex items-baseline gap-1">
-                     <span className="text-xs font-bold text-[#E5E5E5] uppercase">2 credits</span>
-                     <span className="text-[9px] text-[#737373] font-medium">/sec</span>
-                  </div>
-               </div>
+          <div className="flex min-w-[140px] items-center gap-3 rounded-xl border border-[#0F284B] bg-[#0E1524] px-3 py-2">
+            <Clock className="h-4 w-4 stroke-[2.5] text-[#3B82F6]" />
+            <div className="flex flex-col gap-[2px]">
+              <span className="text-[8px] font-bold uppercase tracking-widest text-[#60A5FA]">Remaining</span>
+              <span className="text-xs font-bold text-[#E5E5E5]">{formatTime(getRemainingSeconds())}</span>
+              <span className="text-[10px] text-[#6B7280]">{streamMetrics.limitation === 'none' ? 'No throttling' : `${streamMetrics.limitation} limited`}</span>
             </div>
-            
-            <div className="flex items-center h-full gap-3 px-5 border-l border-[#222222]">
-               <div className="flex flex-col justify-center gap-[2px]">
-                  <span className="text-[8px] text-[#A1A1AA] font-bold tracking-widest uppercase">Credits</span>
-                  <div className="flex items-center gap-1.5">
-                    <Coins className="w-3.5 h-3.5 text-blue-400" />
-                    <span className="text-xs font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
-                  </div>
-               </div>
-               <button 
-                  onClick={() => navigate('/subscription')}
-                  className="h-[28px] px-2.5 bg-[#FFFFFF] text-[#000000] hover:bg-[#E5E5E5] transition-colors rounded-sm text-[11px] font-bold flex items-center gap-1 shadow-sm ml-1"
-               >
-                  <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                  Buy Credits
-               </button>
-            </div>
-
-            <div className="flex items-center h-full gap-3 px-5 border-l border-[#0F284B] bg-[#0E1524] min-w-[140px]">
-               <Clock className="w-4 h-4 text-[#3B82F6] stroke-[2.5]" />
-               <div className="flex flex-col justify-center gap-[2px]">
-                  <span className="text-[8px] text-[#60A5FA] font-bold tracking-widest uppercase">Remaining</span>
-                  <span className="text-xs font-bold text-[#E5E5E5]">{formatTime(getRemainingSeconds())}</span>
-               </div>
-            </div>
-         </div>
+          </div>
+        </div>
       </footer>
     </div>
   );
