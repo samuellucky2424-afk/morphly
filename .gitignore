@@ -21,3 +21,4 @@ release/
 # Electron build artifacts
 app/release/
 .push-fix/app/release/
+app/.cache/

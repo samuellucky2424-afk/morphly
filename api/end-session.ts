@@ -11,7 +11,12 @@ async function closeActiveSession(userId, activeSession) {
     const actualCredits = walletData?.credits || 0;
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const creditsUsed = elapsedSeconds * CREDITS_PER_SECOND;
+
+    // Cap to max_seconds stored at session creation to prevent stale sessions
+    // from overcharging when the app was closed without ending the session.
+    const maxSeconds = activeSession.max_seconds ?? Math.floor(actualCredits / CREDITS_PER_SECOND);
+    const billableSeconds = Math.min(elapsedSeconds, maxSeconds);
+    const creditsUsed = billableSeconds * CREDITS_PER_SECOND;
     
     const finalCreditsUsed = Math.min(actualCredits, creditsUsed);
     const newCredits = Math.max(0, actualCredits - finalCreditsUsed);
@@ -21,7 +26,7 @@ async function closeActiveSession(userId, activeSession) {
       .update({
         end_time: new Date(), 
         credits_used: finalCreditsUsed, 
-        seconds_used: elapsedSeconds, 
+        seconds_used: billableSeconds, 
         status: 'ended'
       }).eq('id', activeSession.id).eq('status', 'active');
 

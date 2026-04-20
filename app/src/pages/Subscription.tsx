@@ -10,8 +10,34 @@ import { apiFetch } from '@/lib/api-client';
 
 declare global {
   interface Window {
-    PaystackPop: any;
+    PaystackPop?: any;
   }
+}
+
+const PAYSTACK_SCRIPT_ID = 'paystack-inline-js';
+
+function loadPaystackScript(): Promise<void> {
+  if (window.PaystackPop) {
+    return Promise.resolve();
+  }
+
+  const existingScript = document.getElementById(PAYSTACK_SCRIPT_ID) as HTMLScriptElement | null;
+  if (existingScript) {
+    return new Promise((resolve, reject) => {
+      existingScript.addEventListener('load', () => resolve(), { once: true });
+      existingScript.addEventListener('error', () => reject(new Error('Failed to load Paystack SDK')), { once: true });
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.id = PAYSTACK_SCRIPT_ID;
+    script.src = 'https://js.paystack.co/v1/inline.js';
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Paystack SDK'));
+    document.body.appendChild(script);
+  });
 }
 
 const CREDIT_PLANS = [
@@ -43,6 +69,18 @@ function Subscription() {
   const [isLoadingRate, setIsLoadingRate] = useState(true);
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
+  const [isPaystackReady, setIsPaystackReady] = useState(false);
+
+  useEffect(() => {
+    void loadPaystackScript()
+      .then(() => {
+        setIsPaystackReady(true);
+      })
+      .catch((error) => {
+        console.error(error);
+        setIsPaystackReady(false);
+      });
+  }, []);
 
   useEffect(() => {
     const fetchRate = async () => {
@@ -75,7 +113,7 @@ function Subscription() {
     setSelectedPlan(plan);
   };
 
-  const handleProceedToPayment = () => {
+  const handleProceedToPayment = async () => {
     if (!selectedPlan) return;
 
     if (!user) {
@@ -85,8 +123,14 @@ function Subscription() {
     }
 
     if (!window.PaystackPop) {
-      toast.error('Payment gateway not loaded. Please refresh the page.');
-      return;
+      try {
+        await loadPaystackScript();
+        setIsPaystackReady(true);
+      } catch (error) {
+        console.error(error);
+        toast.error('Payment gateway not loaded. Check your network and try again.');
+        return;
+      }
     }
 
     const paystackPublicKey = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || 'pk_test_mock_public';
@@ -241,7 +285,7 @@ function Subscription() {
             <li>- Credits never expire</li>
           </ul>
         </div>
-
+            disabled={!selectedPlan || isProcessing || !isPaystackReady}
         <div className="text-center">
           <p className="text-sm text-[#71717a] mb-4">All purchases are one-time. No subscriptions or hidden fees.</p>
           {hasLiveRate && (
@@ -251,7 +295,7 @@ function Subscription() {
           )}
           {isLoadingRate && (
             <p className="text-xs text-[#52525b]">
-              Fetching live exchange rate...
+                {isPaystackReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
             </p>
           )}
           {isFallbackRate && (

@@ -11,7 +11,13 @@ async function closeActiveSession(userId, activeSession) {
     const actualCredits = walletData?.credits || 0;
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const creditsUsed = elapsedSeconds * CREDITS_PER_SECOND;
+
+    // Cap elapsed time to the max_seconds stored when the session was created.
+    // This prevents stale/orphaned sessions (app crash, sleep, force-close) from
+    // draining all credits when the user logs back in.
+    const maxSeconds = activeSession.max_seconds ?? Math.floor(actualCredits / CREDITS_PER_SECOND);
+    const billableSeconds = Math.min(elapsedSeconds, maxSeconds);
+    const creditsUsed = billableSeconds * CREDITS_PER_SECOND;
     
     const finalCreditsUsed = Math.min(actualCredits, creditsUsed);
     const newCredits = Math.max(0, actualCredits - finalCreditsUsed);
@@ -21,7 +27,7 @@ async function closeActiveSession(userId, activeSession) {
       .update({
         end_time: new Date(),
         credits_used: finalCreditsUsed,
-        seconds_used: elapsedSeconds,
+        seconds_used: billableSeconds,
         status: 'ended'
       })
       .eq('id', activeSession.id).eq('status', 'active');
@@ -86,7 +92,8 @@ export default async function handler(req, res) {
         status: 'active', 
         start_time: new Date(), 
         credits_used: 0, 
-        seconds_used: 0
+        seconds_used: 0,
+        max_seconds: maxSeconds
       }).select('id').single();
 
     if (sessionError) return res.status(500).json({ allowed: false, error: 'Failed to create session' });
