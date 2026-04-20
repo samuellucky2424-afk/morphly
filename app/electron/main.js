@@ -13,6 +13,8 @@ const MORPHLY_CAM_WINDOW_NAME = 'Morphly cam';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 
+app.disableHardwareAcceleration();
+
 let mainWindow = null;
 let desktopUpdater = null;
 
@@ -48,11 +50,14 @@ function createMorphlyCamWindowOptions() {
     minWidth: 360,
     minHeight: 220,
     backgroundColor: '#000000',
+    transparent: false,
     autoHideMenuBar: true,
-    alwaysOnTop: true,
+    alwaysOnTop: false,
     fullscreenable: false,
     parent: mainWindow ?? undefined,
     webPreferences: {
+      offscreen: false,
+      backgroundThrottling: false,
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js')
@@ -66,7 +71,6 @@ function keepWindowVisibleOnTop(window) {
   }
 
   window.setMenuBarVisibility(false);
-  window.setAlwaysOnTop(true);
 
   if (typeof window.moveTop === 'function') {
     window.moveTop();
@@ -76,6 +80,7 @@ function keepWindowVisibleOnTop(window) {
 function configureMorphlyCamPopup(window) {
   keepWindowVisibleOnTop(window);
   window.setTitle(MORPHLY_CAM_WINDOW_NAME);
+  window.webContents.setFrameRate(30);
 
   window.on('show', () => {
     keepWindowVisibleOnTop(window);
@@ -182,11 +187,6 @@ function registerUpdaterHandlers() {
     return desktopUpdater.openReleasePage('ipc', true);
   });
 }
-
-app.commandLine.appendSwitch('enable-gpu-rasterization');
-app.commandLine.appendSwitch('enable-zero-copy');
-app.commandLine.appendSwitch('ignore-gpu-blocklist');
-app.commandLine.appendSwitch('disable-software-rasterizer');
 
 app.whenReady().then(async () => {
   loadEnvironmentVariables();

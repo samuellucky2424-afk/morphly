@@ -265,14 +265,14 @@ function Settings() {
 
         <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Streaming / OBS Setup</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Learn how to stream Morphly to OBS, Zoom, WhatsApp & more</CardDescription>
+            <CardTitle className="text-lg font-semibold text-white tracking-tight">Streaming / Capture Setup</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">Learn how to send Morphly into SplitCam, OBS, Zoom, WhatsApp & more</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">OBS Streaming Guide</Label>
-                <p className="text-xs text-[#71717a]">Step-by-step instructions for connecting Morphly to OBS Studio and video call apps</p>
+                <Label className="text-sm font-medium text-white">SplitCam / OBS Guide</Label>
+                <p className="text-xs text-[#71717a]">Step-by-step instructions for capturing the Morphly feed and routing it into video apps</p>
               </div>
               <Button 
                 onClick={() => setIsGuideModalOpen(true)}

@@ -15,7 +15,6 @@ import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetch } from '@/lib/api-client';
-import { Progress } from '@/components/ui/progress';
 import {
   QUALITY_MODE_PROFILES,
   buildVideoInputConstraints,
@@ -153,40 +152,6 @@ function getNavigatorConnection(): NetworkInformationLike | null {
   return nav.connection ?? nav.mozConnection ?? nav.webkitConnection ?? null;
 }
 
-function getStreamProgress(
-  isLoading: boolean,
-  isSyncingTransform: boolean,
-  hasRemoteFrame: boolean,
-  isFrameStale: boolean,
-  connectionState: ConnectionState,
-): number {
-  if (!hasRemoteFrame && (isLoading || connectionState === 'connecting')) {
-    return 28;
-  }
-
-  if (connectionState === 'connecting') {
-    return 46;
-  }
-
-  if (connectionState === 'connected') {
-    return 62;
-  }
-
-  if (connectionState === 'reconnecting' || isFrameStale) {
-    return 54;
-  }
-
-  if (isSyncingTransform) {
-    return 82;
-  }
-
-  if (connectionState === 'generating') {
-    return 100;
-  }
-
-  return 0;
-}
-
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await apiFetch(endpoint, {
     ...options,
@@ -210,16 +175,13 @@ function Dashboard() {
   const navigate = useNavigate();
 
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isObsMode, setIsObsMode] = useState(false);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [prompt] = useState(DEFAULT_PROMPT);
   const [preferredMode, setPreferredMode] = useState<QualityMode>('balanced');
-  const [networkModeCap, setNetworkModeCap] = useState<QualityMode>('balanced');
   const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
-  const [downlinkMbps, setDownlinkMbps] = useState<number | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [isSyncingTransform, setIsSyncingTransform] = useState(false);
   const [hasRemoteFrame, setHasRemoteFrame] = useState(false);
@@ -248,7 +210,9 @@ function Dashboard() {
   const morphlyCamWindowRef = useRef<Window | null>(null);
   const morphlyCamVideoRef = useRef<HTMLVideoElement | null>(null);
   const morphlyCamStatusRef = useRef<HTMLDivElement | null>(null);
+  const morphlyCamPlaceholderRef = useRef<HTMLDivElement | null>(null);
   const morphlyCamPopupWarnedRef = useRef(false);
+  const morphlyCamWindowEnabledRef = useRef(false);
   const latestRemoteStreamRef = useRef<MediaStream | null>(null);
 
   const promptRef = useRef(prompt);
@@ -262,46 +226,6 @@ function Dashboard() {
 
   const activeMode = clampQualityMode(preferredMode, runtimeModeCap);
   const activeProfile = QUALITY_MODE_PROFILES[activeMode];
-  const streamProgress = getStreamProgress(
-    isLoading,
-    isSyncingTransform,
-    hasRemoteFrame,
-    isFrameStale,
-    connectionState,
-  );
-
-  const streamStatusLabel = !isStreaming
-    ? 'Camera Feed Offline'
-    : isLoading || (!hasRemoteFrame && connectionState === 'connecting')
-      ? 'Starting stream'
-      : isSyncingTransform
-        ? 'Updating style'
-        : connectionState === 'reconnecting' || isFrameStale
-          ? 'Recovering stream'
-          : connectionState === 'connected'
-            ? 'Connected'
-            : connectionState === 'generating'
-              ? 'Live'
-              : 'Connecting';
-  const streamStatusTone =
-    connectionState === 'generating' && !isFrameStale
-      ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200'
-      : connectionState === 'reconnecting' || isFrameStale
-        ? 'border-amber-400/20 bg-amber-500/10 text-amber-100'
-        : 'border-white/10 bg-white/5 text-white';
-
-  const activeResolutionLabel =
-    streamMetrics.frameWidth > 0 && streamMetrics.frameHeight > 0
-      ? `${streamMetrics.frameWidth}x${streamMetrics.frameHeight}`
-      : `${activeProfile.width}x${activeProfile.height}`;
-  const activeFpsLabel = streamMetrics.fps > 0 ? `${streamMetrics.fps} FPS` : `${activeProfile.targetFps} FPS`;
-  const activeNetworkLabel = downlinkMbps ? `${downlinkMbps.toFixed(1)} Mbps` : 'Adaptive';
-  const networkRecommendedLabel = QUALITY_MODE_PROFILES[networkModeCap].label;
-  const performanceHint = userSelectedModeRef.current
-    ? preferredMode === networkModeCap
-      ? `${activeProfile.label} selected manually`
-      : `${QUALITY_MODE_PROFILES[preferredMode].label} selected manually, network suggests ${networkRecommendedLabel}`
-    : `${activeProfile.label} selected automatically from network conditions`;
 
   useEffect(() => {
     promptRef.current = prompt;
@@ -339,6 +263,38 @@ function Dashboard() {
     morphlyCamWindowRef.current = null;
     morphlyCamVideoRef.current = null;
     morphlyCamStatusRef.current = null;
+    morphlyCamPlaceholderRef.current = null;
+    morphlyCamWindowEnabledRef.current = false;
+  }, []);
+
+  const updateMorphlyCamPlaceholder = useCallback((message: string | null) => {
+    const placeholder = morphlyCamPlaceholderRef.current;
+
+    if (!placeholder) {
+      return;
+    }
+
+    if (!message) {
+      placeholder.style.opacity = '0';
+      placeholder.style.pointerEvents = 'none';
+      return;
+    }
+
+    placeholder.textContent = message;
+    placeholder.style.opacity = '1';
+    placeholder.style.pointerEvents = 'auto';
+  }, []);
+
+  const getMorphlyCamGuideMessage = useCallback((hasLiveVideo: boolean) => {
+    if (hasLiveVideo) {
+      return 'Capture this window in SplitCam or OBS. If you need a webcam device, route it through SplitCam or OBS Virtual Camera.';
+    }
+
+    if (isStreamingRef.current) {
+      return 'Waiting for Morphly video. Keep this window selected in SplitCam or OBS Window Capture.';
+    }
+
+    return 'Start Morphly first, then capture this window in SplitCam or OBS. This window is not a standalone webcam device.';
   }, []);
 
   const updateMorphlyCamStatus = useCallback((message: string | null) => {
@@ -399,6 +355,24 @@ function Dashboard() {
               background: #000;
             }
 
+            #morphly-cam-placeholder {
+              position: absolute;
+              inset: 0;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              padding: 24px;
+              text-align: center;
+              color: #f4f4f5;
+              background:
+                radial-gradient(circle at top, rgba(59, 130, 246, 0.16), transparent 52%),
+                linear-gradient(180deg, rgba(10, 10, 10, 0.82), rgba(0, 0, 0, 0.92));
+              font-size: 14px;
+              line-height: 1.7;
+              letter-spacing: 0.01em;
+              transition: opacity 180ms ease;
+            }
+
             #morphly-cam-status {
               position: absolute;
               left: 50%;
@@ -419,6 +393,9 @@ function Dashboard() {
         <body>
           <div id="morphly-cam-root">
             <video id="morphly-cam-output" autoplay playsinline muted></video>
+            <div id="morphly-cam-placeholder">
+              Start Morphly first, then capture this window in SplitCam or OBS. This window is not a standalone webcam device.
+            </div>
             <div id="morphly-cam-status">Connecting Morphly cam...</div>
           </div>
         </body>
@@ -429,17 +406,21 @@ function Dashboard() {
 
     morphlyCamVideoRef.current = doc.getElementById('morphly-cam-output') as HTMLVideoElement | null;
     morphlyCamStatusRef.current = doc.getElementById('morphly-cam-status') as HTMLDivElement | null;
+    morphlyCamPlaceholderRef.current = doc.getElementById('morphly-cam-placeholder') as HTMLDivElement | null;
 
     if (latestRemoteStreamRef.current && morphlyCamVideoRef.current) {
       morphlyCamVideoRef.current.srcObject = latestRemoteStreamRef.current;
       void morphlyCamVideoRef.current.play().catch(() => {});
       updateMorphlyCamStatus(null);
+      updateMorphlyCamPlaceholder(null);
+    } else {
+      updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
     }
 
     popup.onbeforeunload = () => {
       resetMorphlyCamRefs();
     };
-  }, [resetMorphlyCamRefs, updateMorphlyCamStatus]);
+  }, [getMorphlyCamGuideMessage, resetMorphlyCamRefs, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const ensureMorphlyCamWindow = useCallback((statusMessage: string) => {
     if (typeof window === 'undefined') {
@@ -481,11 +462,19 @@ function Dashboard() {
     popup.document.title = 'Morphly cam';
     updateMorphlyCamStatus(statusMessage);
 
+    if (!latestRemoteStreamRef.current) {
+      updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
+    }
+
     return popup;
-  }, [renderMorphlyCamWindowShell, updateMorphlyCamStatus]);
+  }, [getMorphlyCamGuideMessage, renderMorphlyCamWindowShell, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const syncMorphlyCamStream = useCallback((stream: MediaStream, statusMessage?: string | null) => {
     latestRemoteStreamRef.current = stream;
+
+    if (!morphlyCamWindowEnabledRef.current) {
+      return;
+    }
 
     const popup = ensureMorphlyCamWindow(statusMessage ?? 'Preparing Morphly cam...');
     if (!popup) {
@@ -505,16 +494,20 @@ function Dashboard() {
     popupVideo.onloadedmetadata = () => {
       void popupVideo.play().catch(() => {});
       updateMorphlyCamStatus(null);
+      updateMorphlyCamPlaceholder(null);
     };
 
     if (popupVideo.readyState >= 2) {
       void popupVideo.play().catch(() => {});
       updateMorphlyCamStatus(null);
+      updateMorphlyCamPlaceholder(null);
     }
-  }, [ensureMorphlyCamWindow, updateMorphlyCamStatus]);
+  }, [ensureMorphlyCamWindow, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
-  const closeMorphlyCamWindow = useCallback(() => {
-    latestRemoteStreamRef.current = null;
+  const closeMorphlyCamWindow = useCallback((options?: { clearStream?: boolean }) => {
+    if (options?.clearStream) {
+      latestRemoteStreamRef.current = null;
+    }
 
     if (morphlyCamVideoRef.current) {
       morphlyCamVideoRef.current.srcObject = null;
@@ -901,7 +894,10 @@ function Dashboard() {
     options?: { isRecovery?: boolean },
   ): Promise<RealtimeClient | null> => {
     try {
-      ensureMorphlyCamWindow(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
+      if (morphlyCamWindowEnabledRef.current && morphlyCamWindowRef.current && !morphlyCamWindowRef.current.closed) {
+        updateMorphlyCamStatus(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
+        updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
+      }
 
       const { createDecartClient, models } = await import('@decartai/sdk');
       const client = createDecartClient({ apiKey: apiToken });
@@ -1010,12 +1006,14 @@ function Dashboard() {
   }, [
     cleanupClientSubscriptions,
     clearSoftReconnectTimer,
-    ensureMorphlyCamWindow,
+    getMorphlyCamGuideMessage,
     handleRealtimeStats,
     markRemoteFrameFresh,
     resetHealthCounters,
     syncMorphlyCamStream,
     startRemoteFrameMonitor,
+    updateMorphlyCamPlaceholder,
+    updateMorphlyCamStatus,
   ]);
 
   const softReconnect = useCallback(async (reason: string) => {
@@ -1155,21 +1153,10 @@ function Dashboard() {
     clearSoftReconnectTimer();
     cleanupClientSubscriptions();
     cancelRemoteFrameMonitor();
-    closeMorphlyCamWindow();
+    closeMorphlyCamWindow({ clearStream: true });
     realtimeClientRef.current?.disconnect();
     webcamStreamRef.current?.getTracks().forEach((track) => track.stop());
   }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearSoftReconnectTimer, closeMorphlyCamWindow]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && isObsMode) {
-        setIsObsMode(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isObsMode]);
 
   useEffect(() => {
     enumerateCameras();
@@ -1183,9 +1170,6 @@ function Dashboard() {
     const updateAdaptiveNetworkMode = () => {
       const nextDownlink = connection?.downlink ?? null;
       const recommendedMode = getAdaptiveQualityMode(nextDownlink);
-
-      setDownlinkMbps(nextDownlink);
-      setNetworkModeCap(recommendedMode);
 
       if (!userSelectedModeRef.current) {
         setPreferredMode(recommendedMode);
@@ -1319,7 +1303,6 @@ function Dashboard() {
     setConnectionState('connecting');
     setRuntimeModeCap('hd');
     resetHealthCounters();
-    ensureMorphlyCamWindow('Connecting Morphly cam...');
 
     try {
       const [startResponse, stream] = await Promise.all([
@@ -1339,7 +1322,7 @@ function Dashboard() {
       if (!startResponse.allowed) {
         toast.error(startResponse.error || 'Insufficient credits');
         stopWebcam();
-        closeMorphlyCamWindow();
+        closeMorphlyCamWindow({ clearStream: true });
         setIsLoading(false);
         return;
       }
@@ -1389,7 +1372,7 @@ function Dashboard() {
       sessionTokenRef.current = '';
       stopWebcam();
       disconnectFromDecart();
-      closeMorphlyCamWindow();
+      closeMorphlyCamWindow({ clearStream: true });
       setIsStreaming(false);
       setSessionStatus('IDLE');
     } finally {
@@ -1451,9 +1434,7 @@ function Dashboard() {
           muted
           onLoadedData={markRemoteFrameFresh}
           onPlaying={markRemoteFrameFresh}
-          className={`transition-[opacity,filter] duration-200 ${
-            isObsMode ? 'h-full w-full object-cover' : 'h-full w-full object-contain'
-          }`}
+          className="h-full w-full object-cover transition-[opacity,filter] duration-200"
           style={{
             display: isStreaming ? 'block' : 'none',
             opacity: hasRemoteFrame ? 1 : 0.85,
@@ -1481,51 +1462,6 @@ function Dashboard() {
           className="hidden"
           id="image-upload"
         />
-
-        {isStreaming && (
-          <div className="pointer-events-none absolute left-5 top-5 z-20 w-[min(360px,calc(100%-2.5rem))] rounded-2xl border border-white/10 bg-black/45 p-4 shadow-2xl shadow-black/30 backdrop-blur-md">
-            <div className="flex items-start justify-between gap-3">
-              <div className="space-y-1">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-white/55">Realtime Status</p>
-                <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs ${streamStatusTone}`}>
-                  {(isLoading || isSyncingTransform || connectionState === 'reconnecting' || isFrameStale) && (
-                    <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                  )}
-                  <span>{streamStatusLabel}</span>
-                </div>
-                <p className="text-xs text-white/70">{performanceHint}</p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-right">
-                <p className="text-[10px] uppercase tracking-[0.24em] text-white/45">Mode</p>
-                <p className="text-sm font-semibold text-white">{activeProfile.label}</p>
-              </div>
-            </div>
-
-            <Progress value={streamProgress} className="mt-4 h-1.5 bg-white/10 [&_[data-slot=progress-indicator]]:bg-white" />
-
-            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-white/70 sm:grid-cols-4">
-              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Resolution</p>
-                <p className="mt-1 font-semibold text-white">{activeResolutionLabel}</p>
-              </div>
-              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Frame Rate</p>
-                <p className="mt-1 font-semibold text-white">{activeFpsLabel}</p>
-              </div>
-              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">Network</p>
-                <p className="mt-1 font-semibold text-white">{activeNetworkLabel}</p>
-              </div>
-              <div className="rounded-xl border border-white/8 bg-white/5 px-3 py-2">
-                <p className="text-[9px] uppercase tracking-[0.22em] text-white/40">RTT</p>
-                <p className="mt-1 font-semibold text-white">
-                  {streamMetrics.rttMs !== null ? `${streamMetrics.rttMs} ms` : '--'}
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {isStreaming && (isLoading || isSyncingTransform || connectionState === 'reconnecting' || isFrameStale || !hasRemoteFrame) && (
           <div className="pointer-events-none absolute inset-x-0 bottom-8 z-20 flex justify-center px-6">
