@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetch } from '@/lib/api-client';
+import { UpdateBanner } from '@/components/UpdateBanner';
 import {
   QUALITY_MODE_PROFILES,
   buildVideoInputConstraints,
@@ -1607,6 +1608,7 @@ function Dashboard() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-black font-sans text-white">
       <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#000000] shadow-inner">
+        <UpdateBanner />
         <video
           id="output"
           ref={outputVideoRef}

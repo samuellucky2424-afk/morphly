@@ -1,5 +1,4 @@
 import { app, shell } from 'electron';
-import { spawn } from 'child_process';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -718,18 +717,23 @@ export function createDesktopUpdater(options = {}) {
         error: null
       }, `${source}:install-start`);
 
-      const child = spawn(state.downloadedPath, [], {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-        shell: false
-      });
+      // Use shell.openPath so Windows launches the installer through the shell
+      // association — this triggers UAC elevation correctly (same as double-clicking).
+      // spawn() with windowsHide:true suppresses the UAC prompt, causing the installer
+      // to run without admin rights and fail to replace the existing installation.
+      const openError = await shell.openPath(state.downloadedPath);
 
-      child.unref();
+      if (openError) {
+        // openPath returns a non-empty string on failure
+        throw new Error(`Failed to open installer: ${openError}`);
+      }
+
       patchState({
         lastInstalledAt: new Date().toISOString()
       }, `${source}:install-launched`);
 
+      // Give the installer a moment to start before quitting so the file handle
+      // is released and Windows can replace the executable.
       setTimeout(() => {
         try {
           app.quit();
@@ -739,7 +743,7 @@ export function createDesktopUpdater(options = {}) {
             error: toErrorString(error)
           });
         }
-      }, 500);
+      }, 1500);
 
       return {
         success: true,
