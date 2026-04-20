@@ -758,11 +758,50 @@ function Dashboard() {
 
         return nextStream;
       } catch (error) {
+        const isNotReadable =
+          error instanceof DOMException && error.name === 'NotReadableError';
+
+        // Camera is locked by another app — quality downgrade won't help.
+        // Try once more without an exact deviceId so the browser can pick
+        // any available camera instead of insisting on the busy one.
+        if (isNotReadable && selectedCameraId) {
+          try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia(
+              buildVideoInputConstraints(attemptedMode, undefined),
+            );
+            const fallbackTrack = fallbackStream.getVideoTracks()[0];
+
+            if (fallbackTrack) {
+              fallbackTrack.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+            }
+
+            const previousSourceStream = webcamSourceStreamRef.current;
+            webcamSourceStreamRef.current = fallbackStream;
+            webcamStreamRef.current = fallbackStream;
+
+            if (webcamVideoRef.current) {
+              webcamVideoRef.current.srcObject = fallbackStream;
+            }
+
+            if (previousSourceStream && previousSourceStream !== fallbackStream) {
+              previousSourceStream.getTracks().forEach((track) => track.stop());
+            }
+
+            return fallbackStream;
+          } catch {
+            // fallback also failed — fall through to the give-up path below
+          }
+        }
+
         if (attemptedMode === 'fast') {
           console.error('Webcam error:', error);
 
           if (!options?.silent) {
-            toast.error('Failed to access webcam. Please allow camera permissions.');
+            toast.error(
+              isNotReadable
+                ? 'Camera is already in use by another application. Close it and try again.'
+                : 'Failed to access webcam. Please check camera permissions.',
+            );
           }
 
           return null;
@@ -1713,7 +1752,7 @@ function Dashboard() {
             <option value="hd">HD Mode</option>
           </select>
 
-          {cameraDevices.length > 1 && (
+          {cameraDevices.length >= 1 && (
             <select
               value={selectedCameraId}
               onChange={(event) => handleCameraChange(event.target.value)}
