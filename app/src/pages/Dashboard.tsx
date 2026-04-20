@@ -901,7 +901,7 @@ function Dashboard() {
 
       const { createDecartClient, models } = await import('@decartai/sdk');
       const client = createDecartClient({ apiKey: apiToken });
-      const model = models.realtime('lucy_2_rt');
+      const model = models.realtime('lucy-latest');
 
       const realtimeClient = await client.realtime.connect(stream, {
         model,

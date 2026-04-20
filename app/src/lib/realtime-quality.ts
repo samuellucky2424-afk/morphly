@@ -32,7 +32,7 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
     height: 720,
     targetFps: 30,
     maxFps: 30,
-    enhance: true,
+    enhance: false,
   },
 };
 
@@ -75,24 +75,20 @@ export function upgradeQualityMode(mode: QualityMode, ceilingMode: QualityMode =
   return QUALITY_MODE_ORDER[nextRank];
 }
 
-export function buildVideoTrackConstraints(mode: QualityMode): MediaTrackConstraints {
-  const profile = QUALITY_MODE_PROFILES[mode];
-
+export function buildVideoTrackConstraints(_mode: QualityMode): MediaTrackConstraints {
   return {
     width: {
-      ideal: profile.width,
-      max: profile.width,
+      ideal: 640,
     },
     height: {
-      ideal: profile.height,
-      max: profile.height,
+      ideal: 480,
     },
     aspectRatio: {
-      ideal: profile.width / profile.height,
+      ideal: 640 / 480,
     },
     frameRate: {
-      ideal: profile.targetFps,
-      max: profile.maxFps,
+      ideal: 30,
+      min: 24,
     },
   };
 }
