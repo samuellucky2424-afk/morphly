@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
 import { apiFetch } from '@/lib/api-client';
+import { CREDITS_PER_SECOND } from '@/lib/billing';
 
 declare global {
   interface Window {
@@ -48,7 +49,7 @@ const CREDIT_PLANS = [
 ];
 
 function formatTime(credits: number): string {
-  const seconds = credits / 2;
+  const seconds = credits / CREDITS_PER_SECOND;
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
 

@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetch } from '@/lib/api-client';
+import { CREDITS_PER_SECOND } from '@/lib/billing';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import {
   QUALITY_MODE_PROFILES,
@@ -126,7 +127,6 @@ If a hand is partially visible, occluded, lowered, or outside the frame, keep it
 Do not invent a hand, add extra fingers, change the gesture, or bring any hand back into frame when it is not clearly visible.
 Keep the output stable, grounded, and as close to a real human camera feed as possible.`;
 const DEFAULT_ENHANCE = false;
-const CREDITS_PER_SECOND = 2;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;

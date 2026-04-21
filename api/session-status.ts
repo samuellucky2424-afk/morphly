@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
-const CREDITS_PER_SECOND = 4;
+const CREDITS_PER_SECOND = 5;
 const MAX_BILLABLE_SECONDS = 7200;
 
 function normalizeCredits(value) {

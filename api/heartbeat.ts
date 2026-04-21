@@ -4,8 +4,8 @@ import { supabaseAdmin } from './supabase.js';
 // How many seconds each heartbeat tick represents.
 // The client calls this endpoint on this same interval.
 const HEARTBEAT_SECONDS = 30;
-const CREDITS_PER_SECOND = 4;
-const CREDITS_PER_HEARTBEAT = HEARTBEAT_SECONDS * CREDITS_PER_SECOND; // 120
+const CREDITS_PER_SECOND = 5;
+const CREDITS_PER_HEARTBEAT = HEARTBEAT_SECONDS * CREDITS_PER_SECOND; // 150
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');

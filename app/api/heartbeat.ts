@@ -2,7 +2,7 @@
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const HEARTBEAT_SECONDS = 30;
-const CREDITS_PER_SECOND = 4;
+const CREDITS_PER_SECOND = 5;
 const CREDITS_PER_HEARTBEAT = HEARTBEAT_SECONDS * CREDITS_PER_SECOND;
 
 export default async function handler(req, res) {
