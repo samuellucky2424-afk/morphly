@@ -40,7 +40,7 @@ export default async function handler(req, res) {
       await Promise.all([
         ...sessionCalcs.map(s =>
           supabaseAdmin.from('sessions')
-            .update({ end_time: new Date(), status: 'ended', seconds_used: s.billableSeconds, credits_used: s.creditsToDeduct })
+            .update({ end_time: new Date(), status: 'ended', seconds_used: s.billableSeconds, cost: s.creditsToDeduct })
             .eq('id', s.id).eq('status', 'active'),
         ),
         actualDeduction > 0
@@ -66,7 +66,7 @@ export default async function handler(req, res) {
         user_id: userId,
         status: 'active',
         start_time: new Date(),
-        credits_used: 0,
+        cost: 0,
         seconds_used: 0,
       }).select('id').single();
 
