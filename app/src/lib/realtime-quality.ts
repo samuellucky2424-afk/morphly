@@ -13,25 +13,25 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
   fast: {
     label: 'Fast',
     width: 640,
-    height: 480,
-    targetFps: 22,
-    maxFps: 24,
+    height: 360,
+    targetFps: 25,
+    maxFps: 25,
     enhance: false,
   },
   balanced: {
     label: 'Balanced',
     width: 960,
     height: 540,
-    targetFps: 24,
-    maxFps: 26,
+    targetFps: 25,
+    maxFps: 25,
     enhance: false,
   },
   hd: {
     label: 'HD',
     width: 1280,
     height: 720,
-    targetFps: 30,
-    maxFps: 30,
+    targetFps: 25,
+    maxFps: 25,
     enhance: false,
   },
 };
@@ -44,7 +44,7 @@ export function getQualityModeRank(mode: QualityMode): number {
 
 export function getAdaptiveQualityMode(downlinkMbps?: number | null): QualityMode {
   if (!downlinkMbps || !Number.isFinite(downlinkMbps)) {
-    return 'balanced';
+    return 'hd';
   }
 
   if (downlinkMbps < 2.5) {

@@ -115,7 +115,7 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Replace only the visible person identity with the person from the reference image while keeping the result indistinguishable from a real live webcam recording.
+const BASE_PROMPT = `Substitute the character in the video with the person in the reference image while keeping the result indistinguishable from a real live webcam recording.
 Maintain true human anatomy, realistic skin texture, natural lighting, accurate facial proportions, and normal camera softness.
 Never produce a cartoon, anime, illustration, painting, CGI, 3D render, doll, waxy skin, plastic skin, or beautified filter look.
 Preserve the live camera framing, body position, shoulder alignment, arm position, clothing silhouette, and background exactly as seen.
@@ -137,7 +137,7 @@ const INITIAL_PROMPT_INJECTION_DELAY_MS = 500;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
-const DECART_REALTIME_MODEL = 'lucy_2_rt';
+const DECART_REALTIME_MODEL = 'lucy-2';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 
@@ -745,7 +745,7 @@ function Dashboard() {
 
     while (true) {
       try {
-        track.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+        track.contentHint = attemptedMode === 'fast' ? 'motion' : 'detail';
         await track.applyConstraints(buildVideoTrackConstraints(attemptedMode));
         return attemptedMode;
       } catch (error) {
@@ -796,7 +796,7 @@ function Dashboard() {
         const nextTrack = nextStream.getVideoTracks()[0];
 
         if (nextTrack) {
-          nextTrack.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+          nextTrack.contentHint = attemptedMode === 'fast' ? 'motion' : 'detail';
         }
 
         const previousSourceStream = webcamSourceStreamRef.current;
@@ -831,7 +831,7 @@ function Dashboard() {
             const fallbackTrack = fallbackStream.getVideoTracks()[0];
 
             if (fallbackTrack) {
-              fallbackTrack.contentHint = attemptedMode === 'hd' ? 'detail' : 'motion';
+              fallbackTrack.contentHint = attemptedMode === 'fast' ? 'motion' : 'detail';
             }
 
             const previousSourceStream = webcamSourceStreamRef.current;
