@@ -1,14 +1,41 @@
 // @ts-nocheck
 
 /**
- * IMPORTANT: Keep LATEST_VERSION in sync with app/package.json "version" field.
- * This file is fully self-contained - no external imports that could fail on Vercel serverless.
+ * Fetches the latest release version directly from the GitHub Releases API.
+ * No hardcoded version — updating this file is never required when releasing.
  */
-const LATEST_VERSION = '1.2.5';
 
 const GITHUB_OWNER = 'samuellucky2424-afk';
 const GITHUB_REPO = 'morphly';
 const GITHUB_REPOSITORY_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}`;
+const GITHUB_API_LATEST = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+
+async function fetchLatestVersion() {
+  const response = await fetch(GITHUB_API_LATEST, {
+    headers: {
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'morphly-updater',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    cache: 'no-store',
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub API responded with HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  // tag_name is typically "v1.2.5" — strip the leading "v"
+  const tag = typeof data.tag_name === 'string' ? data.tag_name : '';
+  const version = tag.replace(/^v/, '').trim();
+
+  if (!version) {
+    throw new Error('GitHub API returned an empty tag_name');
+  }
+
+  return { version, releaseNotes: data.body || null };
+}
 
 function normalizePackageType(value) {
   return value === 'portable' ? 'portable' : 'installer';
@@ -69,11 +96,12 @@ export default async function handler(req, res) {
 
   try {
     const packageType = getBuildType(req);
+    const { version, releaseNotes } = await fetchLatestVersion();
     const manifest = createVersionManifest({
-      version: LATEST_VERSION,
+      version,
       packageType,
-      releaseNotes: null,
-      checksum: null
+      releaseNotes,
+      checksum: null,
     });
 
     return res.status(200).json(manifest);
