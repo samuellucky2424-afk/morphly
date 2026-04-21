@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
-const CREDITS_PER_SECOND = 2;
+const CREDITS_PER_SECOND = 4;
 // Hard ceiling: one session can never bill more than 2 hours,
 // protecting users whose app crashed and left an orphaned session.
 const MAX_BILLABLE_SECONDS = 7200;
