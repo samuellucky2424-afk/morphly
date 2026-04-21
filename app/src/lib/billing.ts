@@ -1,1 +1,1 @@
-export const CREDITS_PER_SECOND = 5;
+export const CREDITS_PER_SECOND = 2;
