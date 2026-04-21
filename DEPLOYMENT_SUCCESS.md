@@ -8,11 +8,11 @@
 - Created clean git history without large files
 
 ### 2. Updated Pricing System
-**New Pricing (₦9,500 per 500 credits):**
-- 500 credits = ₦9,500
-- 1,000 credits = ₦19,000
-- 2,000 credits = ₦38,000
-- 5,000 credits = ₦95,000
+**New Pricing (₦11,500 per 500 credits):**
+- 500 credits = ₦11,500
+- 1,000 credits = ₦23,000
+- 2,000 credits = ₦46,000
+- 5,000 credits = ₦115,000
 
 **USD prices are calculated dynamically** using the live exchange rate API.
 

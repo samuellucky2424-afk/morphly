@@ -277,10 +277,10 @@ where w.user_id is null;
 
 insert into public.plans (name, price_usd, credits, duration_seconds, sort_order)
 values
-  ('500 Credits', 9500, 500, 250, 1),
-  ('1,000 Credits', 19000, 1000, 500, 2),
-  ('2,000 Credits', 38000, 2000, 1000, 3),
-  ('5,000 Credits', 95000, 5000, 2500, 4)
+  ('500 Credits', 11500, 500, 250, 1),
+  ('1,000 Credits', 23000, 1000, 500, 2),
+  ('2,000 Credits', 46000, 2000, 1000, 3),
+  ('5,000 Credits', 115000, 5000, 2500, 4)
 on conflict (name) do update set
   price_usd = excluded.price_usd,
   credits = excluded.credits,

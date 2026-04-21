@@ -2,16 +2,16 @@
 
 ## New Pricing Structure
 
-**Base Rate:** ₦9,500 per 500 credits (₦19 per credit)
+**Base Rate:** ₦11,500 per 500 credits (₦23 per credit)
 
 ### Credit Packages
 
 | Credits | Price (NGN) | Price (USD)* | Duration** |
 |---------|-------------|--------------|------------|
-| 500     | ₦9,500      | $6.33        | ~4m 10s    |
-| 1,000   | ₦19,000     | $12.67       | ~8m 20s    |
-| 2,000   | ₦38,000     | $25.33       | ~16m 40s   |
-| 5,000   | ₦95,000     | $63.33       | ~41m 40s   |
+| 500     | ₦11,500     | $7.67        | ~4m 10s    |
+| 1,000   | ₦23,000     | $15.33       | ~8m 20s    |
+| 2,000   | ₦46,000     | $30.67       | ~16m 40s   |
+| 5,000   | ₦115,000    | $76.67       | ~41m 40s   |
 
 *USD pricing calculated at 1500 NGN/USD exchange rate  
 **Duration based on 2 credits per second of stream time
@@ -29,10 +29,10 @@
 ## Pricing Calculation
 
 The pricing is proportional across all tiers:
-- **500 credits** = ₦9,500 (base price)
-- **1,000 credits** = ₦9,500 × 2 = ₦19,000
-- **2,000 credits** = ₦9,500 × 4 = ₦38,000
-- **5,000 credits** = ₦9,500 × 10 = ₦95,000
+- **500 credits** = ₦11,500 (base price)
+- **1,000 credits** = ₦11,500 × 2 = ₦23,000
+- **2,000 credits** = ₦11,500 × 4 = ₦46,000
+- **5,000 credits** = ₦11,500 × 10 = ₦115,000
 
 ## How It Works
 
@@ -47,10 +47,10 @@ To apply these changes to your database:
 
 ```sql
 -- Run this SQL in your Supabase SQL Editor
-UPDATE public.plans SET price_usd = 6.33 WHERE name = '500 Credits';
-UPDATE public.plans SET price_usd = 12.67 WHERE name = '1,000 Credits';
-UPDATE public.plans SET price_usd = 25.33 WHERE name = '2,000 Credits';
-UPDATE public.plans SET price_usd = 63.33 WHERE name = '5,000 Credits';
+UPDATE public.plans SET price_usd = 7.67 WHERE name = '500 Credits';
+UPDATE public.plans SET price_usd = 15.33 WHERE name = '1,000 Credits';
+UPDATE public.plans SET price_usd = 30.67 WHERE name = '2,000 Credits';
+UPDATE public.plans SET price_usd = 76.67 WHERE name = '5,000 Credits';
 ```
 
 Or run the seed file:
