@@ -120,7 +120,7 @@ Keep strictly the same framing, pose, and body crop as shown in the live camera 
 Only transform appearance, not composition.`;
 const DEFAULT_ENHANCE = false;
 const CREDITS_PER_SECOND = 2;
-const POLLING_INTERVAL = 10000;
+const POLLING_INTERVAL = 30000; // heartbeat interval — must match HEARTBEAT_SECONDS in api/heartbeat.ts
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
 const AUTO_UPGRADE_SAMPLES = 10;
@@ -232,6 +232,7 @@ function Dashboard() {
   const transformInFlightRef = useRef(false);
   const clientSubscriptionsCleanupRef = useRef<(() => void) | null>(null);
   const sessionTokenRef = useRef('');
+  const sessionIdRef = useRef('');
   const frameCallbackHandleRef = useRef<number | null>(null);
   const lastRemoteFrameAtRef = useRef(0);
   const lastGenerationTickAtRef = useRef(Date.now());
@@ -1249,6 +1250,7 @@ function Dashboard() {
     }
 
     sessionTokenRef.current = '';
+    sessionIdRef.current = '';
     restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
     restartFailureCountRef.current = 0;
     setRuntimeModeCap('hd');
@@ -1283,30 +1285,36 @@ function Dashboard() {
     safelyStopSessionRef.current = safelyStopSession;
   }, [safelyStopSession]);
 
-  const pollSessionStatus = useCallback(async () => {
+  // sendHeartbeat is called every 30 s while streaming.
+  // It bills exactly 30 s of credits server-side so that credits are ONLY
+  // deducted while the app is actively running. Closing the app, logging out,
+  // or a crash stops billing at the last successful heartbeat.
+  const sendHeartbeat = useCallback(async () => {
+    if (!sessionIdRef.current || !user?.id) return;
+
     try {
       const response = await apiRequest<{
-        credits: number;
-        secondsUsed: number;
-        creditsUsed: number;
         remainingCredits?: number;
-        shouldStop: boolean;
-        forceEnd?: boolean;
-      }>(`/session-status?userId=${user?.id}`);
+        shouldStop?: boolean;
+      }>('/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify({ userId: user.id, sessionId: sessionIdRef.current }),
+      });
 
-      const latestCredits = response.remainingCredits !== undefined
-        ? response.remainingCredits
-        : response.credits;
-      setCredits(latestCredits);
+      if (response.remainingCredits !== undefined) {
+        setCredits(response.remainingCredits);
+      }
 
-      if (response.shouldStop || response.forceEnd) {
+      if (response.shouldStop) {
         await handleStop({ silent: true });
         toast.error('Session auto-ended - Insufficient credits');
       }
     } catch (error) {
-      console.error('Poll error:', error);
+      console.error('Heartbeat error:', error);
     }
   }, [handleStop, setCredits, user?.id]);
+
+  const pollSessionStatus = sendHeartbeat;
 
   const enumerateCameras = useCallback(async () => {
     try {
@@ -1548,6 +1556,7 @@ function Dashboard() {
       }
 
       sessionTokenRef.current = sessionToken;
+      sessionIdRef.current = startResponse.sessionId || '';
 
       const realtimeClient = await connectToDecart(
         stream,
