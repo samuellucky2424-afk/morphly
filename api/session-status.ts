@@ -19,7 +19,7 @@ export default async function handler(req, res) {
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).single(),
       supabaseAdmin
         .from('sessions')
-        .select('id, start_time, max_seconds')
+        .select('id, start_time')
         .eq('user_id', userId)
         .eq('status', 'active')
         .order('created_at', { ascending: false })
@@ -39,10 +39,7 @@ export default async function handler(req, res) {
     const elapsedSeconds = Math.floor(
       (Date.now() - new Date(activeSession.start_time).getTime()) / 1000,
     );
-    const storedMax = typeof activeSession.max_seconds === 'number' && activeSession.max_seconds > 0
-      ? activeSession.max_seconds
-      : MAX_BILLABLE_SECONDS;
-    const billableElapsed = Math.min(elapsedSeconds, storedMax);
+    const billableElapsed = Math.min(elapsedSeconds, MAX_BILLABLE_SECONDS);
     const liveDeducted = Math.min(walletCredits, billableElapsed * CREDITS_PER_SECOND);
     const remainingCredits = Math.max(0, walletCredits - liveDeducted);
     const shouldStop = remainingCredits <= 0;

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { supabaseAdmin } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,
@@ -17,12 +17,7 @@ async function billAndCloseSession(session, userId) {
     (Date.now() - new Date(session.start_time).getTime()) / 1000,
   );
 
-  // Use stored max_seconds so a crashed session cannot charge more than
-  // the user could afford when they clicked Start.
-  const storedMax = typeof session.max_seconds === 'number' && session.max_seconds > 0
-    ? session.max_seconds
-    : MAX_BILLABLE_SECONDS;
-  const billableSeconds = Math.min(elapsedSeconds, storedMax);
+  const billableSeconds = Math.min(elapsedSeconds, MAX_BILLABLE_SECONDS);
   const creditsToDeduct = Math.min(currentCredits, billableSeconds * CREDITS_PER_SECOND);
   const newCredits = currentCredits - creditsToDeduct;
 
@@ -51,7 +46,6 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (!supabaseAdmin) return res.status(503).json({ success: false, error: supabaseAdminConfigError });
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
@@ -60,7 +54,7 @@ export default async function handler(req, res) {
 
     const { data: activeSession } = await supabaseAdmin
       .from('sessions')
-      .select('id, start_time, max_seconds')
+      .select('id, start_time')
       .eq('user_id', userId).eq('status', 'active')
       .order('created_at', { ascending: false }).limit(1).single();
 

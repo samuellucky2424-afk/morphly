@@ -18,7 +18,7 @@ export default async function handler(req, res) {
 
     // Fetch orphaned sessions and wallet in parallel
     const [{ data: existingActiveSessions }, { data: walletNow }] = await Promise.all([
-      supabaseAdmin.from('sessions').select('id, start_time, max_seconds').eq('user_id', userId).eq('status', 'active'),
+      supabaseAdmin.from('sessions').select('id, start_time').eq('user_id', userId).eq('status', 'active'),
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).single(),
     ]);
 
@@ -29,9 +29,7 @@ export default async function handler(req, res) {
       let totalDeduction = 0;
       const sessionCalcs = existingActiveSessions.map(session => {
         const elapsedSeconds = Math.floor((now - new Date(session.start_time).getTime()) / 1000);
-        const storedMax = typeof session.max_seconds === 'number' && session.max_seconds > 0
-          ? session.max_seconds : MAX_BILLABLE_SECONDS;
-        const billableSeconds = Math.min(elapsedSeconds, storedMax);
+        const billableSeconds = Math.min(elapsedSeconds, MAX_BILLABLE_SECONDS);
         const creditsToDeduct = billableSeconds * CREDITS_PER_SECOND;
         totalDeduction += creditsToDeduct;
         return { id: session.id, billableSeconds, creditsToDeduct };
@@ -70,7 +68,6 @@ export default async function handler(req, res) {
         start_time: new Date(),
         credits_used: 0,
         seconds_used: 0,
-        max_seconds: maxSeconds
       }).select('id').single();
 
     if (sessionError) return res.status(500).json({ allowed: false, error: 'Failed to create session' });
