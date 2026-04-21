@@ -118,7 +118,10 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
 const BASE_PROMPT = `Substitute the person in the video with the person in the reference image while preserving a natural, photorealistic human appearance.
 Maintain realistic skin texture, natural lighting, and true-to-life facial proportions. Avoid any cartoon, animated, or stylized look.
 Ensure accurate lip sync and natural facial expressions that match the live camera input.
-Only render body parts that are clearly visible in the live camera. Do not generate hands or limbs unless they are visible.
+Preserve the exact body pose, shoulder position, arm position, hand position, and gesture from the live camera at every moment.
+Only render body parts that are clearly visible in the live camera. Do not generate hands, arms, fingers, or limbs unless they are visible.
+Never invent raised hands, waving, pointing, open palms, finger gestures, or any other pose that is not present in the live camera.
+If the hands are out of frame, lowered, occluded, or not visible, keep them out of frame and do not hallucinate them.
 Keep the output consistent, stable, and as close to a real human camera feed as possible.`;
 const DEFAULT_ENHANCE = false;
 const CREDITS_PER_SECOND = 2;

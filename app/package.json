@@ -1,7 +1,7 @@
 {
   "name": "my-app",
   "private": true,
-  "version": "1.2.9",
+  "version": "1.2.10",
   "description": "Morphly desktop app for AI-powered real-time video transformations.",
   "author": "Samuel Lucky",
   "type": "module",
