@@ -115,14 +115,16 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Substitute the person in the video with the person in the reference image while preserving a natural, photorealistic human appearance.
-Maintain realistic skin texture, natural lighting, and true-to-life facial proportions. Avoid any cartoon, animated, or stylized look.
+const BASE_PROMPT = `Replace only the visible person identity with the person from the reference image while keeping the result indistinguishable from a real live webcam recording.
+Maintain true human anatomy, realistic skin texture, natural lighting, accurate facial proportions, and normal camera softness.
+Never produce a cartoon, anime, illustration, painting, CGI, 3D render, doll, waxy skin, plastic skin, or beautified filter look.
+Preserve the live camera framing, body position, shoulder alignment, arm position, clothing silhouette, and background exactly as seen.
 Ensure accurate lip sync and natural facial expressions that match the live camera input.
-Preserve the exact body pose, shoulder position, arm position, hand position, and gesture from the live camera at every moment.
-Only render body parts that are clearly visible in the live camera. Do not generate hands, arms, fingers, or limbs unless they are visible.
-Never invent raised hands, waving, pointing, open palms, finger gestures, or any other pose that is not present in the live camera.
-If the hands are out of frame, lowered, occluded, or not visible, keep them out of frame and do not hallucinate them.
-Keep the output consistent, stable, and as close to a real human camera feed as possible.`;
+Preserve the exact wrist, hand, finger, and gesture pose from the live camera at every moment.
+Only show hands, arms, fingers, or limbs that are clearly visible in the live camera frame.
+If a hand is partially visible, occluded, lowered, or outside the frame, keep it hidden or cropped the same way.
+Do not invent a hand, add extra fingers, change the gesture, or bring any hand back into frame when it is not clearly visible.
+Keep the output stable, grounded, and as close to a real human camera feed as possible.`;
 const DEFAULT_ENHANCE = false;
 const CREDITS_PER_SECOND = 2;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
@@ -1089,6 +1091,7 @@ function Dashboard() {
       // handlers register) — otherwise the first 'reconnecting' event always triggers a recovery .set().
       let hasSeenConnectedViaHandler = false;
       let wasConnectedBeforeLastReconnect = false;
+      let initialTransformReinforced = false;
 
       const onConnectionChange = (nextState: ConnectionState) => {
         const previousState = connectionStateRef.current;
@@ -1115,6 +1118,23 @@ function Dashboard() {
           setUiStatus('Live');
           restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
           restartFailureCountRef.current = 0;
+
+          if (!initialTransformReinforced) {
+            initialTransformReinforced = true;
+
+            void sleep(INITIAL_PROMPT_INJECTION_DELAY_MS)
+              .then(async () => {
+                if (realtimeClientRef.current !== (realtimeClient as RealtimeClient)) {
+                  return;
+                }
+
+                await applyRealtimeSessionState(realtimeClient as RealtimeClient, initialTransform);
+                lastAppliedTransformRef.current = initialTransform;
+              })
+              .catch((error) => {
+                console.error('Failed to reinforce initial realtime session state:', error);
+              });
+          }
         }
 
         if (nextState === 'disconnected') {

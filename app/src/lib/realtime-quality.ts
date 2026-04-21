@@ -75,20 +75,23 @@ export function upgradeQualityMode(mode: QualityMode, ceilingMode: QualityMode =
   return QUALITY_MODE_ORDER[nextRank];
 }
 
-export function buildVideoTrackConstraints(_mode: QualityMode): MediaTrackConstraints {
+export function buildVideoTrackConstraints(mode: QualityMode): MediaTrackConstraints {
+  const profile = QUALITY_MODE_PROFILES[mode];
+
   return {
     width: {
-      ideal: 640,
+      ideal: profile.width,
     },
     height: {
-      ideal: 480,
+      ideal: profile.height,
     },
     aspectRatio: {
-      ideal: 640 / 480,
+      ideal: profile.width / profile.height,
     },
     frameRate: {
-      ideal: 30,
-      min: 24,
+      ideal: profile.targetFps,
+      max: profile.maxFps,
+      min: Math.max(15, profile.targetFps - 6),
     },
   };
 }
