@@ -120,7 +120,7 @@ Keep strictly the same framing, pose, and body crop as shown in the live camera 
 Only transform appearance, not composition.`;
 const DEFAULT_ENHANCE = false;
 const CREDITS_PER_SECOND = 2;
-const POLLING_INTERVAL = 30000; // heartbeat interval — must match HEARTBEAT_SECONDS in api/heartbeat.ts
+const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
 const AUTO_UPGRADE_SAMPLES = 10;
@@ -1285,36 +1285,30 @@ function Dashboard() {
     safelyStopSessionRef.current = safelyStopSession;
   }, [safelyStopSession]);
 
-  // sendHeartbeat is called every 30 s while streaming.
-  // It bills exactly 30 s of credits server-side so that credits are ONLY
-  // deducted while the app is actively running. Closing the app, logging out,
-  // or a crash stops billing at the last successful heartbeat.
-  const sendHeartbeat = useCallback(async () => {
-    if (!sessionIdRef.current || !user?.id) return;
-
+  // Polls /api/session-status every 5 s while streaming.
+  // The server computes the live remaining balance from elapsed time — no
+  // frontend billing logic. Credits are deducted server-side by end-session.
+  const pollSessionStatus = useCallback(async () => {
+    if (!user?.id) return;
     try {
       const response = await apiRequest<{
+        credits: number;
         remainingCredits?: number;
-        shouldStop?: boolean;
-      }>('/heartbeat', {
-        method: 'POST',
-        body: JSON.stringify({ userId: user.id, sessionId: sessionIdRef.current }),
-      });
+        shouldStop: boolean;
+        forceEnd?: boolean;
+      }>(`/session-status?userId=${user.id}`);
 
-      if (response.remainingCredits !== undefined) {
-        setCredits(response.remainingCredits);
-      }
+      const live = response.remainingCredits ?? response.credits;
+      setCredits(live);
 
-      if (response.shouldStop) {
+      if (response.shouldStop || response.forceEnd) {
         await handleStop({ silent: true });
         toast.error('Session auto-ended - Insufficient credits');
       }
     } catch (error) {
-      console.error('Heartbeat error:', error);
+      console.error('Poll error:', error);
     }
   }, [handleStop, setCredits, user?.id]);
-
-  const pollSessionStatus = sendHeartbeat;
 
   const enumerateCameras = useCallback(async () => {
     try {

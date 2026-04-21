@@ -2,19 +2,37 @@
 import { supabaseAdmin } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
+const MAX_BILLABLE_SECONDS = 7200;
 
-// Just closes orphaned sessions without any billing.
-// Credits were already billed in real-time via /api/heartbeat while the
-// session was active. Any time after the last heartbeat is free.
-async function closeOrphanedSession(sessionId) {
+// When the user logs in or starts a new session, any previously orphaned
+// active session is billed for exactly how long it ran (start_time → now),
+// capped at max_seconds. This is fair: they used the service, they pay for it.
+async function billAndCloseOrphanedSession(session, userId, walletCredits) {
   try {
-    await supabaseAdmin
-      .from('sessions')
-      .update({ end_time: new Date(), status: 'ended' })
-      .eq('id', sessionId)
-      .eq('status', 'active');
+    const elapsedSeconds = Math.floor(
+      (Date.now() - new Date(session.start_time).getTime()) / 1000,
+    );
+    const storedMax = typeof session.max_seconds === 'number' && session.max_seconds > 0
+      ? session.max_seconds
+      : MAX_BILLABLE_SECONDS;
+    const billableSeconds = Math.min(elapsedSeconds, storedMax);
+    const creditsToDeduct = Math.min(walletCredits, billableSeconds * CREDITS_PER_SECOND);
+    const newCredits = walletCredits - creditsToDeduct;
+
+    await Promise.all([
+      supabaseAdmin
+        .from('sessions')
+        .update({ end_time: new Date(), status: 'ended', seconds_used: billableSeconds, credits_used: creditsToDeduct })
+        .eq('id', session.id).eq('status', 'active'),
+      creditsToDeduct > 0
+        ? supabaseAdmin.from('wallets').update({ credits: newCredits }).eq('user_id', userId)
+        : Promise.resolve(),
+    ]);
+
+    return newCredits;
   } catch (err) {
     console.error('Failed to close orphaned session:', err);
+    return walletCredits;
   }
 }
 
@@ -31,18 +49,23 @@ export default async function handler(req, res) {
     if (!userId) return res.status(400).json({ allowed: false, error: 'User ID is required' });
 
     const { data: existingActiveSessions } = await supabaseAdmin
-      .from('sessions').select('*').eq('user_id', userId).eq('status', 'active');
+      .from('sessions').select('id, start_time, max_seconds').eq('user_id', userId).eq('status', 'active');
 
+    // Bill and close any orphaned sessions first, then re-read wallet
+    let runningCredits = null;
     if (existingActiveSessions && existingActiveSessions.length > 0) {
+      const { data: walletNow } = await supabaseAdmin
+        .from('wallets').select('credits').eq('user_id', userId).single();
+      runningCredits = walletNow?.credits ?? 0;
       for (const session of existingActiveSessions) {
-        await closeOrphanedSession(session.id);
+        runningCredits = await billAndCloseOrphanedSession(session, userId, runningCredits);
       }
     }
 
     const { data: freshWallet } = await supabaseAdmin
       .from('wallets').select('credits').eq('user_id', userId).single();
 
-    const userCredits = freshWallet?.credits || 0;
+    const userCredits = freshWallet?.credits ?? runningCredits ?? 0;
     if (userCredits <= 0) {
       return res.json({ allowed: false, error: 'Insufficient credits' });
     }
