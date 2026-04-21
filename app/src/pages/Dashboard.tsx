@@ -135,6 +135,7 @@ const INITIAL_PROMPT_INJECTION_DELAY_MS = 500;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
+const DECART_REALTIME_MODEL = 'lucy-2.1';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 
@@ -189,6 +190,40 @@ function getStartSessionErrorToast(error: unknown): string | null {
     default:
       return error.message || 'Failed to start session';
   }
+}
+
+function getDecartSdkErrorMessage(error: unknown): string | null {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (typeof error === 'object' && error !== null) {
+    const candidate = error as {
+      message?: unknown;
+      code?: unknown;
+      cause?: { message?: unknown } | unknown;
+    };
+
+    if (typeof candidate.message === 'string' && candidate.message) {
+      return candidate.message;
+    }
+
+    if (
+      typeof candidate.cause === 'object'
+      && candidate.cause !== null
+      && 'message' in candidate.cause
+      && typeof candidate.cause.message === 'string'
+      && candidate.cause.message
+    ) {
+      return candidate.cause.message;
+    }
+
+    if (typeof candidate.code === 'string' && candidate.code) {
+      return candidate.code;
+    }
+  }
+
+  return null;
 }
 
 function getNavigatorConnection(): NetworkInformationLike | null {
@@ -997,7 +1032,7 @@ function Dashboard() {
 
       const { createDecartClient, models } = await import('@decartai/sdk');
       const client = createDecartClient({ apiKey: apiToken });
-      const model = models.realtime('lucy-latest');
+      const model = models.realtime(DECART_REALTIME_MODEL);
 
       const realtimeClient = await client.realtime.connect(stream, {
         model,
@@ -1157,7 +1192,12 @@ function Dashboard() {
       console.error('[Decart] SDK error:', error);
 
       if (!options?.isRecovery) {
-        toast.error('Failed to connect to AI');
+        const errorMessage = getDecartSdkErrorMessage(error);
+        toast.error(
+          errorMessage
+            ? `Failed to connect to AI: ${errorMessage}`
+            : 'Failed to connect to AI',
+        );
       }
 
       return null;
