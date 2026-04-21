@@ -41,10 +41,10 @@ function loadPaystackScript(): Promise<void> {
 }
 
 const CREDIT_PLANS = [
-  { credits: 500, priceNGN: 9500 },
-  { credits: 1000, priceNGN: 19000 },
-  { credits: 2000, priceNGN: 38000 },
-  { credits: 5000, priceNGN: 95000 },
+  { credits: 500, priceNGN: 11500 },
+  { credits: 1000, priceNGN: 23000 },
+  { credits: 2000, priceNGN: 46000 },
+  { credits: 5000, priceNGN: 115000 },
 ];
 
 function formatTime(credits: number): string {
