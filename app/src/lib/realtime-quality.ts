@@ -114,6 +114,6 @@ export function buildVideoInputConstraints(
 
   return {
     video: videoConstraints,
-    audio: false,
+    audio: true,
   };
 }

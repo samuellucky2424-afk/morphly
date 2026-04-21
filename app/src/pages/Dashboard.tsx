@@ -126,7 +126,7 @@ Only show hands, arms, fingers, or limbs that are clearly visible in the live ca
 If a hand is partially visible, occluded, lowered, or outside the frame, keep it hidden or cropped the same way.
 Do not invent a hand, add extra fingers, change the gesture, or bring any hand back into frame when it is not clearly visible.
 Keep the output stable, grounded, and as close to a real human camera feed as possible.`;
-const DEFAULT_ENHANCE = false;
+const DEFAULT_ENHANCE = true;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
@@ -269,7 +269,7 @@ function Dashboard() {
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
   const [prompt] = useState(BASE_PROMPT);
-  const [preferredMode, setPreferredMode] = useState<QualityMode>('balanced');
+  const [preferredMode, setPreferredMode] = useState<QualityMode>('hd');
   const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
   const [uiStatus, setUiStatus] = useState('Disconnected');
@@ -320,7 +320,7 @@ function Dashboard() {
   const isStreamingRef = useRef(isStreaming);
   const hasRemoteFrameRef = useRef(hasRemoteFrame);
   const connectionStateRef = useRef<ConnectionState>(connectionState);
-  const activeModeRef = useRef<QualityMode>('balanced');
+  const activeModeRef = useRef<QualityMode>('hd');
   const preferredModeRef = useRef(preferredMode);
 
   const activeMode = clampQualityMode(preferredMode, runtimeModeCap);
@@ -858,8 +858,8 @@ function Dashboard() {
           if (!options?.silent) {
             toast.error(
               isNotReadable
-                ? 'Camera is already in use by another application. Close it and try again.'
-                : 'Failed to access webcam. Please check camera permissions.',
+                ? 'Camera or microphone is already in use by another application. Close it and try again.'
+                : 'Failed to access camera or microphone. Please check device permissions.',
             );
           }
 
