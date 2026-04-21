@@ -175,6 +175,22 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function getStartSessionErrorToast(error: unknown): string | null {
+  if (!(error instanceof Error)) {
+    return 'Failed to start session';
+  }
+
+  switch (error.message) {
+    case 'Webcam start failed':
+    case 'Decart connection was not established':
+      return null;
+    case 'Missing session token':
+      return 'Failed to start session: missing AI token';
+    default:
+      return error.message || 'Failed to start session';
+  }
+}
+
 function getNavigatorConnection(): NetworkInformationLike | null {
   const nav = navigator as Navigator & {
     connection?: NetworkInformationLike;
@@ -1551,8 +1567,12 @@ function Dashboard() {
 
       const sessionToken = startResponse.token || '';
 
-      if (!stream || !sessionToken) {
-        throw new Error('Missing session token or webcam stream');
+      if (!stream) {
+        throw new Error('Webcam start failed');
+      }
+
+      if (!sessionToken) {
+        throw new Error('Missing session token');
       }
 
       sessionTokenRef.current = sessionToken;
@@ -1578,7 +1598,10 @@ function Dashboard() {
       setUiStatus('Live');
     } catch (error) {
       console.error('Start session error:', error);
-      toast.error('Failed to start session');
+      const toastMessage = getStartSessionErrorToast(error);
+      if (toastMessage) {
+        toast.error(toastMessage);
+      }
 
       if (sessionTokenRef.current) {
         await apiRequest('/end-session', {
