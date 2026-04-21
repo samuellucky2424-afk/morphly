@@ -115,9 +115,11 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Apply the face, hair, and skin appearance from the reference image onto the person in the live camera.
-Keep strictly the same framing, pose, and body crop as shown in the live camera — do not extend the frame or add any content outside it.
-Only transform appearance, not composition.`;
+const BASE_PROMPT = `Substitute the person in the video with the person in the reference image while preserving a natural, photorealistic human appearance.
+Maintain realistic skin texture, natural lighting, and true-to-life facial proportions. Avoid any cartoon, animated, or stylized look.
+Ensure accurate lip sync and natural facial expressions that match the live camera input.
+Only render body parts that are clearly visible in the live camera. Do not generate hands or limbs unless they are visible.
+Keep the output consistent, stable, and as close to a real human camera feed as possible.`;
 const DEFAULT_ENHANCE = false;
 const CREDITS_PER_SECOND = 2;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
