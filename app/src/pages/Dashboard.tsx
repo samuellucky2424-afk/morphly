@@ -1524,6 +1524,7 @@ function Dashboard() {
           error?: string;
           credits?: number;
           maxSeconds?: number;
+          sessionId?: string;
         }>('/start-session', {
           method: 'POST',
           body: JSON.stringify({ userId: user?.id }),
