@@ -2,6 +2,7 @@
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
+const MAX_BILLABLE_SECONDS = 7200;
 
 async function closeActiveSession(userId, activeSession) {
   try {
@@ -11,17 +12,23 @@ async function closeActiveSession(userId, activeSession) {
     const actualCredits = walletData?.credits || 0;
     const startTime = new Date(activeSession.start_time).getTime();
     const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const creditsUsed = elapsedSeconds * CREDITS_PER_SECOND;
-    
+
+    const storedMax = activeSession.max_seconds;
+    const maxSeconds = typeof storedMax === 'number' && storedMax > 0
+      ? storedMax
+      : Math.min(Math.floor(actualCredits / CREDITS_PER_SECOND), MAX_BILLABLE_SECONDS);
+    const billableSeconds = Math.min(elapsedSeconds, maxSeconds);
+    const creditsUsed = billableSeconds * CREDITS_PER_SECOND;
+
     const finalCreditsUsed = Math.min(actualCredits, creditsUsed);
     const newCredits = Math.max(0, actualCredits - finalCreditsUsed);
 
     await supabaseAdmin
       .from('sessions')
       .update({
-        end_time: new Date(), 
-        cost: finalCreditsUsed, 
-        seconds_used: elapsedSeconds, 
+        end_time: new Date(),
+        credits_used: finalCreditsUsed,
+        seconds_used: billableSeconds,
         status: 'ended'
       }).eq('id', activeSession.id).eq('status', 'active');
 
