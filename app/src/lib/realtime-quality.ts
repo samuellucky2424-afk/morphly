@@ -13,7 +13,7 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
   fast: {
     label: 'Fast',
     width: 640,
-    height: 360,
+    height: 352,
     targetFps: 25,
     maxFps: 25,
     enhance: false,
@@ -21,7 +21,7 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
   balanced: {
     label: 'Balanced',
     width: 960,
-    height: 540,
+    height: 528,
     targetFps: 25,
     maxFps: 25,
     enhance: false,
@@ -29,7 +29,7 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
   hd: {
     label: 'HD',
     width: 1280,
-    height: 720,
+    height: 704,
     targetFps: 25,
     maxFps: 25,
     enhance: false,
