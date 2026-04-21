@@ -1,8 +1,23 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
 const MAX_BILLABLE_SECONDS = 7200;
+
+function normalizeCredits(value) {
+  const credits = Number(value ?? 0);
+  return Number.isFinite(credits) ? credits : 0;
+}
+
+function getBillableSeconds(startTime) {
+  const timestamp = new Date(startTime).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - timestamp) / 1000);
+  return Math.min(Math.max(elapsedSeconds, 0), MAX_BILLABLE_SECONDS);
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -15,8 +30,12 @@ export default async function handler(req, res) {
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
 
   try {
-    const [{ data: walletData }, { data: activeSession }] = await Promise.all([
-      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).single(),
+    if (!supabaseAdmin) {
+      return res.status(503).json({ error: supabaseAdminConfigError || 'Supabase admin is not configured' });
+    }
+
+    const [walletResult, activeSessionResult] = await Promise.all([
+      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       supabaseAdmin
         .from('sessions')
         .select('id, start_time')
@@ -24,10 +43,23 @@ export default async function handler(req, res) {
         .eq('status', 'active')
         .order('created_at', { ascending: false })
         .limit(1)
-        .single(),
+        .maybeSingle(),
     ]);
 
-    const walletCredits = walletData?.credits ?? 0;
+    if (walletResult.error) {
+      console.error('Failed to load wallet for session-status:', walletResult.error);
+      return res.status(500).json({ error: 'Failed to load wallet' });
+    }
+
+    if (activeSessionResult.error) {
+      console.error('Failed to load active session for session-status:', activeSessionResult.error);
+      return res.status(500).json({ error: 'Failed to load active session' });
+    }
+
+    const walletData = walletResult.data;
+    const activeSession = activeSessionResult.data;
+
+    const walletCredits = normalizeCredits(walletData?.credits);
 
     if (!activeSession) {
       return res.json({ credits: walletCredits, remainingCredits: walletCredits, shouldStop: walletCredits <= 0 });
@@ -36,10 +68,7 @@ export default async function handler(req, res) {
     // Compute live balance: wallet credits minus every second elapsed since start.
     // This is purely a read — no DB writes. The actual deduction happens in
     // end-session so the wallet value stays stable during streaming.
-    const elapsedSeconds = Math.floor(
-      (Date.now() - new Date(activeSession.start_time).getTime()) / 1000,
-    );
-    const billableElapsed = Math.min(elapsedSeconds, MAX_BILLABLE_SECONDS);
+    const billableElapsed = getBillableSeconds(activeSession.start_time);
     const liveDeducted = Math.min(walletCredits, billableElapsed * CREDITS_PER_SECOND);
     const remainingCredits = Math.max(0, walletCredits - liveDeducted);
     const shouldStop = remainingCredits <= 0;
@@ -52,6 +81,7 @@ export default async function handler(req, res) {
       forceEnd: shouldStop,
     });
   } catch (error) {
+    console.error('session-status unexpected error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

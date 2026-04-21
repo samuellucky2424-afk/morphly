@@ -1,8 +1,23 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 const CREDITS_PER_SECOND = 2;
 const MAX_BILLABLE_SECONDS = 7200;
+
+function normalizeCredits(value) {
+  const credits = Number(value ?? 0);
+  return Number.isFinite(credits) ? credits : 0;
+}
+
+function getBillableSeconds(startTime) {
+  const timestamp = new Date(startTime).getTime();
+  if (!Number.isFinite(timestamp)) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - timestamp) / 1000);
+  return Math.min(Math.max(elapsedSeconds, 0), MAX_BILLABLE_SECONDS);
+}
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -13,23 +28,38 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
+    if (!supabaseAdmin) {
+      return res.status(503).json({ allowed: false, error: supabaseAdminConfigError || 'Supabase admin is not configured' });
+    }
+
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ allowed: false, error: 'User ID is required' });
 
     // Fetch orphaned sessions and wallet in parallel
-    const [{ data: existingActiveSessions }, { data: walletNow }] = await Promise.all([
+    const [activeSessionsResult, walletResult] = await Promise.all([
       supabaseAdmin.from('sessions').select('id, start_time').eq('user_id', userId).eq('status', 'active'),
-      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).single(),
+      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
     ]);
 
+    if (activeSessionsResult.error) {
+      console.error('Failed to load active sessions:', activeSessionsResult.error);
+      return res.status(500).json({ allowed: false, error: 'Failed to load active sessions' });
+    }
+
+    if (walletResult.error) {
+      console.error('Failed to load wallet:', walletResult.error);
+      return res.status(500).json({ allowed: false, error: 'Failed to load wallet' });
+    }
+
+    const existingActiveSessions = activeSessionsResult.data ?? [];
+    const walletNow = walletResult.data;
+
     // Bill and close all orphaned sessions in one parallel batch
-    let runningCredits = walletNow?.credits ?? 0;
+    let runningCredits = normalizeCredits(walletNow?.credits);
     if (existingActiveSessions && existingActiveSessions.length > 0) {
-      const now = Date.now();
       let totalDeduction = 0;
       const sessionCalcs = existingActiveSessions.map(session => {
-        const elapsedSeconds = Math.floor((now - new Date(session.start_time).getTime()) / 1000);
-        const billableSeconds = Math.min(elapsedSeconds, MAX_BILLABLE_SECONDS);
+        const billableSeconds = getBillableSeconds(session.start_time);
         const creditsToDeduct = billableSeconds * CREDITS_PER_SECOND;
         totalDeduction += creditsToDeduct;
         return { id: session.id, billableSeconds, creditsToDeduct };
@@ -37,7 +67,7 @@ export default async function handler(req, res) {
       const actualDeduction = Math.min(runningCredits, totalDeduction);
       runningCredits = runningCredits - actualDeduction;
       // Close all sessions + update wallet in one parallel round-trip
-      await Promise.all([
+      const cleanupResults = await Promise.all([
         ...sessionCalcs.map(s =>
           supabaseAdmin.from('sessions')
             .update({ end_time: new Date(), status: 'ended', seconds_used: s.billableSeconds, cost: s.creditsToDeduct })
@@ -47,6 +77,12 @@ export default async function handler(req, res) {
           ? supabaseAdmin.from('wallets').update({ credits: runningCredits }).eq('user_id', userId)
           : Promise.resolve(),
       ]);
+
+      const cleanupError = cleanupResults.find(result => result?.error);
+      if (cleanupError?.error) {
+        console.error('Failed to close orphaned sessions:', cleanupError.error);
+        return res.status(500).json({ allowed: false, error: 'Failed to close previous sessions' });
+      }
     }
 
     // Use the already-fetched (and post-billing-adjusted) credit balance
@@ -70,10 +106,14 @@ export default async function handler(req, res) {
         seconds_used: 0,
       }).select('id').single();
 
-    if (sessionError) return res.status(500).json({ allowed: false, error: 'Failed to create session' });
+    if (sessionError) {
+      console.error('Failed to create session:', sessionError);
+      return res.status(500).json({ allowed: false, error: 'Failed to create session' });
+    }
 
     res.json({ allowed: true, sessionId: newSession.id, credits: userCredits, maxSeconds, token: process.env.DECART_API_KEY });
   } catch (error) {
+    console.error('start-session unexpected error:', error);
     res.status(500).json({ allowed: false, error: 'Internal server error' });
   }
 }
