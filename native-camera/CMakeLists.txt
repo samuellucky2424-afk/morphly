@@ -59,12 +59,10 @@ add_executable(morphly_cam_registrar
 )
 target_link_libraries(morphly_cam_registrar PRIVATE
     morphly_common
-    advapi32
     mf
     mfplat
     mfsensorgroup
     ole32
-    shell32
 )
 
 add_executable(morphly_cam_feeder

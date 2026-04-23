@@ -41,6 +41,6 @@ Native camera prerequisite:
   - morphly_cam_pipe_publisher.exe
 
 Release outputs:
-  release/Morphly Setup 1.2.22.exe
-  release/Morphly 1.2.22.exe
+  release/Morphly Setup 1.2.21.exe
+  release/Morphly 1.2.21.exe
   release/win-unpacked/resources/morphly-cam/
