@@ -89,7 +89,7 @@ namespace
 
         const auto closeClassKey = [&]() noexcept { RegCloseKey(classKey); };
 
-        HRESULT hr = SetRegistryString(classKey, nullptr, L"Morphly Camera Media Source");
+        HRESULT hr = SetRegistryString(classKey, nullptr, morphly::kVirtualCameraFriendlyName);
         if (FAILED(hr))
         {
             closeClassKey();

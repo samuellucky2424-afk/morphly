@@ -122,6 +122,43 @@ namespace
             << " stride=" << config.stride
             << " format=BGRA32\n";
     }
+
+    bool IsLikelyBlackBgraFrame(const uint8_t* frameBytes, size_t byteCount)
+    {
+        if (frameBytes == nullptr || byteCount < 4)
+        {
+            return true;
+        }
+
+        const size_t pixelCount = byteCount / 4;
+        const size_t sampleCount = std::min<size_t>(pixelCount, 512);
+        if (sampleCount == 0)
+        {
+            return true;
+        }
+
+        const size_t pixelStep = std::max<size_t>(1, pixelCount / sampleCount);
+        size_t nonBlackSamples = 0;
+
+        for (size_t pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += pixelStep)
+        {
+            const size_t byteIndex = pixelIndex * 4;
+            const uint8_t blue = frameBytes[byteIndex + 0];
+            const uint8_t green = frameBytes[byteIndex + 1];
+            const uint8_t red = frameBytes[byteIndex + 2];
+
+            if (blue != 0 || green != 0 || red != 0)
+            {
+                ++nonBlackSamples;
+                if (nonBlackSamples >= 4)
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -279,6 +316,11 @@ int wmain(int argc, wchar_t** argv)
         {
             std::cerr << "Failed to publish frame. HRESULT=0x" << std::hex << static_cast<unsigned long>(publishHr) << "\n";
             return 1;
+        }
+
+        if ((publishedFrames % currentConfig.fpsNumerator) == 0 && IsLikelyBlackBgraFrame(frameBytes.data(), frameBytes.size()))
+        {
+            std::cerr << "MorphlyCam publisher detected a black BGRA frame from stdin.\n";
         }
 
         ++publishedFrames;

@@ -140,6 +140,8 @@ const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
 const DECART_REALTIME_MODEL = 'lucy-2.1';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
+const MORPHLY_CAM_FRAME_WIDTH = 1280;
+const MORPHLY_CAM_FRAME_HEIGHT = 720;
 
 function createEmptyStreamMetrics(): StreamMetrics {
   return {
@@ -309,11 +311,13 @@ function Dashboard() {
   const previousCameraIdRef = useRef('');
   const morphlyCamWindowRef = useRef<Window | null>(null);
   const morphlyCamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const morphlyCamCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const morphlyCamStatusRef = useRef<HTMLDivElement | null>(null);
   const morphlyCamPlaceholderRef = useRef<HTMLDivElement | null>(null);
   const morphlyCamPopupWarnedRef = useRef(false);
   const morphlyCamWindowEnabledRef = useRef(false);
   const latestRemoteStreamRef = useRef<MediaStream | null>(null);
+  const morphlyCamRenderHandleRef = useRef<number | null>(null);
 
   const promptRef = useRef(prompt);
   const referenceImageRef = useRef(referenceImage);
@@ -353,8 +357,14 @@ function Dashboard() {
   }, [preferredMode]);
 
   const resetMorphlyCamRefs = useCallback(() => {
+    if (morphlyCamWindowRef.current && morphlyCamRenderHandleRef.current !== null) {
+      morphlyCamWindowRef.current.cancelAnimationFrame(morphlyCamRenderHandleRef.current);
+    }
+
+    morphlyCamRenderHandleRef.current = null;
     morphlyCamWindowRef.current = null;
     morphlyCamVideoRef.current = null;
+    morphlyCamCanvasRef.current = null;
     morphlyCamStatusRef.current = null;
     morphlyCamPlaceholderRef.current = null;
     morphlyCamWindowEnabledRef.current = false;
@@ -407,6 +417,59 @@ function Dashboard() {
     status.style.opacity = '1';
   }, []);
 
+  const stopMorphlyCamRenderLoop = useCallback(() => {
+    const popup = morphlyCamWindowRef.current;
+    if (popup && morphlyCamRenderHandleRef.current !== null) {
+      popup.cancelAnimationFrame(morphlyCamRenderHandleRef.current);
+    }
+
+    morphlyCamRenderHandleRef.current = null;
+  }, []);
+
+  const startMorphlyCamRenderLoop = useCallback(() => {
+    const popup = morphlyCamWindowRef.current;
+    const video = morphlyCamVideoRef.current;
+    const canvas = morphlyCamCanvasRef.current;
+
+    if (!popup || popup.closed || !video || !canvas) {
+      return;
+    }
+
+    stopMorphlyCamRenderLoop();
+
+    const context = canvas.getContext('2d', {
+      alpha: false,
+      desynchronized: true,
+      willReadFrequently: false,
+    });
+
+    if (!context) {
+      return;
+    }
+
+    const renderFrame = () => {
+      const currentPopup = morphlyCamWindowRef.current;
+      const currentVideo = morphlyCamVideoRef.current;
+      const currentCanvas = morphlyCamCanvasRef.current;
+
+      if (!currentPopup || currentPopup.closed || !currentVideo || !currentCanvas) {
+        morphlyCamRenderHandleRef.current = null;
+        return;
+      }
+
+      context.fillStyle = '#000000';
+      context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+
+      if (currentVideo.readyState >= 2 && currentVideo.videoWidth > 0 && currentVideo.videoHeight > 0) {
+        context.drawImage(currentVideo, 0, 0, currentCanvas.width, currentCanvas.height);
+      }
+
+      morphlyCamRenderHandleRef.current = currentPopup.requestAnimationFrame(renderFrame);
+    };
+
+    morphlyCamRenderHandleRef.current = popup.requestAnimationFrame(renderFrame);
+  }, [stopMorphlyCamRenderLoop]);
+
   const renderMorphlyCamWindowShell = useCallback((popup: Window) => {
     const doc = popup.document;
 
@@ -448,6 +511,14 @@ function Dashboard() {
               background: #000;
             }
 
+            #morphly-cam-video {
+              position: absolute;
+              width: 1px;
+              height: 1px;
+              opacity: 0;
+              pointer-events: none;
+            }
+
             #morphly-cam-placeholder {
               position: absolute;
               inset: 0;
@@ -485,7 +556,8 @@ function Dashboard() {
         </head>
         <body>
           <div id="morphly-cam-root">
-            <video id="morphly-cam-output" autoplay playsinline muted></video>
+            <canvas id="morphly-cam-output" width="${MORPHLY_CAM_FRAME_WIDTH}" height="${MORPHLY_CAM_FRAME_HEIGHT}"></canvas>
+            <video id="morphly-cam-video" autoplay playsinline muted></video>
             <div id="morphly-cam-placeholder">
               Start Morphly first, then capture this window in SplitCam or OBS. This window is not a standalone webcam device.
             </div>
@@ -497,13 +569,15 @@ function Dashboard() {
     doc.close();
     doc.title = 'Morphly cam';
 
-    morphlyCamVideoRef.current = doc.getElementById('morphly-cam-output') as HTMLVideoElement | null;
+    morphlyCamCanvasRef.current = doc.getElementById('morphly-cam-output') as HTMLCanvasElement | null;
+    morphlyCamVideoRef.current = doc.getElementById('morphly-cam-video') as HTMLVideoElement | null;
     morphlyCamStatusRef.current = doc.getElementById('morphly-cam-status') as HTMLDivElement | null;
     morphlyCamPlaceholderRef.current = doc.getElementById('morphly-cam-placeholder') as HTMLDivElement | null;
 
     if (latestRemoteStreamRef.current && morphlyCamVideoRef.current) {
       morphlyCamVideoRef.current.srcObject = latestRemoteStreamRef.current;
       void morphlyCamVideoRef.current.play().catch(() => {});
+      startMorphlyCamRenderLoop();
       updateMorphlyCamStatus(null);
       updateMorphlyCamPlaceholder(null);
     } else {
@@ -511,9 +585,10 @@ function Dashboard() {
     }
 
     popup.onbeforeunload = () => {
+      stopMorphlyCamRenderLoop();
       resetMorphlyCamRefs();
     };
-  }, [getMorphlyCamGuideMessage, resetMorphlyCamRefs, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
+  }, [getMorphlyCamGuideMessage, resetMorphlyCamRefs, startMorphlyCamRenderLoop, stopMorphlyCamRenderLoop, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const ensureMorphlyCamWindow = useCallback((statusMessage: string) => {
     if (typeof window === 'undefined') {
@@ -548,7 +623,7 @@ function Dashboard() {
       return null;
     }
 
-    if (!popup.document.getElementById('morphly-cam-output')) {
+    if (!popup.document.getElementById('morphly-cam-output') || !popup.document.getElementById('morphly-cam-video')) {
       renderMorphlyCamWindowShell(popup);
     }
 
@@ -586,21 +661,25 @@ function Dashboard() {
     popupVideo.playbackRate = 1;
     popupVideo.onloadedmetadata = () => {
       void popupVideo.play().catch(() => {});
+      startMorphlyCamRenderLoop();
       updateMorphlyCamStatus(null);
       updateMorphlyCamPlaceholder(null);
     };
 
     if (popupVideo.readyState >= 2) {
       void popupVideo.play().catch(() => {});
+      startMorphlyCamRenderLoop();
       updateMorphlyCamStatus(null);
       updateMorphlyCamPlaceholder(null);
     }
-  }, [ensureMorphlyCamWindow, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
+  }, [ensureMorphlyCamWindow, startMorphlyCamRenderLoop, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const closeMorphlyCamWindow = useCallback((options?: { clearStream?: boolean }) => {
     if (options?.clearStream) {
       latestRemoteStreamRef.current = null;
     }
+
+    stopMorphlyCamRenderLoop();
 
     if (morphlyCamVideoRef.current) {
       morphlyCamVideoRef.current.srcObject = null;
@@ -612,7 +691,7 @@ function Dashboard() {
     }
 
     resetMorphlyCamRefs();
-  }, [resetMorphlyCamRefs]);
+  }, [resetMorphlyCamRefs, stopMorphlyCamRenderLoop]);
 
   const clearSoftReconnectTimer = useCallback(() => {
     if (softReconnectTimerRef.current) {

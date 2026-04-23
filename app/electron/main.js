@@ -26,6 +26,7 @@ const VIRTUAL_CAM_PIPE_VERSION = 1;
 const VIRTUAL_CAM_PIPE_HEADER_BYTES = 40;
 const WINDOWS_FILETIME_EPOCH_OFFSET = 116444736000000000n;
 const VIRTUAL_CAM_STATS_INTERVAL_MS = 5000;
+const VIRTUAL_CAM_BLACK_SAMPLE_PIXELS = 512;
 
 app.disableHardwareAcceleration();
 
@@ -50,9 +51,41 @@ function logVirtualCameraStats(controller, reason) {
   console.info(
     `Morphly cam bridge stats (${reason}): frames=${controller.stats.framesSent} fps=${fps.toFixed(2)} ` +
     `captureFailures=${controller.stats.captureFailures} publishFailures=${controller.stats.publishFailures} ` +
+    `blackFrames=${controller.stats.blackFrames} ` +
     `size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=BGRA32`
   );
   controller.stats.lastLogAt = now;
+}
+
+function isLikelyBlackFrame(frameBytes) {
+  if (!frameBytes || frameBytes.length < 4) {
+    return true;
+  }
+
+  const totalPixels = Math.floor(frameBytes.length / 4);
+  const samplePixels = Math.min(totalPixels, VIRTUAL_CAM_BLACK_SAMPLE_PIXELS);
+  if (samplePixels === 0) {
+    return true;
+  }
+
+  const pixelStep = Math.max(1, Math.floor(totalPixels / samplePixels));
+  let nonBlackSamples = 0;
+
+  for (let pixelIndex = 0; pixelIndex < totalPixels; pixelIndex += pixelStep) {
+    const byteIndex = pixelIndex * 4;
+    const blue = frameBytes[byteIndex];
+    const green = frameBytes[byteIndex + 1];
+    const red = frameBytes[byteIndex + 2];
+
+    if (blue !== 0 || green !== 0 || red !== 0) {
+      nonBlackSamples += 1;
+      if (nonBlackSamples >= 4) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 function formatErrorMessage(error) {
@@ -165,6 +198,13 @@ async function captureMorphlyCamFrame(controller) {
         throw new Error(`Unexpected capture size: received ${frameBytes.length} bytes, expected ${expectedBytes}.`);
       }
 
+      if (isLikelyBlackFrame(frameBytes)) {
+        controller.stats.blackFrames += 1;
+        if ((controller.stats.blackFrames % VIRTUAL_CAM_FRAME_RATE) === 0) {
+          console.warn('Morphly cam bridge captured a black frame. Renderer output is active but not painting visible pixels yet.');
+        }
+      }
+
       await writeFrameToVirtualCameraPublisher(controller, frameBytes);
     }
   } catch (error) {
@@ -267,7 +307,8 @@ function ensureMorphlyCamPublisher(window) {
         lastLogAt: Date.now(),
         framesSent: 0,
         captureFailures: 0,
-        publishFailures: 0
+        publishFailures: 0,
+        blackFrames: 0
       }
     };
 

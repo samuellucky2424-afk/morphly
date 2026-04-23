@@ -647,8 +647,8 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, static_cast<UINT32>(MFFrameSourceTypes::MFFrameSourceTypes_Color)));
 
             ComPtr<IMFMediaType> mediaTypes[2];
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2, mediaConfig_, &mediaTypes[0]));
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_RGB32, mediaConfig_, &mediaTypes[1]));
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_RGB32, mediaConfig_, &mediaTypes[0]));
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2, mediaConfig_, &mediaTypes[1]));
             IMFMediaType* mediaTypePointers[] = { mediaTypes[0].Get(), mediaTypes[1].Get() };
             RETURN_IF_FAILED(MFCreateStreamDescriptor(kStreamId, ARRAYSIZE(mediaTypePointers), mediaTypePointers, &streamDescriptor_));
             RETURN_IF_FAILED(attributes_->CopyAllItems(streamDescriptor_.Get()));
