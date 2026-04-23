@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <wrl/client.h>
 
@@ -30,6 +31,13 @@
 namespace
 {
     using DllProc = HRESULT(STDAPICALLTYPE*)();
+
+    struct CameraRegistrationMode
+    {
+        MFVirtualCameraLifetime lifetime = MFVirtualCameraLifetime_System;
+        MFVirtualCameraAccess access = MFVirtualCameraAccess_CurrentUser;
+        const wchar_t* label = L"";
+    };
 
     struct ComScope
     {
@@ -147,6 +155,46 @@ namespace
         return buffer;
     }
 
+    bool IsMissingCameraResult(HRESULT hr) noexcept
+    {
+        return hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
+            || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+            || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
+    }
+
+    std::vector<CameraRegistrationMode> BuildInstallModes(bool sessionLifetime, bool allUsers)
+    {
+        if (sessionLifetime)
+        {
+            return {
+                { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
+            };
+        }
+
+        if (allUsers)
+        {
+            return {
+                { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_AllUsers, L"system/all-users" },
+                { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
+                { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
+            };
+        }
+
+        return {
+            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
+            { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
+        };
+    }
+
+    std::vector<CameraRegistrationMode> BuildCleanupModes()
+    {
+        return {
+            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_AllUsers, L"system/all-users" },
+            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
+            { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
+        };
+    }
+
     HRESULT OpenVirtualCamera(MFVirtualCameraLifetime lifetime, MFVirtualCameraAccess access, IMFVirtualCamera** camera)
     {
         if (camera == nullptr)
@@ -175,6 +223,73 @@ namespace
             camera);
     }
 
+    HRESULT RemoveCameraRegistration(const CameraRegistrationMode& mode) noexcept
+    {
+        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
+        const HRESULT openHr = OpenVirtualCamera(mode.lifetime, mode.access, &camera);
+        if (FAILED(openHr))
+        {
+            return openHr;
+        }
+
+        const HRESULT removeHr = camera->Remove();
+        camera->Shutdown();
+        return removeHr;
+    }
+
+    void CleanupStaleRegistrations()
+    {
+        for (const auto& mode : BuildCleanupModes())
+        {
+            const HRESULT hr = RemoveCameraRegistration(mode);
+            if (SUCCEEDED(hr) || IsMissingCameraResult(hr))
+            {
+                if (SUCCEEDED(hr))
+                {
+                    std::wcout << L"Removed stale virtual camera registration for " << mode.label << L".\n";
+                }
+                continue;
+            }
+
+            std::wcout
+                << L"Stale registration cleanup skipped for "
+                << mode.label
+                << L" with HRESULT 0x"
+                << std::hex << static_cast<unsigned long>(hr)
+                << std::dec << L"\n";
+        }
+    }
+
+    HRESULT TryInstallCamera(const CameraRegistrationMode& mode)
+    {
+        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
+        std::wcout << L"Opening virtual camera registration for " << mode.label << L"...\n";
+        RETURN_IF_FAILED(OpenVirtualCamera(mode.lifetime, mode.access, &camera));
+
+        std::wcout << L"Starting virtual camera for " << mode.label << L"...\n";
+        const HRESULT startHr = camera->Start(nullptr);
+        if (FAILED(startHr))
+        {
+            camera->Shutdown();
+            return startHr;
+        }
+
+        wchar_t* symbolicLink = nullptr;
+        UINT32 cch = 0;
+        if (SUCCEEDED(camera->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &symbolicLink, &cch)))
+        {
+            std::wcout << L"Virtual camera installed (" << mode.label << L"): " << symbolicLink << L"\n";
+            CoTaskMemFree(symbolicLink);
+        }
+        else
+        {
+            std::wcout << L"Virtual camera installed (" << mode.label << L").\n";
+        }
+
+        camera->Shutdown();
+        return S_OK;
+    }
+
     HRESULT InstallCamera(bool sessionLifetime, bool allUsers)
     {
         std::filesystem::path dllPath;
@@ -194,31 +309,27 @@ namespace
             return mf.hr;
         }
 
-        std::wcout << L"Opening virtual camera registration...\n";
+        CleanupStaleRegistrations();
 
-        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
-        RETURN_IF_FAILED(OpenVirtualCamera(
-            sessionLifetime ? MFVirtualCameraLifetime_Session : MFVirtualCameraLifetime_System,
-            allUsers ? MFVirtualCameraAccess_AllUsers : MFVirtualCameraAccess_CurrentUser,
-            &camera));
-
-        std::wcout << L"Starting virtual camera...\n";
-        RETURN_IF_FAILED(camera->Start(nullptr));
-
-        wchar_t* symbolicLink = nullptr;
-        UINT32 cch = 0;
-        if (SUCCEEDED(camera->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &symbolicLink, &cch)))
+        HRESULT lastHr = E_FAIL;
+        for (const auto& mode : BuildInstallModes(sessionLifetime, allUsers))
         {
-            std::wcout << L"Virtual camera installed: " << symbolicLink << L"\n";
-            CoTaskMemFree(symbolicLink);
-        }
-        else
-        {
-            std::wcout << L"Virtual camera installed.\n";
+            const HRESULT installHr = TryInstallCamera(mode);
+            if (SUCCEEDED(installHr))
+            {
+                return S_OK;
+            }
+
+            lastHr = installHr;
+            std::wcerr
+                << L"Install attempt failed for "
+                << mode.label
+                << L" with HRESULT 0x"
+                << std::hex << static_cast<unsigned long>(installHr)
+                << std::dec << L"\n";
         }
 
-        camera->Shutdown();
-        return S_OK;
+        return lastHr;
     }
 
     HRESULT RemoveCamera(bool sessionLifetime, bool allUsers, bool unregisterCom)
@@ -235,13 +346,31 @@ namespace
             return mf.hr;
         }
 
-        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
-        RETURN_IF_FAILED(OpenVirtualCamera(
-            sessionLifetime ? MFVirtualCameraLifetime_Session : MFVirtualCameraLifetime_System,
-            allUsers ? MFVirtualCameraAccess_AllUsers : MFVirtualCameraAccess_CurrentUser,
-            &camera));
-        RETURN_IF_FAILED(camera->Remove());
-        camera->Shutdown();
+        HRESULT lastHr = S_OK;
+        bool removedAny = false;
+        for (const auto& mode : BuildInstallModes(sessionLifetime, allUsers))
+        {
+            const HRESULT removeHr = RemoveCameraRegistration(mode);
+            if (SUCCEEDED(removeHr))
+            {
+                removedAny = true;
+                std::wcout << L"Virtual camera removed (" << mode.label << L").\n";
+                continue;
+            }
+
+            if (IsMissingCameraResult(removeHr))
+            {
+                continue;
+            }
+
+            lastHr = removeHr;
+            std::wcerr
+                << L"Remove attempt failed for "
+                << mode.label
+                << L" with HRESULT 0x"
+                << std::hex << static_cast<unsigned long>(removeHr)
+                << std::dec << L"\n";
+        }
 
         if (unregisterCom)
         {
@@ -250,8 +379,13 @@ namespace
             RETURN_IF_FAILED(InvokeDllEntryPoint(dllPath, "DllUnregisterServer"));
         }
 
-        std::wcout << L"Virtual camera removed.\n";
-        return S_OK;
+        if (removedAny || SUCCEEDED(lastHr))
+        {
+            std::wcout << L"Virtual camera removal completed.\n";
+            return S_OK;
+        }
+
+        return lastHr;
     }
 
     HRESULT ProbeSource()
