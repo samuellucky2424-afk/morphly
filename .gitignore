@@ -22,3 +22,4 @@ release/
 app/release/
 .push-fix/app/release/
 app/.cache/
+native-camera/build/

@@ -24,6 +24,14 @@ jobs:
         cache: 'npm'
         cache-dependency-path: app/package-lock.json
 
+    - name: Configure native Morphly camera build
+      shell: pwsh
+      run: cmake -S native-camera -B native-camera/build -A x64
+
+    - name: Build native Morphly camera artifacts
+      shell: pwsh
+      run: cmake --build native-camera/build --config Release
+
     - name: Install dependencies
       working-directory: app
       run: npm ci
@@ -32,6 +40,7 @@ jobs:
       working-directory: app
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        MORPHLY_NATIVE_BUILD_DIR: ../native-camera/build
       run: npm run electron:release
 
     - name: Resolve release version

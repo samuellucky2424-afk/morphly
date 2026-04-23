@@ -13,6 +13,19 @@ const BUILD_CONFIGS = [
   'Debug'
 ];
 
+function getNativeBuildRoots(appDir) {
+  const roots = [];
+
+  if (process.env.MORPHLY_NATIVE_BUILD_DIR) {
+    roots.push(path.resolve(appDir, process.env.MORPHLY_NATIVE_BUILD_DIR));
+  }
+
+  roots.push(path.resolve(appDir, '..', 'native-camera', 'build'));
+  roots.push(path.resolve(appDir, '..', '..', 'build'));
+
+  return [...new Set(roots)];
+}
+
 async function fileExists(filePath) {
   try {
     await fs.access(filePath);
@@ -23,35 +36,41 @@ async function fileExists(filePath) {
 }
 
 async function resolveNativeArtifacts(appDir) {
-  const nativeBuildRoot = path.resolve(appDir, '..', '..', 'build');
+  const nativeBuildRoots = getNativeBuildRoots(appDir);
 
-  for (const buildConfig of BUILD_CONFIGS) {
-    const candidateDirectory = path.join(nativeBuildRoot, buildConfig);
-    const resolvedArtifacts = {};
-    let allFound = true;
+  for (const nativeBuildRoot of nativeBuildRoots) {
+    const candidateDirectories = [
+      nativeBuildRoot,
+      ...BUILD_CONFIGS.map((buildConfig) => path.join(nativeBuildRoot, buildConfig))
+    ];
 
-    for (const artifactName of NATIVE_ARTIFACTS) {
-      const candidatePath = path.join(candidateDirectory, artifactName);
-      if (!(await fileExists(candidatePath))) {
-        allFound = false;
-        break;
+    for (const candidateDirectory of candidateDirectories) {
+      const resolvedArtifacts = {};
+      let allFound = true;
+
+      for (const artifactName of NATIVE_ARTIFACTS) {
+        const candidatePath = path.join(candidateDirectory, artifactName);
+        if (!(await fileExists(candidatePath))) {
+          allFound = false;
+          break;
+        }
+
+        resolvedArtifacts[artifactName] = candidatePath;
       }
 
-      resolvedArtifacts[artifactName] = candidatePath;
-    }
-
-    if (allFound) {
-      return {
-        buildConfig,
-        nativeBuildRoot,
-        resolvedArtifacts
-      };
+      if (allFound) {
+        return {
+          buildConfig: path.basename(candidateDirectory),
+          nativeBuildRoot,
+          resolvedArtifacts
+        };
+      }
     }
   }
 
   throw new Error(
-    `Unable to locate native Morphly camera artifacts under ${nativeBuildRoot}. ` +
-      `Build MorphlyCam first so ${NATIVE_ARTIFACTS.join(', ')} exist in Release or Debug.`
+    `Unable to locate native Morphly camera artifacts in any of: ${nativeBuildRoots.join(', ')}. ` +
+      `Build MorphlyCam first so ${NATIVE_ARTIFACTS.join(', ')} exist in a build output directory.`
   );
 }
 
