@@ -40,6 +40,7 @@
         "portable"
       ],
       "icon": "build/icon.ico",
+      "requestedExecutionLevel": "requireAdministrator",
       "signAndEditExecutable": false
     },
     "nsis": {
