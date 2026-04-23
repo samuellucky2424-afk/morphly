@@ -14,6 +14,17 @@ namespace morphly
             return static_cast<size_t>(config.stride) * static_cast<size_t>(config.height);
         }
 
+        int64_t GetTimestampHundredsOfNs() noexcept
+        {
+            FILETIME fileTime{};
+            GetSystemTimePreciseAsFileTime(&fileTime);
+
+            ULARGE_INTEGER value{};
+            value.LowPart = fileTime.dwLowDateTime;
+            value.HighPart = fileTime.dwHighDateTime;
+            return static_cast<int64_t>(value.QuadPart);
+        }
+
         HRESULT WaitForOwnedMutex(HANDLE mutex)
         {
             const DWORD waitResult = WaitForSingleObject(mutex, 2000);
@@ -116,7 +127,10 @@ namespace morphly
         header->fpsNumerator = config.fpsNumerator;
         header->fpsDenominator = config.fpsDenominator;
         header->payloadBytes = static_cast<uint32_t>(payloadByteCount_);
+        header->frameCounter = 1;
+        header->timestampHundredsOfNs = GetTimestampHundredsOfNs();
         ReleaseMutex(mutex_);
+        SetEvent(event_);
 
         return S_OK;
     }

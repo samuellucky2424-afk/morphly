@@ -168,22 +168,43 @@ namespace morphly::virtualcam
             return startPosition->vt == VT_I8 && startPosition->hVal.QuadPart == 0;
         }
 
-        void FillSyntheticBgra(const MediaConfig& config, uint64_t frameIndex, std::vector<uint8_t>* bgra)
+        void FillBlackBgra(const MediaConfig& config, std::vector<uint8_t>* bgra)
         {
             const size_t payloadSize = static_cast<size_t>(config.stride) * config.height;
             bgra->resize(payloadSize);
+            std::fill(bgra->begin(), bgra->end(), 0);
 
             for (uint32_t y = 0; y < config.height; ++y)
             {
                 uint8_t* row = bgra->data() + (static_cast<size_t>(y) * config.stride);
                 for (uint32_t x = 0; x < config.width; ++x)
                 {
-                    const uint8_t phase = static_cast<uint8_t>((frameIndex * 3) & 0xff);
-                    row[(x * 4) + 0] = static_cast<uint8_t>((x + phase) & 0xff);
-                    row[(x * 4) + 1] = static_cast<uint8_t>((y + phase) & 0xff);
-                    row[(x * 4) + 2] = static_cast<uint8_t>(((x / 2) + (y / 3) + phase) & 0xff);
                     row[(x * 4) + 3] = 0xff;
                 }
+            }
+        }
+
+        bool HasExpectedBgraPayload(const MediaConfig& config, const std::vector<uint8_t>& bgra) noexcept
+        {
+            if (config.width == 0 || config.height == 0 || config.stride < (config.width * 4))
+            {
+                return false;
+            }
+
+            const size_t expectedPayload = static_cast<size_t>(config.stride) * config.height;
+            return bgra.size() >= expectedPayload;
+        }
+
+        void CopyBgraRows(const MediaConfig& config, const std::vector<uint8_t>& bgra, std::vector<uint8_t>* packed)
+        {
+            const uint32_t packedStride = config.width * 4;
+            packed->resize(static_cast<size_t>(packedStride) * config.height);
+
+            for (uint32_t y = 0; y < config.height; ++y)
+            {
+                const uint8_t* srcRow = bgra.data() + (static_cast<size_t>(y) * config.stride);
+                uint8_t* dstRow = packed->data() + (static_cast<size_t>(y) * packedStride);
+                std::memcpy(dstRow, srcRow, packedStride);
             }
         }
 
@@ -442,7 +463,7 @@ namespace morphly::virtualcam
             bool isShutdown_ = false;
             bool isSelected_ = false;
             MF_STREAM_STATE streamState_ = MF_STREAM_STATE_STOPPED;
-            uint64_t syntheticFrameIndex_ = 0;
+            std::vector<uint8_t> lastGoodBgraFrame_;
         };
 
         class MorphlyMediaSource final : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IMFMediaSourceEx, IMFGetService, IKsControl, IMFSampleAllocatorControl>
@@ -639,6 +660,7 @@ namespace morphly::virtualcam
 
             streamState_ = MF_STREAM_STATE_STOPPED;
             isSelected_ = false;
+            FillBlackBgra(mediaConfig_, &lastGoodBgraFrame_);
 
             return S_OK;
         }
@@ -917,47 +939,68 @@ namespace morphly::virtualcam
 
             *sample = nullptr;
 
-            MediaConfig currentConfig = mediaConfig_;
+            MediaConfig outputConfig = mediaConfig_;
+            MediaConfig bgraConfig = mediaConfig_;
             ComPtr<IMFMediaBuffer> buffer;
             ComPtr<IMFSample> value;
             GUID subtype = GUID_NULL;
-            uint32_t width = currentConfig.width;
-            uint32_t height = currentConfig.height;
-            uint32_t fpsNum = currentConfig.fpsNumerator;
-            uint32_t fpsDen = currentConfig.fpsDenominator;
+            uint32_t width = outputConfig.width;
+            uint32_t height = outputConfig.height;
+            uint32_t fpsNum = outputConfig.fpsNumerator;
+            uint32_t fpsDen = outputConfig.fpsDenominator;
 
             RETURN_IF_FAILED(mediaType->GetGUID(MF_MT_SUBTYPE, &subtype));
             RETURN_IF_FAILED(MFGetAttributeSize(mediaType, MF_MT_FRAME_SIZE, &width, &height));
             RETURN_IF_FAILED(MFGetAttributeRatio(mediaType, MF_MT_FRAME_RATE, &fpsNum, &fpsDen));
 
-            currentConfig.width = width;
-            currentConfig.height = height;
-            currentConfig.fpsNumerator = fpsNum;
-            currentConfig.fpsDenominator = fpsDen;
-            currentConfig.stride = subtype == MFVideoFormat_YUY2 ? width * 2 : width * 4;
+            outputConfig.width = width;
+            outputConfig.height = height;
+            outputConfig.fpsNumerator = fpsNum;
+            outputConfig.fpsDenominator = fpsDen;
+            outputConfig.stride = subtype == MFVideoFormat_YUY2 ? width * 2 : width * 4;
+            bgraConfig = outputConfig;
+            bgraConfig.stride = width * 4;
 
             std::vector<uint8_t> bgra;
             MediaConfig sharedConfig{};
             int64_t timestampHundredsOfNs = 0;
             uint64_t frameCounter = 0;
             const HRESULT readHr = frameReader_.ReadFrame(&bgra, &sharedConfig, &timestampHundredsOfNs, &frameCounter);
+            const bool hasValidSharedFrame = SUCCEEDED(readHr)
+                && readHr != S_FALSE
+                && sharedConfig.width == width
+                && sharedConfig.height == height
+                && sharedConfig.stride >= (width * 4)
+                && HasExpectedBgraPayload(sharedConfig, bgra);
 
-            if (FAILED(readHr) || readHr == S_FALSE || sharedConfig.width != width || sharedConfig.height != height)
+            if (hasValidSharedFrame)
             {
-                ++syntheticFrameIndex_;
-                frameCounter = syntheticFrameIndex_;
+                bgraConfig = sharedConfig;
+                lastGoodBgraFrame_ = bgra;
+            }
+            else if (HasExpectedBgraPayload(bgraConfig, lastGoodBgraFrame_))
+            {
+                bgra = lastGoodBgraFrame_;
+            }
+            else
+            {
+                FillBlackBgra(bgraConfig, &bgra);
+                lastGoodBgraFrame_ = bgra;
+            }
+
+            if (timestampHundredsOfNs == 0)
+            {
                 timestampHundredsOfNs = MFGetSystemTime();
-                FillSyntheticBgra(mediaConfig_, frameCounter, &bgra);
             }
 
             std::vector<uint8_t> outputBytes;
             if (subtype == MFVideoFormat_YUY2)
             {
-                ConvertBgraToYuy2(mediaConfig_, bgra.data(), &outputBytes);
+                ConvertBgraToYuy2(bgraConfig, bgra.data(), &outputBytes);
             }
             else
             {
-                outputBytes = std::move(bgra);
+                CopyBgraRows(bgraConfig, bgra, &outputBytes);
             }
 
             RETURN_IF_FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(outputBytes.size()), &buffer));

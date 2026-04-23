@@ -1,11 +1,14 @@
 #include <windows.h>
 
+#include <chrono>
 #include <fcntl.h>
 #include <io.h>
 
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "morphly/morphly_publisher.h"
@@ -82,11 +85,79 @@ namespace
         const uint64_t expectedBytes = static_cast<uint64_t>(header.stride) * header.height;
         return expectedBytes == header.payloadBytes;
     }
+
+    void FillTestPattern(const morphly::PublisherConfig& config, uint64_t frameIndex, std::vector<uint8_t>* frameBytes)
+    {
+        frameBytes->resize(static_cast<size_t>(config.stride) * config.height);
+
+        for (uint32_t y = 0; y < config.height; ++y)
+        {
+            uint8_t* row = frameBytes->data() + (static_cast<size_t>(y) * config.stride);
+            for (uint32_t x = 0; x < config.width; ++x)
+            {
+                const uint8_t phase = static_cast<uint8_t>((frameIndex * 4) & 0xff);
+                row[(x * 4) + 0] = static_cast<uint8_t>((x + phase) & 0xff);
+                row[(x * 4) + 1] = static_cast<uint8_t>((y + 64) & 0xff);
+                row[(x * 4) + 2] = static_cast<uint8_t>(((x / 2) + (y / 2) + phase) & 0xff);
+                row[(x * 4) + 3] = 0xff;
+            }
+        }
+    }
+
+    void LogFrameStats(const morphly::PublisherConfig& config, uint64_t publishedFrames, const std::chrono::steady_clock::time_point& startedAt)
+    {
+        if (publishedFrames == 0)
+        {
+            return;
+        }
+
+        const auto elapsed = std::chrono::steady_clock::now() - startedAt;
+        const double seconds = std::max(0.001, std::chrono::duration<double>(elapsed).count());
+        const double fps = static_cast<double>(publishedFrames) / seconds;
+
+        std::cerr
+            << "MorphlyCam publisher stats: frames=" << publishedFrames
+            << " fps=" << fps
+            << " size=" << config.width << "x" << config.height
+            << " stride=" << config.stride
+            << " format=BGRA32\n";
+    }
 }
 
-int wmain()
+int wmain(int argc, wchar_t** argv)
 {
-    if (_setmode(_fileno(stdin), _O_BINARY) == -1)
+    bool testMode = false;
+    morphly::PublisherConfig testConfig{};
+
+    for (int index = 1; index < argc; ++index)
+    {
+        const std::wstring option = argv[index];
+        if (option == L"--test")
+        {
+            testMode = true;
+        }
+        else if (option == L"--width" && index + 1 < argc)
+        {
+            testConfig.width = static_cast<uint32_t>(_wtoi(argv[++index]));
+        }
+        else if (option == L"--height" && index + 1 < argc)
+        {
+            testConfig.height = static_cast<uint32_t>(_wtoi(argv[++index]));
+        }
+        else if (option == L"--fps" && index + 1 < argc)
+        {
+            testConfig.fpsNumerator = static_cast<uint32_t>(_wtoi(argv[++index]));
+        }
+        else
+        {
+            std::cerr << "Usage: morphly_cam_pipe_publisher.exe [--test] [--width N] [--height N] [--fps N]\n";
+            return 1;
+        }
+    }
+
+    testConfig.stride = testConfig.width * 4;
+
+    if (!testMode && _setmode(_fileno(stdin), _O_BINARY) == -1)
     {
         std::cerr << "Failed to switch stdin to binary mode.\n";
         return 1;
@@ -96,6 +167,57 @@ int wmain()
     morphly::PublisherConfig currentConfig{};
     bool isOpen = false;
     std::vector<uint8_t> frameBytes;
+    uint64_t publishedFrames = 0;
+    auto statsWindowStartedAt = std::chrono::steady_clock::now();
+
+    if (testMode)
+    {
+        const morphly::PublisherConfig nextConfig = testConfig;
+        if (nextConfig.width == 0 || nextConfig.height == 0 || nextConfig.fpsNumerator == 0)
+        {
+            std::cerr << "Test mode requires non-zero width, height, and fps.\n";
+            return 1;
+        }
+
+        const HRESULT openHr = publisher.Open(nextConfig);
+        if (FAILED(openHr))
+        {
+            std::cerr << "Failed to open Morphly publisher in test mode. HRESULT=0x" << std::hex << static_cast<unsigned long>(openHr) << "\n";
+            return 1;
+        }
+
+        currentConfig = nextConfig;
+        isOpen = true;
+        std::cerr
+            << "MorphlyCam publisher test mode active: "
+            << currentConfig.width << "x" << currentConfig.height
+            << " @" << currentConfig.fpsNumerator << "/" << currentConfig.fpsDenominator
+            << " format=BGRA32\n";
+
+        const auto frameInterval = std::chrono::nanoseconds(1'000'000'000LL / currentConfig.fpsNumerator);
+        auto nextFrameDeadline = std::chrono::steady_clock::now();
+
+        for (uint64_t frameIndex = 0;; ++frameIndex)
+        {
+            FillTestPattern(currentConfig, frameIndex, &frameBytes);
+            const HRESULT publishHr = publisher.PublishBgraFrame(frameBytes.data(), frameBytes.size(), GetTimestampHundredsOfNs());
+            if (FAILED(publishHr))
+            {
+                std::cerr << "Failed to publish test frame. HRESULT=0x" << std::hex << static_cast<unsigned long>(publishHr) << "\n";
+                return 1;
+            }
+
+            ++publishedFrames;
+            if ((publishedFrames % currentConfig.fpsNumerator) == 0)
+            {
+                LogFrameStats(currentConfig, publishedFrames, statsWindowStartedAt);
+            }
+
+            nextFrameDeadline += frameInterval;
+            Sleep(0);
+            std::this_thread::sleep_until(nextFrameDeadline);
+        }
+    }
 
     for (;;)
     {
@@ -157,6 +279,12 @@ int wmain()
         {
             std::cerr << "Failed to publish frame. HRESULT=0x" << std::hex << static_cast<unsigned long>(publishHr) << "\n";
             return 1;
+        }
+
+        ++publishedFrames;
+        if ((publishedFrames % currentConfig.fpsNumerator) == 0)
+        {
+            LogFrameStats(currentConfig, publishedFrames, statsWindowStartedAt);
         }
     }
 
