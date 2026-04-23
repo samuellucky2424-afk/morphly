@@ -1,6 +1,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfvirtualcamera.h>
+#include <shellapi.h>
 #include <windows.h>
 
 #include <ks.h>
@@ -64,6 +65,149 @@ namespace
             << L"  morphly_cam_registrar probe\n"
             << L"  morphly_cam_registrar com-register\n"
             << L"  morphly_cam_registrar com-unregister\n";
+    }
+
+    bool IsRunningAsAdministrator()
+    {
+        SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+        PSID administratorsGroup = nullptr;
+        BOOL isAdministrator = FALSE;
+
+        if (!AllocateAndInitializeSid(
+                &ntAuthority,
+                2,
+                SECURITY_BUILTIN_DOMAIN_RID,
+                DOMAIN_ALIAS_RID_ADMINS,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                &administratorsGroup))
+        {
+            return false;
+        }
+
+        const BOOL isMember = CheckTokenMembership(nullptr, administratorsGroup, &isAdministrator);
+        FreeSid(administratorsGroup);
+        return isMember == TRUE && isAdministrator == TRUE;
+    }
+
+    bool CommandRequiresElevation(const std::wstring& command, bool allUsers, bool unregisterCom)
+    {
+        if (command == L"install" || command == L"com-register" || command == L"com-unregister")
+        {
+            return true;
+        }
+
+        if (command == L"remove")
+        {
+            return allUsers || unregisterCom;
+        }
+
+        return false;
+    }
+
+    std::wstring QuoteArgument(const std::wstring& argument)
+    {
+        if (argument.find_first_of(L" \t\"") == std::wstring::npos)
+        {
+            return argument;
+        }
+
+        std::wstring quoted = L"\"";
+        size_t consecutiveBackslashes = 0;
+        for (wchar_t character : argument)
+        {
+            if (character == L'\\')
+            {
+                ++consecutiveBackslashes;
+                continue;
+            }
+
+            if (character == L'\"')
+            {
+                quoted.append(consecutiveBackslashes * 2 + 1, L'\\');
+                quoted.push_back(character);
+                consecutiveBackslashes = 0;
+                continue;
+            }
+
+            if (consecutiveBackslashes > 0)
+            {
+                quoted.append(consecutiveBackslashes, L'\\');
+                consecutiveBackslashes = 0;
+            }
+
+            quoted.push_back(character);
+        }
+
+        if (consecutiveBackslashes > 0)
+        {
+            quoted.append(consecutiveBackslashes * 2, L'\\');
+        }
+
+        quoted.push_back(L'\"');
+        return quoted;
+    }
+
+    std::wstring BuildParameterString(int argc, wchar_t** argv)
+    {
+        std::wstring parameters;
+        for (int index = 1; index < argc; ++index)
+        {
+            if (!parameters.empty())
+            {
+                parameters.push_back(L' ');
+            }
+
+            parameters += QuoteArgument(argv[index]);
+        }
+
+        return parameters;
+    }
+
+    HRESULT RelaunchElevated(int argc, wchar_t** argv, int* exitCode)
+    {
+        if (exitCode == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        wchar_t executablePath[MAX_PATH]{};
+        const DWORD pathLength = GetModuleFileNameW(nullptr, executablePath, ARRAYSIZE(executablePath));
+        if (pathLength == 0 || pathLength >= ARRAYSIZE(executablePath))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        const std::wstring parameters = BuildParameterString(argc, argv);
+
+        SHELLEXECUTEINFOW shellExecuteInfo{};
+        shellExecuteInfo.cbSize = sizeof(shellExecuteInfo);
+        shellExecuteInfo.fMask = SEE_MASK_NOCLOSEPROCESS;
+        shellExecuteInfo.lpVerb = L"runas";
+        shellExecuteInfo.lpFile = executablePath;
+        shellExecuteInfo.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+        shellExecuteInfo.nShow = SW_SHOWNORMAL;
+
+        if (!ShellExecuteExW(&shellExecuteInfo))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        WaitForSingleObject(shellExecuteInfo.hProcess, INFINITE);
+
+        DWORD childExitCode = 1;
+        if (!GetExitCodeProcess(shellExecuteInfo.hProcess, &childExitCode))
+        {
+            childExitCode = 1;
+        }
+
+        CloseHandle(shellExecuteInfo.hProcess);
+        *exitCode = static_cast<int>(childExitCode);
+        return S_OK;
     }
 
     std::filesystem::path GetServiceInstallDirectory()
@@ -347,6 +491,22 @@ int wmain(int argc, wchar_t** argv)
             PrintUsage();
             return 1;
         }
+    }
+
+    if (CommandRequiresElevation(command, allUsers, unregisterCom) && !IsRunningAsAdministrator())
+    {
+        std::wcout << L"Requesting administrator privileges...\n";
+
+        int elevatedExitCode = 1;
+        const HRESULT relaunchHr = RelaunchElevated(argc, argv, &elevatedExitCode);
+        if (FAILED(relaunchHr))
+        {
+            std::wcerr << L"Unable to relaunch with administrator privileges. HRESULT 0x"
+                       << std::hex << static_cast<unsigned long>(relaunchHr) << L"\n";
+            return 1;
+        }
+
+        return elevatedExitCode;
     }
 
     HRESULT hr = E_INVALIDARG;
