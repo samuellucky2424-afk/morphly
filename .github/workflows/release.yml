@@ -62,12 +62,9 @@ jobs:
       shell: pwsh
       run: |
         $version = "${{ steps.release-version.outputs.VERSION }}"
-        $dir = "app/release-build"
+        $dir = "app/release"
 
         if (!(Test-Path $dir)) { throw "Missing output directory: $dir" }
-
-        $latest = Get-ChildItem -Path $dir -Filter "latest.yml" -ErrorAction SilentlyContinue
-        if (!$latest) { throw "Missing latest.yml in $dir" }
 
         $blockmaps = Get-ChildItem -Path $dir -Filter "*.blockmap" -ErrorAction SilentlyContinue
         if (!$blockmaps) { throw "Missing .blockmap files in $dir" }
@@ -86,3 +83,17 @@ jobs:
 
         if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
         if (!$exe2) { throw "Missing portable build. Checked: $($portableCandidates -join ', ')" }
+
+        $bundledCameraDir = Join-Path $dir "win-unpacked/resources/morphly-cam"
+        if (!(Test-Path $bundledCameraDir)) { throw "Missing bundled camera directory: $bundledCameraDir" }
+
+        $expectedArtifacts = @(
+          "MorphlyVirtualCamera.dll",
+          "morphly_cam_registrar.exe",
+          "morphly_cam_pipe_publisher.exe"
+        )
+
+        foreach ($artifact in $expectedArtifacts) {
+          $artifactPath = Join-Path $bundledCameraDir $artifact
+          if (!(Test-Path $artifactPath)) { throw "Missing bundled camera artifact: $artifactPath" }
+        }
