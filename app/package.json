@@ -48,7 +48,7 @@
         "portable"
       ],
       "icon": "build/icon.ico",
-      "requestedExecutionLevel": "requireAdministrator",
+      "requestedExecutionLevel": "asInvoker",
       "signAndEditExecutable": false
     },
     "nsis": {
