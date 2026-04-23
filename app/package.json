@@ -1,16 +1,20 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "1.2.19",
+  "version": "1.2.20",
   "description": "Morphly Desktop Electron package with bundled virtual camera install flow.",
   "author": "Morphly",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samuellucky2424-afk/morphly.git"
+  },
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
     "electron:dev": "electron .",
-    "electron:build": "electron-builder --win",
+    "electron:build": "electron-builder --win --publish never",
     "electron:build:dir": "electron-builder --win dir",
-    "electron:release": "npm run electron:build"
+    "electron:release": "electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.morphly.app",
@@ -48,7 +52,16 @@
     },
     "portable": {
       "artifactName": "Morphly ${version}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "samuellucky2424-afk",
+        "repo": "morphly",
+        "releaseType": "release",
+        "tagNamePrefix": "v"
+      }
+    ]
   },
   "dependencies": {
     "dotenv": "^16.3.1"
