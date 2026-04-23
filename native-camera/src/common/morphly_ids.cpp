@@ -3,9 +3,9 @@
 namespace morphly
 {
     const GUID kVirtualCameraSourceClsid =
-    { 0x564d6611, 0x91f6, 0x4bf6, { 0xaf, 0x69, 0xde, 0xd5, 0x91, 0xc3, 0x35, 0x10 } };
+    { 0x6cb9df61, 0x861f, 0x4fc0, { 0x91, 0xeb, 0x43, 0xd2, 0x0d, 0x44, 0xd7, 0x91 } };
 
-    const wchar_t* const kVirtualCameraFriendlyName = L"Morphly Cam";
+    const wchar_t* const kVirtualCameraFriendlyName = L"Morphly Cam G1";
     const wchar_t* const kPublisherMappingName = L"Local\\MorphlyCam.FrameBuffer";
     const wchar_t* const kPublisherMutexName = L"Local\\MorphlyCam.FrameMutex";
     const wchar_t* const kPublisherEventName = L"Local\\MorphlyCam.FrameEvent";

@@ -36,8 +36,16 @@ let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
 
-function isVirtualCameraTestModeEnabled() {
-  return process.env.MORPHLY_VCAM_TEST_MODE === '1';
+function formatErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error ?? 'Unknown error');
+}
+
+function getTimestampHundredsOfNs() {
+  return (BigInt(Date.now()) * 10000n) + WINDOWS_FILETIME_EPOCH_OFFSET;
 }
 
 function logVirtualCameraStats(controller, reason) {
@@ -50,9 +58,9 @@ function logVirtualCameraStats(controller, reason) {
   const fps = (controller.stats.framesSent * 1000) / elapsedMs;
   console.info(
     `Morphly cam bridge stats (${reason}): frames=${controller.stats.framesSent} fps=${fps.toFixed(2)} ` +
+    `rendererFrames=${controller.stats.rendererFramesReceived} captureFallbacks=${controller.stats.captureFallbacks} ` +
     `captureFailures=${controller.stats.captureFailures} publishFailures=${controller.stats.publishFailures} ` +
-    `blackFrames=${controller.stats.blackFrames} ` +
-    `size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=BGRA32`
+    `blackFrames=${controller.stats.blackFrames} size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=BGRA32`
   );
   controller.stats.lastLogAt = now;
 }
@@ -88,14 +96,6 @@ function isLikelyBlackFrame(frameBytes) {
   return true;
 }
 
-function formatErrorMessage(error) {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error ?? 'Unknown error');
-}
-
 function getVirtualCameraPublisherCandidates() {
   if (app.isPackaged) {
     return [
@@ -106,9 +106,6 @@ function getVirtualCameraPublisherCandidates() {
   }
 
   return [
-    path.resolve(__dirname, '../../native-camera/build/Debug', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../native-camera/build/Release', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../native-camera/build', VIRTUAL_CAM_PUBLISHER_EXE),
     path.resolve(__dirname, '../../../build/Debug', VIRTUAL_CAM_PUBLISHER_EXE),
     path.resolve(__dirname, '../../../build/Release', VIRTUAL_CAM_PUBLISHER_EXE),
     path.resolve(__dirname, '../../../build', VIRTUAL_CAM_PUBLISHER_EXE)
@@ -124,7 +121,7 @@ function resolveVirtualCameraPublisherPath() {
   return match;
 }
 
-function createVirtualCameraFrameHeader(payloadBytes) {
+function createVirtualCameraFrameHeader(payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
   const header = Buffer.alloc(VIRTUAL_CAM_PIPE_HEADER_BYTES);
   header.writeUInt32LE(VIRTUAL_CAM_PIPE_MAGIC, 0);
   header.writeUInt32LE(VIRTUAL_CAM_PIPE_VERSION, 4);
@@ -134,16 +131,16 @@ function createVirtualCameraFrameHeader(payloadBytes) {
   header.writeUInt32LE(VIRTUAL_CAM_FRAME_RATE, 20);
   header.writeUInt32LE(1, 24);
   header.writeUInt32LE(payloadBytes, 28);
-  header.writeBigInt64LE((BigInt(Date.now()) * 10000n) + WINDOWS_FILETIME_EPOCH_OFFSET, 32);
+  header.writeBigInt64LE(timestampHundredsOfNs, 32);
   return header;
 }
 
-async function writeFrameToVirtualCameraPublisher(controller, frameBytes) {
+async function writeFrameToVirtualCameraPublisher(controller, frameBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
   if (!controller.child?.stdin || controller.child.stdin.destroyed) {
     throw new Error('Virtual camera publisher process is not writable.');
   }
 
-  const header = createVirtualCameraFrameHeader(frameBytes.length);
+  const header = createVirtualCameraFrameHeader(frameBytes.length, timestampHundredsOfNs);
   if (!controller.child.stdin.write(header)) {
     await once(controller.child.stdin, 'drain');
   }
@@ -151,11 +148,56 @@ async function writeFrameToVirtualCameraPublisher(controller, frameBytes) {
   if (!controller.child.stdin.write(frameBytes)) {
     await once(controller.child.stdin, 'drain');
   }
+}
+
+async function publishFrameToVirtualCamera(controller, frameBytes, timestampHundredsOfNs, sourceLabel) {
+  const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
+  if (!frameBytes || frameBytes.length !== expectedBytes) {
+    throw new Error(`Unexpected ${sourceLabel} frame size: received ${frameBytes?.length ?? 0} bytes, expected ${expectedBytes}.`);
+  }
+
+  if (isLikelyBlackFrame(frameBytes)) {
+    controller.stats.blackFrames += 1;
+    if ((controller.stats.blackFrames % VIRTUAL_CAM_FRAME_RATE) === 0) {
+      console.warn(`Morphly cam bridge published a black ${sourceLabel} frame.`);
+    }
+  }
+
+  await writeFrameToVirtualCameraPublisher(controller, frameBytes, timestampHundredsOfNs);
 
   controller.stats.framesSent += 1;
   if ((Date.now() - controller.stats.lastLogAt) >= VIRTUAL_CAM_STATS_INTERVAL_MS) {
     logVirtualCameraStats(controller, 'periodic');
   }
+}
+
+function updateRendererFrame(controller, payload) {
+  if (!controller || controller.stopping || !payload) {
+    return;
+  }
+
+  if (payload.width !== VIRTUAL_CAM_FRAME_WIDTH
+    || payload.height !== VIRTUAL_CAM_FRAME_HEIGHT
+    || payload.stride !== VIRTUAL_CAM_FRAME_STRIDE) {
+    return;
+  }
+
+  const pixels = payload.pixels;
+  if (!ArrayBuffer.isView(pixels)) {
+    return;
+  }
+
+  const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
+  if (pixels.byteLength !== expectedBytes) {
+    return;
+  }
+
+  controller.latestRendererFrame = {
+    frameBytes: Buffer.from(pixels),
+    timestampHundredsOfNs: getTimestampHundredsOfNs(),
+    receivedAt: Date.now()
+  };
+  controller.stats.rendererFramesReceived += 1;
 }
 
 function scheduleMorphlyCamCapture(controller, delayMs = 0) {
@@ -184,28 +226,26 @@ async function captureMorphlyCamFrame(controller) {
   const startedAt = Date.now();
 
   try {
-    const capturedImage = await popupWindow.webContents.capturePage();
-    if (!controller.stopping && !capturedImage.isEmpty()) {
-      const frameImage = capturedImage.resize({
-        width: VIRTUAL_CAM_FRAME_WIDTH,
-        height: VIRTUAL_CAM_FRAME_HEIGHT,
-        quality: 'best'
-      });
+    if (controller.latestRendererFrame?.frameBytes) {
+      await publishFrameToVirtualCamera(
+        controller,
+        controller.latestRendererFrame.frameBytes,
+        controller.latestRendererFrame.timestampHundredsOfNs,
+        'renderer'
+      );
+    } else {
+      const capturedImage = await popupWindow.webContents.capturePage();
+      if (!controller.stopping && !capturedImage.isEmpty()) {
+        const frameImage = capturedImage.resize({
+          width: VIRTUAL_CAM_FRAME_WIDTH,
+          height: VIRTUAL_CAM_FRAME_HEIGHT,
+          quality: 'best'
+        });
 
-      const frameBytes = frameImage.toBitmap();
-      const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
-      if (frameBytes.length !== expectedBytes) {
-        throw new Error(`Unexpected capture size: received ${frameBytes.length} bytes, expected ${expectedBytes}.`);
+        const frameBytes = frameImage.toBitmap();
+        controller.stats.captureFallbacks += 1;
+        await publishFrameToVirtualCamera(controller, frameBytes, getTimestampHundredsOfNs(), 'capturePage');
       }
-
-      if (isLikelyBlackFrame(frameBytes)) {
-        controller.stats.blackFrames += 1;
-        if ((controller.stats.blackFrames % VIRTUAL_CAM_FRAME_RATE) === 0) {
-          console.warn('Morphly cam bridge captured a black frame. Renderer output is active but not painting visible pixels yet.');
-        }
-      }
-
-      await writeFrameToVirtualCameraPublisher(controller, frameBytes);
     }
   } catch (error) {
     controller.stats.captureFailures += 1;
@@ -288,10 +328,7 @@ function ensureMorphlyCamPublisher(window) {
 
   try {
     const publisherPath = resolveVirtualCameraPublisherPath();
-    const spawnArgs = isVirtualCameraTestModeEnabled()
-      ? ['--test', '--width', String(VIRTUAL_CAM_FRAME_WIDTH), '--height', String(VIRTUAL_CAM_FRAME_HEIGHT), '--fps', String(VIRTUAL_CAM_FRAME_RATE)]
-      : [];
-    const child = spawn(publisherPath, spawnArgs, {
+    const child = spawn(publisherPath, [], {
       stdio: ['pipe', 'ignore', 'pipe'],
       windowsHide: true
     });
@@ -302,10 +339,13 @@ function ensureMorphlyCamPublisher(window) {
       timer: null,
       captureInFlight: false,
       stopping: false,
+      latestRendererFrame: null,
       stats: {
         startedAt: Date.now(),
         lastLogAt: Date.now(),
         framesSent: 0,
+        rendererFramesReceived: 0,
+        captureFallbacks: 0,
         captureFailures: 0,
         publishFailures: 0,
         blackFrames: 0
@@ -345,16 +385,9 @@ function ensureMorphlyCamPublisher(window) {
     });
 
     morphlyCamPublisher = controller;
-    if (!isVirtualCameraTestModeEnabled()) {
-      scheduleMorphlyCamCapture(controller);
-    }
+    scheduleMorphlyCamCapture(controller);
 
-    return {
-      success: true,
-      message: isVirtualCameraTestModeEnabled()
-        ? `Publishing virtual camera test frames via ${publisherPath}.`
-        : `Publishing Morphly cam output via ${publisherPath}.`
-    };
+    return { success: true, message: `Publishing Morphly cam output via ${publisherPath}.` };
   } catch (error) {
     console.error('Unable to start the virtual camera publisher:', error);
     return { success: false, error: formatErrorMessage(error) };
@@ -520,6 +553,18 @@ function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:stop', async () => {
     virtualCameraEnabled = false;
     return stopMorphlyCamPublisher();
+  });
+
+  ipcMain.on('virtual-camera:push-frame', (event, payload) => {
+    if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
+      return;
+    }
+
+    if (!morphlyCamPublisher || morphlyCamPublisher.stopping) {
+      return;
+    }
+
+    updateRendererFrame(morphlyCamPublisher, payload);
   });
 }
 

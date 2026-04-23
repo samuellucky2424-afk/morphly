@@ -30,4 +30,8 @@ contextBridge.exposeInMainWorld('electron', {
     };
   },
   isElectron: true
+  sendVirtualCameraFrame: (frame) => {
+    ipcRenderer.send('virtual-camera:push-frame', frame);
+  },
+});
 });
