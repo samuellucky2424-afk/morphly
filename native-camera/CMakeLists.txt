@@ -63,6 +63,7 @@ target_link_libraries(morphly_cam_registrar PRIVATE
     mfplat
     mfsensorgroup
     ole32
+    strmiids
 )
 
 add_executable(morphly_cam_feeder

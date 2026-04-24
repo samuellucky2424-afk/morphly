@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('electron', {
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);
     }
-    return Promise.reject(new Error(`Invalid channel: ${channel}`));
+    return Promise.reject(new Error(`Invalid channel: `));
   },
   on: (channel, listener) => {
     const validChannels = ['desktop-updater:state'];
@@ -29,9 +29,9 @@ contextBridge.exposeInMainWorld('electron', {
       ipcRenderer.removeListener(channel, wrappedListener);
     };
   },
-  isElectron: true
+  isElectron: true,
   sendVirtualCameraFrame: (frame) => {
     ipcRenderer.send('virtual-camera:push-frame', frame);
-  },
+  }
 });
-});
+
