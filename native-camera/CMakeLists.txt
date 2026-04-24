@@ -62,9 +62,19 @@ target_link_libraries(morphly_cam_registrar PRIVATE
     mf
     mfplat
     mfsensorgroup
+    mfuuid        # MF GUIDs (MF_DEVSOURCE_ATTRIBUTE_*)
     ole32
-    strmiids
+    oleaut32
+    strmiids      # DirectShow GUIDs (CLSID_FilterMapper2, CLSID_VideoInputDeviceCategory, MEDIATYPE_Video, …)
+    shell32       # ShellExecuteEx (UAC self-elevation)
+    advapi32      # AllocateAndInitializeSid / CheckTokenMembership
 )
+if(MSVC)
+    # Request requireAdministrator elevation for registry writes
+    target_link_options(morphly_cam_registrar PRIVATE
+        "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
+    )
+endif()
 
 add_executable(morphly_cam_feeder
     src/tools/feeder/main.cpp

@@ -1,312 +1,184 @@
+// morphly_cam_registrar/main.cpp
+//
+// Registers MorphlyVirtualCamera.dll as:
+//   1. A COM in-process server (via DllRegisterServer)
+//   2. A Media Foundation virtual camera (via MFCreateVirtualCamera)
+//   3. A DirectShow Video Input Device (via IFilterMapper2::RegisterFilter)
+//
+// Must be run with administrator privileges.
+
+#include <windows.h>
+
+// COM / DirectShow
+#include <objbase.h>
+#include <strmif.h>      // IFilterMapper2, REGFILTER2, ICreateDevEnum
+#include <uuids.h>       // CLSID_FilterMapper2, CLSID_VideoInputDeviceCategory, MEDIATYPE_*
+#include <comdef.h>
+
+// Media Foundation virtual camera
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfvirtualcamera.h>
-#include <dshow.h>
-#include <windows.h>
 
+// KS categories
 #include <ks.h>
 #include <ksmedia.h>
 #include <ksproxy.h>
 
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
-#include <sstream>
+#include <iomanip>
 #include <string>
-#include <vector>
+#include <sstream>
 
 #include <wrl/client.h>
+#include <shellapi.h>   // ShellExecuteEx for self-elevation
 
 #include "morphly/morphly_ids.h"
 
-#ifndef RETURN_IF_FAILED
-#define RETURN_IF_FAILED(expression)                     \
-    do                                                  \
-    {                                                   \
-        const HRESULT __hr = (expression);              \
-        if (FAILED(__hr))                               \
-        {                                               \
-            return __hr;                                \
-        }                                               \
-    } while (false)
-#endif
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Pretty-print an HRESULT
+static std::wstring HrStr(HRESULT hr)
+{
+    wchar_t buf[64]{};
+    swprintf_s(buf, L"0x%08X", static_cast<unsigned long>(hr));
+    return buf;
+}
+
+// Print step banner
+static void Log(const wchar_t* msg)
+{
+    std::wcout << L"[INFO]  " << msg << L"\n";
+}
+
+static void LogHr(const wchar_t* step, HRESULT hr)
+{
+    if (SUCCEEDED(hr))
+        std::wcout << L"[OK]    " << step << L"  hr=" << HrStr(hr) << L"\n";
+    else
+        std::wcerr << L"[FAIL]  " << step << L"  hr=" << HrStr(hr) << L"\n";
+}
+
+static void LogWin32(const wchar_t* step, DWORD err)
+{
+    std::wcerr << L"[FAIL]  " << step << L"  GetLastError=" << err << L"\n";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin / elevation helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+static bool IsRunningAsAdmin()
+{
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = nullptr;
+
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(
+            &ntAuthority, 2,
+            SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
+            0, 0, 0, 0, 0, 0, &adminGroup))
+    {
+        CheckTokenMembership(nullptr, adminGroup, &isAdmin);
+        FreeSid(adminGroup);
+    }
+    return isAdmin == TRUE;
+}
+
+// Re-launch self with ShellExecute "runas" verb → triggers UAC prompt.
+static int RelaunchAsAdmin(int argc, wchar_t** argv)
+{
+    // Reconstruct the command line (skip argv[0])
+    std::wstring params;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (i > 1) params += L' ';
+        params += L'"';
+        params += argv[i];
+        params += L'"';
+    }
+
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exePath, ARRAYSIZE(exePath));
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb       = L"runas";
+    sei.lpFile       = exePath;
+    sei.lpParameters = params.c_str();
+    sei.nShow        = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExW(&sei))
+    {
+        LogWin32(L"ShellExecuteEx(runas)", GetLastError());
+        return 1;
+    }
+
+    if (sei.hProcess)
+    {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(sei.hProcess, &exitCode);
+        CloseHandle(sei.hProcess);
+        return static_cast<int>(exitCode);
+    }
+
+    return 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RAII scopes
+// ─────────────────────────────────────────────────────────────────────────────
 
 namespace
 {
     using DllProc = HRESULT(STDAPICALLTYPE*)();
 
-    struct CameraRegistrationMode
-    {
-        MFVirtualCameraLifetime lifetime = MFVirtualCameraLifetime_System;
-        MFVirtualCameraAccess access = MFVirtualCameraAccess_CurrentUser;
-        const wchar_t* label = L"";
-    };
-
     struct ComScope
     {
-        HRESULT hr = CoInitialize(nullptr);
+        HRESULT hr;
+        ComScope()
+        {
+            hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            Log(L"CoInitializeEx(COINIT_MULTITHREADED)");
+            LogHr(L"CoInitializeEx", hr);
+        }
         ~ComScope()
         {
-            if (ShouldUninitializeCom(hr))
-            {
+            if (SUCCEEDED(hr))
                 CoUninitialize();
-            }
         }
     };
 
     struct MfScope
     {
-        HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
+        HRESULT hr;
+        MfScope()
+        {
+            hr = MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
+            LogHr(L"MFStartup", hr);
+        }
         ~MfScope()
         {
             if (SUCCEEDED(hr))
-            {
                 MFShutdown();
-            }
         }
     };
 
-    std::wstring HrToString(HRESULT hr)
-    {
-        std::wstringstream stream;
-        stream << L"0x" << std::hex << std::uppercase << static_cast<unsigned long>(hr);
-        return stream.str();
-    }
-
-    std::wstring Win32ErrorToString(DWORD error)
-    {
-        wchar_t* message = nullptr;
-        const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-        const DWORD length = FormatMessageW(
-            flags,
-            nullptr,
-            error,
-            0,
-            reinterpret_cast<LPWSTR>(&message),
-            0,
-            nullptr);
-
-        std::wstring result = L"code " + std::to_wstring(error);
-        if (length != 0 && message != nullptr)
-        {
-            result += L" (";
-            result += message;
-            while (!result.empty() && (result.back() == L'\r' || result.back() == L'\n'))
-            {
-                result.pop_back();
-            }
-            result += L")";
-        }
-
-        if (message != nullptr)
-        {
-            LocalFree(message);
-        }
-
-        return result;
-    }
-
-    void LogInfo(const std::wstring& message)
-    {
-        std::wcout << message << L"\n";
-    }
-
-    void LogError(const std::wstring& message)
-    {
-        std::wcerr << message << L"\n";
-    }
-
-    void LogStepResult(const std::wstring& step, HRESULT hr)
-    {
-        if (SUCCEEDED(hr))
-        {
-            LogInfo(step + L": OK (" + HrToString(hr) + L")");
-        }
-        else
-        {
-            LogError(step + L": FAILED (" + HrToString(hr) + L")");
-        }
-    }
-
-    bool ShouldUninitializeCom(HRESULT hr) noexcept
-    {
-        return hr == S_OK || hr == S_FALSE;
-    }
-
-    bool IsAdminLikeError(HRESULT hr) noexcept
-    {
-        return hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)
-            || hr == HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED);
-    }
-
-    std::wstring DescribeMachine(WORD machine)
-    {
-        switch (machine)
-        {
-        case IMAGE_FILE_MACHINE_I386:
-            return L"x86";
-        case IMAGE_FILE_MACHINE_AMD64:
-            return L"x64";
-        case IMAGE_FILE_MACHINE_ARM64:
-            return L"arm64";
-        case IMAGE_FILE_MACHINE_UNKNOWN:
-            return L"unknown";
-        default:
-        {
-            std::wstringstream stream;
-            stream << L"machine 0x" << std::hex << std::uppercase << machine;
-            return stream.str();
-        }
-        }
-    }
-
-    WORD GetCurrentProcessMachine() noexcept
-    {
-#if defined(_M_X64)
-        return IMAGE_FILE_MACHINE_AMD64;
-#elif defined(_M_IX86)
-        return IMAGE_FILE_MACHINE_I386;
-#elif defined(_M_ARM64)
-        return IMAGE_FILE_MACHINE_ARM64;
-#else
-        return IMAGE_FILE_MACHINE_UNKNOWN;
-#endif
-    }
-
-    HRESULT IsProcessElevated(bool* elevated)
-    {
-        if (elevated == nullptr)
-        {
-            return E_POINTER;
-        }
-
-        *elevated = false;
-
-        HANDLE token = nullptr;
-        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-        {
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-
-        const auto closeToken = [&]() noexcept { CloseHandle(token); };
-
-        TOKEN_ELEVATION elevation{};
-        DWORD returnedLength = 0;
-        if (!GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returnedLength))
-        {
-            const HRESULT hr = HRESULT_FROM_WIN32(GetLastError());
-            closeToken();
-            return hr;
-        }
-
-        closeToken();
-        *elevated = elevation.TokenIsElevated != 0;
-        return S_OK;
-    }
-
-    HRESULT EnsureAdministrativePrivileges(const std::wstring& operation)
-    {
-        bool elevated = false;
-        const HRESULT elevationHr = IsProcessElevated(&elevated);
-        LogStepResult(L"Check admin privileges for " + operation, elevationHr);
-        if (FAILED(elevationHr))
-        {
-            return elevationHr;
-        }
-
-        LogInfo(L"Registrar elevation state: " + std::wstring(elevated ? L"elevated" : L"not elevated"));
-        if (!elevated)
-        {
-            return HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED);
-        }
-
-        return S_OK;
-    }
-
-    HRESULT ReadPortableExecutableMachine(const std::filesystem::path& filePath, WORD* machine)
-    {
-        if (machine == nullptr)
-        {
-            return E_POINTER;
-        }
-
-        std::ifstream stream(filePath, std::ios::binary);
-        if (!stream)
-        {
-            return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-        }
-
-        IMAGE_DOS_HEADER dosHeader{};
-        stream.read(reinterpret_cast<char*>(&dosHeader), sizeof(dosHeader));
-        if (!stream || dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
-        {
-            return HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT);
-        }
-
-        stream.seekg(dosHeader.e_lfanew, std::ios::beg);
-        DWORD peSignature = 0;
-        stream.read(reinterpret_cast<char*>(&peSignature), sizeof(peSignature));
-        if (!stream || peSignature != IMAGE_NT_SIGNATURE)
-        {
-            return HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT);
-        }
-
-        IMAGE_FILE_HEADER fileHeader{};
-        stream.read(reinterpret_cast<char*>(&fileHeader), sizeof(fileHeader));
-        if (!stream)
-        {
-            return HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT);
-        }
-
-        *machine = fileHeader.Machine;
-        return S_OK;
-    }
-
-    HRESULT ValidateArchitecture(const std::filesystem::path& dllPath)
-    {
-        const WORD processMachine = GetCurrentProcessMachine();
-        LogInfo(L"Registrar architecture: " + DescribeMachine(processMachine));
-
-        WORD dllMachine = IMAGE_FILE_MACHINE_UNKNOWN;
-        const HRESULT readHr = ReadPortableExecutableMachine(dllPath, &dllMachine);
-        LogStepResult(L"Read DLL architecture for " + dllPath.wstring(), readHr);
-        if (FAILED(readHr))
-        {
-            return readHr;
-        }
-
-        LogInfo(L"MorphlyVirtualCamera.dll architecture: " + DescribeMachine(dllMachine));
-        if (processMachine != IMAGE_FILE_MACHINE_UNKNOWN && dllMachine != processMachine)
-        {
-            LogError(L"Architecture mismatch: registrar is " + DescribeMachine(processMachine)
-                + L", DLL is " + DescribeMachine(dllMachine));
-            return HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT);
-        }
-
-        return S_OK;
-    }
-
-    void PrintUsage()
-    {
-        std::wcout
-            << L"Usage:\n"
-            << L"  morphly_cam_registrar install [--session] [--all-users]\n"
-            << L"  morphly_cam_registrar remove [--session] [--all-users] [--unregister-com]\n"
-            << L"  morphly_cam_registrar probe\n"
-            << L"  morphly_cam_registrar com-register\n"
-            << L"  morphly_cam_registrar com-unregister\n";
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Path helpers
+    // ─────────────────────────────────────────────────────────────────────────
 
     std::filesystem::path GetServiceInstallDirectory()
     {
         wchar_t commonAppData[MAX_PATH]{};
         const DWORD length = GetEnvironmentVariableW(L"ProgramData", commonAppData, ARRAYSIZE(commonAppData));
         if (length == 0 || length >= ARRAYSIZE(commonAppData))
-        {
             return std::filesystem::path(L"C:\\ProgramData") / L"MorphlyCam";
-        }
-
         return std::filesystem::path(commonAppData) / L"MorphlyCam";
     }
 
@@ -314,258 +186,134 @@ namespace
     {
         wchar_t modulePath[MAX_PATH]{};
         GetModuleFileNameW(nullptr, modulePath, ARRAYSIZE(modulePath));
-        std::filesystem::path path(modulePath);
-        return path.parent_path() / L"MorphlyVirtualCamera.dll";
+        return std::filesystem::path(modulePath).parent_path() / L"MorphlyVirtualCamera.dll";
     }
 
-    HRESULT EnsureStagedDll(std::filesystem::path* stagedDllPath)
+    // ─────────────────────────────────────────────────────────────────────────
+    // DLL loading + validation
+    // ─────────────────────────────────────────────────────────────────────────
+
+    HRESULT ValidateAndLoadDll(const std::filesystem::path& dllPath, HMODULE* phModule)
     {
-        if (stagedDllPath == nullptr)
+        Log((L"LoadLibraryW: " + dllPath.wstring()).c_str());
+
+        HMODULE hMod = LoadLibraryW(dllPath.c_str());
+        if (hMod == nullptr)
         {
-            return E_POINTER;
+            DWORD err = GetLastError();
+            LogWin32(L"LoadLibraryW", err);
+            return HRESULT_FROM_WIN32(err);
         }
 
-        const std::filesystem::path sourceDllPath = ResolveDllPath();
-        const std::filesystem::path installDirectory = GetServiceInstallDirectory();
-        const std::filesystem::path targetDllPath = installDirectory / L"MorphlyVirtualCamera.dll";
+        Log(L"LoadLibraryW: OK");
 
-        std::error_code errorCode;
-        std::filesystem::create_directories(installDirectory, errorCode);
-        if (errorCode)
-        {
-            return HRESULT_FROM_WIN32(static_cast<DWORD>(errorCode.value()));
-        }
+        if (phModule)
+            *phModule = hMod;
+        else
+            FreeLibrary(hMod);
 
-        std::filesystem::copy_file(
-            sourceDllPath,
-            targetDllPath,
-            std::filesystem::copy_options::overwrite_existing,
-            errorCode);
-        if (errorCode)
-        {
-            return HRESULT_FROM_WIN32(static_cast<DWORD>(errorCode.value()));
-        }
-
-        *stagedDllPath = targetDllPath;
         return S_OK;
     }
 
     HRESULT InvokeDllEntryPoint(const std::filesystem::path& dllPath, const char* procName)
     {
-        LogInfo(L"LoadLibraryW(" + dllPath.wstring() + L")...");
-        HMODULE module = LoadLibraryW(dllPath.c_str());
-        if (module == nullptr)
-        {
-            const DWORD lastError = GetLastError();
-            LogError(L"LoadLibraryW failed for " + dllPath.wstring() + L": " + Win32ErrorToString(lastError));
-            return HRESULT_FROM_WIN32(lastError);
-        }
+        HMODULE hMod = nullptr;
+        HRESULT hr = ValidateAndLoadDll(dllPath, &hMod);
+        if (FAILED(hr)) return hr;
 
-        const auto freeModule = [&]() noexcept { FreeLibrary(module); };
-        LogInfo(L"LoadLibraryW succeeded for " + dllPath.wstring());
+        // Narrow → wide for logging
+        std::wstring wprocName(procName, procName + strlen(procName));
+        Log((L"GetProcAddress: " + wprocName).c_str());
 
-        std::wstringstream step;
-        step << L"GetProcAddress(" << procName << L")";
-        auto proc = reinterpret_cast<DllProc>(GetProcAddress(module, procName));
+        auto proc = reinterpret_cast<DllProc>(GetProcAddress(hMod, procName));
         if (proc == nullptr)
         {
-            const DWORD lastError = GetLastError();
-            LogError(step.str() + L" failed: " + Win32ErrorToString(lastError));
-            freeModule();
-            return HRESULT_FROM_WIN32(lastError);
+            DWORD err = GetLastError();
+            LogWin32((L"GetProcAddress(" + wprocName + L")").c_str(), err);
+            FreeLibrary(hMod);
+            return HRESULT_FROM_WIN32(err);
         }
 
-        LogInfo(step.str() + L": OK");
-        LogInfo(L"Calling DLL entry point...");
-        const HRESULT hr = proc();
-        LogStepResult(L"Invoke DLL entry point", hr);
-        freeModule();
+        Log((L"Calling " + wprocName).c_str());
+        hr = proc();
+        LogHr(wprocName.c_str(), hr);
+
+        FreeLibrary(hMod);
         return hr;
     }
 
-    HRESULT RegisterDirectShowFilter()
+    // ─────────────────────────────────────────────────────────────────────────
+    // Stage DLL to ProgramData\MorphlyCam\
+    // ─────────────────────────────────────────────────────────────────────────
+
+    HRESULT EnsureStagedDll(std::filesystem::path* stagedDllPath)
     {
-        LogInfo(L"CoCreateInstance(CLSID_FilterMapper2)...");
-        Microsoft::WRL::ComPtr<IFilterMapper2> mapper;
-        const HRESULT mapperHr = CoCreateInstance(
-            CLSID_FilterMapper2,
-            nullptr,
-            CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&mapper));
-        LogStepResult(L"CoCreateInstance(CLSID_FilterMapper2)", mapperHr);
-        if (FAILED(mapperHr))
+        if (!stagedDllPath) return E_POINTER;
+
+        const std::filesystem::path sourceDllPath  = ResolveDllPath();
+        const std::filesystem::path installDirectory = GetServiceInstallDirectory();
+        const std::filesystem::path targetDllPath  = installDirectory / L"MorphlyVirtualCamera.dll";
+
+        Log((L"Source DLL:    " + sourceDllPath.wstring()).c_str());
+        Log((L"Install dir:   " + installDirectory.wstring()).c_str());
+
+        std::error_code ec;
+        std::filesystem::create_directories(installDirectory, ec);
+        if (ec)
         {
-            return mapperHr;
+            std::wcerr << L"[FAIL]  create_directories: " << ec.message().c_str()
+                       << L"  (win32=" << ec.value() << L")\n";
+            return HRESULT_FROM_WIN32(static_cast<DWORD>(ec.value()));
         }
 
-        static const REGPINTYPES mediaTypes[] =
+        std::filesystem::copy_file(
+            sourceDllPath, targetDllPath,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
         {
-            { &MEDIATYPE_Video, &MEDIASUBTYPE_RGB32 },
-        };
-
-        REGFILTERPINS pins[] =
-        {
-            {
-                const_cast<LPWSTR>(L"Capture"),
-                FALSE,
-                TRUE,
-                FALSE,
-                FALSE,
-                GUID_NULL,
-                nullptr,
-                ARRAYSIZE(mediaTypes),
-                mediaTypes,
-            },
-        };
-
-        REGFILTER2 filterRegistration{};
-        filterRegistration.dwVersion = 1;
-        filterRegistration.dwMerit = MERIT_DO_NOT_USE;
-        filterRegistration.cPins = ARRAYSIZE(pins);
-        filterRegistration.rgPins = pins;
-
-        HRESULT unregisterHr = mapper->UnregisterFilter(
-            &CLSID_VideoInputDeviceCategory,
-            morphly::kVirtualCameraFriendlyName,
-            morphly::kVirtualCameraSourceClsid);
-        if (FAILED(unregisterHr) && unregisterHr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) && unregisterHr != VFW_E_NOT_FOUND)
-        {
-            LogStepResult(L"IFilterMapper2::UnregisterFilter(CLSID_VideoInputDeviceCategory)", unregisterHr);
-        }
-        else
-        {
-            LogInfo(L"IFilterMapper2::UnregisterFilter(CLSID_VideoInputDeviceCategory): OK or not previously registered");
+            std::wcerr << L"[FAIL]  copy_file: " << ec.message().c_str()
+                       << L"  (win32=" << ec.value() << L")\n";
+            return HRESULT_FROM_WIN32(static_cast<DWORD>(ec.value()));
         }
 
-        Microsoft::WRL::ComPtr<IMoniker> moniker;
-        const HRESULT registerHr = mapper->RegisterFilter(
-            morphly::kVirtualCameraSourceClsid,
-            morphly::kVirtualCameraFriendlyName,
-            &moniker,
-            &CLSID_VideoInputDeviceCategory,
-            morphly::kVirtualCameraFriendlyName,
-            &filterRegistration);
-        LogStepResult(L"IFilterMapper2::RegisterFilter(CLSID_VideoInputDeviceCategory)", registerHr);
-        if (FAILED(registerHr))
-        {
-            return registerHr;
-        }
-
-        if (moniker)
-        {
-            Microsoft::WRL::ComPtr<IBindCtx> bindContext;
-            const HRESULT bindHr = CreateBindCtx(0, &bindContext);
-            LogStepResult(L"CreateBindCtx", bindHr);
-            if (SUCCEEDED(bindHr))
-            {
-                LPOLESTR displayName = nullptr;
-                const HRESULT nameHr = moniker->GetDisplayName(bindContext.Get(), nullptr, &displayName);
-                LogStepResult(L"IMoniker::GetDisplayName", nameHr);
-                if (SUCCEEDED(nameHr) && displayName != nullptr)
-                {
-                    LogInfo(L"Registered DirectShow moniker: " + std::wstring(displayName));
-                    CoTaskMemFree(displayName);
-                }
-            }
-        }
-
+        Log((L"DLL copied to: " + targetDllPath.wstring()).c_str());
+        *stagedDllPath = targetDllPath;
         return S_OK;
     }
 
-    HRESULT UnregisterDirectShowFilter()
-    {
-        LogInfo(L"CoCreateInstance(CLSID_FilterMapper2)...");
-        Microsoft::WRL::ComPtr<IFilterMapper2> mapper;
-        const HRESULT mapperHr = CoCreateInstance(
-            CLSID_FilterMapper2,
-            nullptr,
-            CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&mapper));
-        LogStepResult(L"CoCreateInstance(CLSID_FilterMapper2)", mapperHr);
-        if (FAILED(mapperHr))
-        {
-            return mapperHr;
-        }
-
-        HRESULT unregisterHr = mapper->UnregisterFilter(
-            &CLSID_VideoInputDeviceCategory,
-            morphly::kVirtualCameraFriendlyName,
-            morphly::kVirtualCameraSourceClsid);
-        if (FAILED(unregisterHr) && unregisterHr != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) && unregisterHr != VFW_E_NOT_FOUND)
-        {
-            LogStepResult(L"IFilterMapper2::UnregisterFilter(CLSID_VideoInputDeviceCategory)", unregisterHr);
-            return unregisterHr;
-        }
-
-        LogInfo(L"IFilterMapper2::UnregisterFilter(CLSID_VideoInputDeviceCategory): OK or not previously registered");
-        return S_OK;
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // CLSID helpers
+    // ─────────────────────────────────────────────────────────────────────────
 
     std::wstring GetSourceClsidString()
     {
-        wchar_t buffer[64]{};
-        StringFromGUID2(morphly::kVirtualCameraSourceClsid, buffer, ARRAYSIZE(buffer));
-        return buffer;
+        wchar_t buf[64]{};
+        StringFromGUID2(morphly::kVirtualCameraSourceClsid, buf, ARRAYSIZE(buf));
+        return buf;
     }
 
-    bool IsMissingCameraResult(HRESULT hr) noexcept
+    // ─────────────────────────────────────────────────────────────────────────
+    // Media Foundation virtual camera open/close
+    // ─────────────────────────────────────────────────────────────────────────
+
+    HRESULT OpenVirtualCamera(
+        MFVirtualCameraLifetime lifetime,
+        MFVirtualCameraAccess   access,
+        IMFVirtualCamera**      camera)
     {
-        return hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND)
-            || hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
-            || hr == HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
-    }
-
-    std::vector<CameraRegistrationMode> BuildInstallModes(bool sessionLifetime, bool allUsers)
-    {
-        if (sessionLifetime)
-        {
-            return {
-                { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
-            };
-        }
-
-        if (allUsers)
-        {
-            return {
-                { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_AllUsers, L"system/all-users" },
-                { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
-                { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
-            };
-        }
-
-        return {
-            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
-            { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
-        };
-    }
-
-    std::vector<CameraRegistrationMode> BuildCleanupModes()
-    {
-        return {
-            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_AllUsers, L"system/all-users" },
-            { MFVirtualCameraLifetime_System, MFVirtualCameraAccess_CurrentUser, L"system/current-user" },
-            { MFVirtualCameraLifetime_Session, MFVirtualCameraAccess_CurrentUser, L"session/current-user" },
-        };
-    }
-
-    HRESULT OpenVirtualCamera(MFVirtualCameraLifetime lifetime, MFVirtualCameraAccess access, IMFVirtualCamera** camera)
-    {
-        if (camera == nullptr)
-        {
-            return E_POINTER;
-        }
-
+        if (!camera) return E_POINTER;
         *camera = nullptr;
 
-        static const GUID categories[] =
-        {
+        static const GUID categories[] = {
             KSCATEGORY_VIDEO_CAMERA,
             KSCATEGORY_VIDEO,
             KSCATEGORY_CAPTURE,
         };
 
         const std::wstring sourceId = GetSourceClsidString();
-        return MFCreateVirtualCamera(
+        Log((L"MFCreateVirtualCamera  sourceId=" + sourceId).c_str());
+
+        HRESULT hr = MFCreateVirtualCamera(
             MFVirtualCameraType_SoftwareCameraSource,
             lifetime,
             access,
@@ -574,272 +322,221 @@ namespace
             categories,
             ARRAYSIZE(categories),
             camera);
+        LogHr(L"MFCreateVirtualCamera", hr);
+        return hr;
     }
 
-    HRESULT RemoveCameraRegistration(const CameraRegistrationMode& mode) noexcept
+    // ─────────────────────────────────────────────────────────────────────────
+    // install
+    // ─────────────────────────────────────────────────────────────────────────
+
+    HRESULT InstallCamera(bool sessionLifetime, bool allUsers)
     {
+        Log(L"InstallCamera");
+
+        // 1. COM must be initialised first (needed by DllRegisterServer and IFilterMapper2)
+        ComScope com;
+        if (FAILED(com.hr)) return com.hr;
+
+        // Stage the DLL to ProgramData/MorphlyCam
+        std::filesystem::path dllPath;
+        HRESULT hr = EnsureStagedDll(&dllPath);
+        LogHr(L"EnsureStagedDll", hr);
+        if (FAILED(hr)) return hr;
+
+        // 3. Validate the DLL can actually be loaded (architecture / dependency check)
+        {
+            HMODULE hMod = nullptr;
+            hr = ValidateAndLoadDll(dllPath, &hMod);
+            if (FAILED(hr)) return hr;
+            FreeLibrary(hMod);
+        }
+
+        // COM server (writes HKCR/HKLM registry keys)
+        Log(L"COM registration (DllRegisterServer)");
+        hr = InvokeDllEntryPoint(dllPath, "DllRegisterServer");
+        LogHr(L"DllRegisterServer", hr);
+        if (FAILED(hr)) return hr;
+
+        // MFStartup
+        MfScope mf;
+        if (FAILED(mf.hr)) return mf.hr;
+
+        // Register MF virtual camera
+        Log(L"Media Foundation virtual camera registration");
         Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
-        const HRESULT openHr = OpenVirtualCamera(mode.lifetime, mode.access, &camera);
-        if (FAILED(openHr))
-        {
-            return openHr;
-        }
+        hr = OpenVirtualCamera(
+            sessionLifetime ? MFVirtualCameraLifetime_Session : MFVirtualCameraLifetime_System,
+            allUsers         ? MFVirtualCameraAccess_AllUsers  : MFVirtualCameraAccess_CurrentUser,
+            &camera);
+        if (FAILED(hr)) return hr;
 
-        const HRESULT removeHr = camera->Remove();
-        camera->Shutdown();
-        return removeHr;
-    }
-
-    void CleanupStaleRegistrations()
-    {
-        for (const auto& mode : BuildCleanupModes())
-        {
-            const HRESULT hr = RemoveCameraRegistration(mode);
-            if (SUCCEEDED(hr) || IsMissingCameraResult(hr))
-            {
-                if (SUCCEEDED(hr))
-                {
-                    std::wcout << L"Removed stale virtual camera registration for " << mode.label << L".\n";
-                }
-                continue;
-            }
-
-            std::wcout
-                << L"Stale registration cleanup skipped for "
-                << mode.label
-                << L" with HRESULT 0x"
-                << std::hex << static_cast<unsigned long>(hr)
-                << std::dec << L"\n";
-        }
-    }
-
-    HRESULT TryInstallCamera(const CameraRegistrationMode& mode)
-    {
-        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
-        std::wcout << L"Opening virtual camera registration for " << mode.label << L"...\n";
-        RETURN_IF_FAILED(OpenVirtualCamera(mode.lifetime, mode.access, &camera));
-
-        std::wcout << L"Starting virtual camera for " << mode.label << L"...\n";
-        const HRESULT startHr = camera->Start(nullptr);
-        if (FAILED(startHr))
-        {
-            camera->Shutdown();
-            return startHr;
-        }
+        Log(L"Calling IMFVirtualCamera::Start");
+        hr = camera->Start(nullptr);
+        LogHr(L"IMFVirtualCamera::Start", hr);
+        if (FAILED(hr)) return hr;
 
         wchar_t* symbolicLink = nullptr;
-        UINT32 cch = 0;
-        if (SUCCEEDED(camera->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, &symbolicLink, &cch)))
+        UINT32   cch = 0;
+        if (SUCCEEDED(camera->GetAllocatedString(
+                MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK,
+                &symbolicLink, &cch)))
         {
-            std::wcout << L"Virtual camera installed (" << mode.label << L"): " << symbolicLink << L"\n";
+            std::wcout << L"[OK]    Virtual camera symbolic link: " << symbolicLink << L"\n";
             CoTaskMemFree(symbolicLink);
         }
         else
         {
-            std::wcout << L"Virtual camera installed (" << mode.label << L").\n";
+            Log(L"Virtual camera registered (no symbolic link available).");
         }
 
         camera->Shutdown();
+        Log(L"Install complete");
         return S_OK;
     }
 
-    HRESULT InstallCamera(bool sessionLifetime, bool allUsers)
-    {
-        RETURN_IF_FAILED(EnsureAdministrativePrivileges(L"install"));
-
-        std::filesystem::path dllPath;
-        const HRESULT stageHr = EnsureStagedDll(&dllPath);
-        LogStepResult(L"Stage MorphlyVirtualCamera.dll", stageHr);
-        RETURN_IF_FAILED(stageHr);
-
-        const HRESULT archHr = ValidateArchitecture(dllPath);
-        LogStepResult(L"Validate DLL architecture", archHr);
-        RETURN_IF_FAILED(archHr);
-
-        ComScope com;
-        LogStepResult(L"CoInitialize", com.hr);
-        if (FAILED(com.hr))
-        {
-            return com.hr;
-        }
-
-        const HRESULT dshowRegisterHr = RegisterDirectShowFilter();
-        RETURN_IF_FAILED(dshowRegisterHr);
-
-        LogInfo(L"Registering COM server: " + dllPath.wstring());
-        const HRESULT registerServerHr = InvokeDllEntryPoint(dllPath, "DllRegisterServer");
-        RETURN_IF_FAILED(registerServerHr);
-
-        MfScope mf;
-        LogStepResult(L"MFStartup", mf.hr);
-        if (FAILED(mf.hr))
-        {
-            LogError(L"Media Foundation startup failed. DirectShow registration succeeded, so install will continue.");
-            return S_OK;
-        }
-
-        CleanupStaleRegistrations();
-
-        HRESULT lastHr = E_FAIL;
-        for (const auto& mode : BuildInstallModes(sessionLifetime, allUsers))
-        {
-            const HRESULT installHr = TryInstallCamera(mode);
-            if (SUCCEEDED(installHr))
-            {
-                LogInfo(L"Install completed with DirectShow and Media Foundation registration.");
-                return S_OK;
-            }
-
-            lastHr = installHr;
-            std::wcerr
-                << L"Install attempt failed for "
-                << mode.label
-                << L" with HRESULT 0x"
-                << std::hex << static_cast<unsigned long>(installHr)
-                << std::dec << L"\n";
-        }
-
-        LogError(L"Media Foundation virtual camera registration failed after DirectShow registration succeeded.");
-        return S_OK;
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    // remove
+    // ─────────────────────────────────────────────────────────────────────────
 
     HRESULT RemoveCamera(bool sessionLifetime, bool allUsers, bool unregisterCom)
     {
-        RETURN_IF_FAILED(EnsureAdministrativePrivileges(L"remove"));
+        Log(L"RemoveCamera");
 
         ComScope com;
-        LogStepResult(L"CoInitialize", com.hr);
-        if (FAILED(com.hr))
-        {
-            return com.hr;
-        }
-
-        const HRESULT dshowUnregisterHr = UnregisterDirectShowFilter();
-        if (FAILED(dshowUnregisterHr))
-        {
-            return dshowUnregisterHr;
-        }
+        if (FAILED(com.hr)) return com.hr;
 
         MfScope mf;
-        LogStepResult(L"MFStartup", mf.hr);
-        if (FAILED(mf.hr))
-        {
-            LogError(L"Media Foundation startup failed during remove. DirectShow registration was still removed.");
-            return S_OK;
-        }
+        if (FAILED(mf.hr)) return mf.hr;
 
-        HRESULT lastHr = S_OK;
-        bool removedAny = false;
-        for (const auto& mode : BuildInstallModes(sessionLifetime, allUsers))
-        {
-            const HRESULT removeHr = RemoveCameraRegistration(mode);
-            if (SUCCEEDED(removeHr))
-            {
-                removedAny = true;
-                std::wcout << L"Virtual camera removed (" << mode.label << L").\n";
-                continue;
-            }
+        Microsoft::WRL::ComPtr<IMFVirtualCamera> camera;
+        HRESULT hr = OpenVirtualCamera(
+            sessionLifetime ? MFVirtualCameraLifetime_Session : MFVirtualCameraLifetime_System,
+            allUsers         ? MFVirtualCameraAccess_AllUsers  : MFVirtualCameraAccess_CurrentUser,
+            &camera);
+        if (FAILED(hr)) return hr;
 
-            if (IsMissingCameraResult(removeHr))
-            {
-                continue;
-            }
-
-            lastHr = removeHr;
-            std::wcerr
-                << L"Remove attempt failed for "
-                << mode.label
-                << L" with HRESULT 0x"
-                << std::hex << static_cast<unsigned long>(removeHr)
-                << std::dec << L"\n";
-        }
+        hr = camera->Remove();
+        LogHr(L"IMFVirtualCamera::Remove", hr);
+        camera->Shutdown();
+        if (FAILED(hr)) return hr;
 
         if (unregisterCom)
         {
             std::filesystem::path dllPath;
-            const HRESULT stageHr = EnsureStagedDll(&dllPath);
-            LogStepResult(L"Stage MorphlyVirtualCamera.dll", stageHr);
-            RETURN_IF_FAILED(stageHr);
-
-            const HRESULT archHr = ValidateArchitecture(dllPath);
-            LogStepResult(L"Validate DLL architecture", archHr);
-            RETURN_IF_FAILED(archHr);
-
-            const HRESULT unregisterServerHr = InvokeDllEntryPoint(dllPath, "DllUnregisterServer");
-            RETURN_IF_FAILED(unregisterServerHr);
+            hr = EnsureStagedDll(&dllPath);
+            if (SUCCEEDED(hr))
+                hr = InvokeDllEntryPoint(dllPath, "DllUnregisterServer");
+            LogHr(L"DllUnregisterServer", hr);
+            if (FAILED(hr)) return hr;
         }
 
-        if (removedAny || SUCCEEDED(lastHr))
-        {
-            std::wcout << L"Virtual camera removal completed.\n";
-            return S_OK;
-        }
-
-        LogError(L"Media Foundation virtual camera removal failed, but DirectShow registration was removed.");
+        Log(L"Remove complete");
         return S_OK;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // probe
+    // ─────────────────────────────────────────────────────────────────────────
 
     HRESULT ProbeSource()
     {
+        Log(L"ProbeSource");
+
+        // 1. Validate raw DLL load from the local (non-staged) copy
         const std::filesystem::path dllPath = ResolveDllPath();
-        RETURN_IF_FAILED(InvokeDllEntryPoint(dllPath, "DllRegisterServer"));
+        {
+            HMODULE hMod = nullptr;
+            HRESULT hr = ValidateAndLoadDll(dllPath, &hMod);
+            if (FAILED(hr)) return hr;
+            FreeLibrary(hMod);
+        }
 
+        // 2. COM
         ComScope com;
-        if (FAILED(com.hr))
-        {
-            return com.hr;
-        }
+        if (FAILED(com.hr)) return com.hr;
 
+        // 3. Register COM temporarily
+        HRESULT hr = InvokeDllEntryPoint(dllPath, "DllRegisterServer");
+        if (FAILED(hr)) return hr;
+
+        // 4. MF
         MfScope mf;
-        if (FAILED(mf.hr))
-        {
-            return mf.hr;
-        }
+        if (FAILED(mf.hr)) return mf.hr;
 
+        // 5. CoCreateInstance
         Microsoft::WRL::ComPtr<IMFActivate> activate;
-        RETURN_IF_FAILED(CoCreateInstance(
+        hr = CoCreateInstance(
             morphly::kVirtualCameraSourceClsid,
             nullptr,
             CLSCTX_INPROC_SERVER,
-            IID_PPV_ARGS(&activate)));
+            IID_PPV_ARGS(&activate));
+        LogHr(L"CoCreateInstance(IMFActivate)", hr);
+        if (FAILED(hr)) return hr;
 
-        std::wcout << L"CoCreateInstance(IMFActivate): OK\n";
-
+        // 6. ActivateObject
         Microsoft::WRL::ComPtr<IMFMediaSource> mediaSource;
-        RETURN_IF_FAILED(activate->ActivateObject(IID_PPV_ARGS(&mediaSource)));
-        std::wcout << L"ActivateObject(IMFMediaSource): OK\n";
+        hr = activate->ActivateObject(IID_PPV_ARGS(&mediaSource));
+        LogHr(L"ActivateObject(IMFMediaSource)", hr);
+        if (FAILED(hr)) return hr;
 
-        Microsoft::WRL::ComPtr<IMFMediaSourceEx> mediaSourceEx;
-        const HRESULT sourceExHr = mediaSource.As(&mediaSourceEx);
-        std::wcout << L"Query IMFMediaSourceEx: 0x" << std::hex << static_cast<unsigned long>(sourceExHr) << L"\n";
+        // 7. Interface queries
+        auto queryLog = [&](const wchar_t* name, auto& ptr) {
+            HRESULT qhr = mediaSource.As(&ptr);
+            LogHr(name, qhr);
+        };
 
-        Microsoft::WRL::ComPtr<IMFMediaSource2> mediaSource2;
-        const HRESULT source2Hr = mediaSource.As(&mediaSource2);
-        std::wcout << L"Query IMFMediaSource2: 0x" << std::hex << static_cast<unsigned long>(source2Hr) << L"\n";
+        Microsoft::WRL::ComPtr<IMFMediaSourceEx>         mediaSourceEx;
+        Microsoft::WRL::ComPtr<IMFMediaSource2>          mediaSource2;
+        Microsoft::WRL::ComPtr<IMFGetService>            getService;
+        Microsoft::WRL::ComPtr<IKsControl>               ksControl;
+        Microsoft::WRL::ComPtr<IMFSampleAllocatorControl> allocatorCtrl;
 
-        Microsoft::WRL::ComPtr<IMFGetService> getService;
-        const HRESULT getServiceHr = mediaSource.As(&getService);
-        std::wcout << L"Query IMFGetService: 0x" << std::hex << static_cast<unsigned long>(getServiceHr) << L"\n";
-
-        Microsoft::WRL::ComPtr<IKsControl> ksControl;
-        const HRESULT ksHr = mediaSource.As(&ksControl);
-        std::wcout << L"Query IKsControl: 0x" << std::hex << static_cast<unsigned long>(ksHr) << L"\n";
-
-        Microsoft::WRL::ComPtr<IMFSampleAllocatorControl> allocatorControl;
-        const HRESULT allocatorHr = mediaSource.As(&allocatorControl);
-        std::wcout << L"Query IMFSampleAllocatorControl: 0x" << std::hex << static_cast<unsigned long>(allocatorHr) << L"\n";
+        queryLog(L"Query IMFMediaSourceEx",         mediaSourceEx);
+        queryLog(L"Query IMFMediaSource2",           mediaSource2);
+        queryLog(L"Query IMFGetService",             getService);
+        queryLog(L"Query IKsControl",                ksControl);
+        queryLog(L"Query IMFSampleAllocatorControl", allocatorCtrl);
 
         Microsoft::WRL::ComPtr<IMFPresentationDescriptor> descriptor;
-        const HRESULT descriptorHr = mediaSource->CreatePresentationDescriptor(&descriptor);
-        std::wcout << L"CreatePresentationDescriptor: 0x" << std::hex << static_cast<unsigned long>(descriptorHr) << L"\n";
+        hr = mediaSource->CreatePresentationDescriptor(&descriptor);
+        LogHr(L"CreatePresentationDescriptor", hr);
 
         mediaSource->Shutdown();
+        Log(L"Probe complete");
         return S_OK;
     }
-}
+
+    void PrintUsage()
+    {
+        std::wcout
+            << L"Usage:\n"
+            << L"  morphly_cam_registrar install [--session] [--all-users]\n"
+            << L"  morphly_cam_registrar remove  [--session] [--all-users] [--unregister-com]\n"
+            << L"  morphly_cam_registrar probe\n"
+            << L"  morphly_cam_registrar com-register\n"
+            << L"  morphly_cam_registrar com-unregister\n"
+            << L"  morphly_cam_registrar ds-register\n"
+            << L"  morphly_cam_registrar ds-unregister\n";
+    }
+
+} // anonymous namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wmain
+// ─────────────────────────────────────────────────────────────────────────────
 
 int wmain(int argc, wchar_t** argv)
 {
+    // Admin check + self-elevation
+    if (!IsRunningAsAdmin())
+    {
+        std::wcout << L"[INFO]  Not running as administrator - requesting elevation...\n";
+        return RelaunchAsAdmin(argc, argv);
+    }
+    Log(L"Running with administrator privileges.");
+
+    // Parse command
     if (argc < 2)
     {
         PrintUsage();
@@ -848,33 +545,26 @@ int wmain(int argc, wchar_t** argv)
 
     const std::wstring command = argv[1];
     bool sessionLifetime = false;
-    bool allUsers = false;
-    bool unregisterCom = false;
+    bool allUsers        = false;
+    bool unregisterCom   = false;
 
-    for (int index = 2; index < argc; ++index)
+    for (int i = 2; i < argc; ++i)
     {
-        const std::wstring option = argv[index];
-        if (option == L"--session")
-        {
-            sessionLifetime = true;
-        }
-        else if (option == L"--all-users")
-        {
-            allUsers = true;
-        }
-        else if (option == L"--unregister-com")
-        {
-            unregisterCom = true;
-        }
+        const std::wstring opt = argv[i];
+        if      (opt == L"--session")        sessionLifetime = true;
+        else if (opt == L"--all-users")      allUsers        = true;
+        else if (opt == L"--unregister-com") unregisterCom   = true;
         else
         {
-            std::wcerr << L"Unknown option: " << option << L"\n";
+            std::wcerr << L"[FAIL]  Unknown option: " << opt << L"\n";
             PrintUsage();
             return 1;
         }
     }
 
+    // Dispatch
     HRESULT hr = E_INVALIDARG;
+
     if (command == L"install")
     {
         hr = InstallCamera(sessionLifetime, allUsers);
@@ -883,13 +573,19 @@ int wmain(int argc, wchar_t** argv)
     {
         hr = RemoveCamera(sessionLifetime, allUsers, unregisterCom);
     }
+    else if (command == L"probe")
+    {
+        hr = ProbeSource();
+    }
     else if (command == L"com-register")
     {
         std::filesystem::path dllPath;
         hr = EnsureStagedDll(&dllPath);
         if (SUCCEEDED(hr))
         {
-            hr = InvokeDllEntryPoint(dllPath, "DllRegisterServer");
+            ComScope com;   // needed for COM server registration
+            if (FAILED(com.hr)) { hr = com.hr; }
+            else hr = InvokeDllEntryPoint(dllPath, "DllRegisterServer");
         }
     }
     else if (command == L"com-unregister")
@@ -898,12 +594,10 @@ int wmain(int argc, wchar_t** argv)
         hr = EnsureStagedDll(&dllPath);
         if (SUCCEEDED(hr))
         {
-            hr = InvokeDllEntryPoint(dllPath, "DllUnregisterServer");
+            ComScope com;
+            if (FAILED(com.hr)) { hr = com.hr; }
+            else hr = InvokeDllEntryPoint(dllPath, "DllUnregisterServer");
         }
-    }
-    else if (command == L"probe")
-    {
-        hr = ProbeSource();
     }
     else
     {
@@ -911,11 +605,14 @@ int wmain(int argc, wchar_t** argv)
         return 1;
     }
 
+    // Final result
     if (FAILED(hr))
     {
-        std::wcerr << L"Operation failed with HRESULT 0x" << std::hex << static_cast<unsigned long>(hr) << L"\n";
+        std::wcerr << L"[FAIL]  Operation \"" << command
+                   << L"\" failed  hr=" << HrStr(hr) << L"\n";
         return 1;
     }
 
+    std::wcout << L"[OK]    Operation \"" << command << L"\" succeeded.\n";
     return 0;
 }
