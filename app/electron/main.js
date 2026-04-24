@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
 
-import { app, BrowserWindow, systemPreferences, ipcMain, Menu } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -176,24 +176,47 @@ function updateRendererFrame(controller, payload) {
     return;
   }
 
-  if (payload.width !== VIRTUAL_CAM_FRAME_WIDTH
-    || payload.height !== VIRTUAL_CAM_FRAME_HEIGHT
-    || payload.stride !== VIRTUAL_CAM_FRAME_STRIDE) {
-    return;
-  }
-
   const pixels = payload.pixels;
   if (!ArrayBuffer.isView(pixels)) {
     return;
   }
 
+  const srcWidth = payload.width;
+  const srcHeight = payload.height;
+  const srcStride = payload.stride;
+
+  if (!srcWidth || !srcHeight || !srcStride || pixels.byteLength !== srcStride * srcHeight) {
+    return;
+  }
+
+  let frameBytes;
+
+  if (srcWidth === VIRTUAL_CAM_FRAME_WIDTH && srcHeight === VIRTUAL_CAM_FRAME_HEIGHT) {
+    // Already the right size — use directly.
+    frameBytes = Buffer.from(pixels);
+  } else {
+    // Popup renders at a smaller size (e.g. 640x360). Upscale using nativeImage.
+    try {
+      const srcBuffer = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
+      const img = nativeImage.createFromBuffer(srcBuffer, { width: srcWidth, height: srcHeight });
+      if (img.isEmpty()) {
+        return;
+      }
+      const scaled = img.resize({ width: VIRTUAL_CAM_FRAME_WIDTH, height: VIRTUAL_CAM_FRAME_HEIGHT });
+      frameBytes = scaled.toBitmap();
+    } catch (e) {
+      console.warn('updateRendererFrame: failed to upscale frame:', e.message);
+      return;
+    }
+  }
+
   const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
-  if (pixels.byteLength !== expectedBytes) {
+  if (!frameBytes || frameBytes.length !== expectedBytes) {
     return;
   }
 
   controller.latestRendererFrame = {
-    frameBytes: Buffer.from(pixels),
+    frameBytes,
     timestampHundredsOfNs: getTimestampHundredsOfNs(),
     receivedAt: Date.now()
   };
@@ -556,7 +579,11 @@ function registerVirtualCameraHandlers() {
   });
 
   ipcMain.on('virtual-camera:push-frame', (event, payload) => {
-    if (!mainWindow || event.sender.id !== mainWindow.webContents.id) {
+    // Accept frames from EITHER the main window or the Morphly cam popup.
+    // Previously only mainWindow was accepted, silently dropping all popup frames.
+    const fromMain = mainWindow && !mainWindow.isDestroyed() && event.sender.id === mainWindow.webContents.id;
+    const fromPopup = morphlyCamWindow && !morphlyCamWindow.isDestroyed() && event.sender.id === morphlyCamWindow.webContents.id;
+    if (!fromMain && !fromPopup) {
       return;
     }
 

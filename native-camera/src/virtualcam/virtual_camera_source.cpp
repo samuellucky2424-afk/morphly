@@ -178,18 +178,31 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(value->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
             RETURN_IF_FAILED(value->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
             RETURN_IF_FAILED(value->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE));
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, config.stride));
             RETURN_IF_FAILED(MFSetAttributeSize(value.Get(), MF_MT_FRAME_SIZE, config.width, config.height));
             RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_FRAME_RATE, config.fpsNumerator, config.fpsDenominator));
             RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
-            uint32_t sampleSize = config.stride * config.height;
-            if (subtype == MFVideoFormat_YUY2)
+            uint32_t sampleSize;
+            uint32_t stride;
+            if (subtype == MFVideoFormat_NV12)
             {
+                // NV12: Y plane (width*height) + interleaved UV plane (width*height/2)
+                stride = config.width;
+                sampleSize = config.width * config.height * 3 / 2;
+            }
+            else if (subtype == MFVideoFormat_YUY2)
+            {
+                stride = config.width * 2;
                 sampleSize = config.width * config.height * 2;
-                RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, config.width * 2));
+            }
+            else
+            {
+                // RGB32 / BGRA32 etc.
+                stride = config.width * 4;
+                sampleSize = stride * config.height;
             }
 
+            RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, stride));
             RETURN_IF_FAILED(value->SetUINT32(MF_MT_SAMPLE_SIZE, sampleSize));
 
             *mediaType = value.Detach();
@@ -265,6 +278,54 @@ namespace morphly::virtualcam
                     dstRow[outIndex + 1] = static_cast<uint8_t>((static_cast<uint16_t>(u0) + u1) / 2);
                     dstRow[outIndex + 2] = y1;
                     dstRow[outIndex + 3] = static_cast<uint8_t>((static_cast<uint16_t>(v0) + v1) / 2);
+                }
+            }
+        }
+
+        // Convert BGRA32 to NV12 planar.
+        // NV12 layout: full-resolution Y plane followed by half-height interleaved UV plane.
+        void ConvertBgraToNV12(const MediaConfig& config, const uint8_t* bgra, std::vector<uint8_t>* nv12)
+        {
+            const uint32_t yStride  = config.width;
+            const uint32_t uvStride = config.width; // interleaved U+V, same width as Y
+            const size_t   yBytes   = static_cast<size_t>(yStride) * config.height;
+            const size_t   uvBytes  = static_cast<size_t>(uvStride) * (config.height / 2);
+            nv12->resize(yBytes + uvBytes);
+
+            uint8_t* yPlane  = nv12->data();
+            uint8_t* uvPlane = nv12->data() + yBytes;
+
+            // Fill Y plane
+            for (uint32_t y = 0; y < config.height; ++y)
+            {
+                const uint8_t* srcRow = bgra + static_cast<size_t>(y) * config.stride;
+                uint8_t*       dstY   = yPlane + static_cast<size_t>(y) * yStride;
+                for (uint32_t x = 0; x < config.width; ++x)
+                {
+                    const uint8_t b = srcRow[x * 4 + 0];
+                    const uint8_t g = srcRow[x * 4 + 1];
+                    const uint8_t r = srcRow[x * 4 + 2];
+                    dstY[x] = ToLuma(r, g, b);
+                }
+            }
+
+            // Fill UV plane (one UV pair per 2x2 pixel block)
+            for (uint32_t y = 0; y + 1 < config.height; y += 2)
+            {
+                const uint8_t* srcRow0 = bgra + static_cast<size_t>(y)     * config.stride;
+                const uint8_t* srcRow1 = bgra + static_cast<size_t>(y + 1) * config.stride;
+                uint8_t*       dstUV   = uvPlane + static_cast<size_t>(y / 2) * uvStride;
+
+                for (uint32_t x = 0; x + 1 < config.width; x += 2)
+                {
+                    // Average the four pixels in the 2x2 block
+                    const uint16_t b = srcRow0[x*4+0] + srcRow0[(x+1)*4+0] + srcRow1[x*4+0] + srcRow1[(x+1)*4+0];
+                    const uint16_t g = srcRow0[x*4+1] + srcRow0[(x+1)*4+1] + srcRow1[x*4+1] + srcRow1[(x+1)*4+1];
+                    const uint16_t r = srcRow0[x*4+2] + srcRow0[(x+1)*4+2] + srcRow1[x*4+2] + srcRow1[(x+1)*4+2];
+                    const uint8_t  u = ToChromaU(static_cast<uint8_t>(r/4), static_cast<uint8_t>(g/4), static_cast<uint8_t>(b/4));
+                    const uint8_t  v = ToChromaV(static_cast<uint8_t>(r/4), static_cast<uint8_t>(g/4), static_cast<uint8_t>(b/4));
+                    dstUV[x + 0] = u;
+                    dstUV[x + 1] = v;
                 }
             }
         }
@@ -762,10 +823,13 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, 1));
             RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, static_cast<UINT32>(MFFrameSourceTypes::MFFrameSourceTypes_Color)));
 
-            ComPtr<IMFMediaType> mediaTypes[2];
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2, mediaConfig_, &mediaTypes[0]));
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_RGB32, mediaConfig_, &mediaTypes[1]));
-            IMFMediaType* mediaTypePointers[] = { mediaTypes[0].Get(), mediaTypes[1].Get() };
+            // Advertise NV12 first — WhatsApp and most modern apps prefer it.
+            // YUY2 and RGB32 are kept as fallback for legacy apps.
+            ComPtr<IMFMediaType> mediaTypes[3];
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_NV12,  mediaConfig_, &mediaTypes[0]));
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2,  mediaConfig_, &mediaTypes[1]));
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_RGB32, mediaConfig_, &mediaTypes[2]));
+            IMFMediaType* mediaTypePointers[] = { mediaTypes[0].Get(), mediaTypes[1].Get(), mediaTypes[2].Get() };
             RETURN_IF_FAILED(MFCreateStreamDescriptor(kStreamId, ARRAYSIZE(mediaTypePointers), mediaTypePointers, &streamDescriptor_));
             RETURN_IF_FAILED(attributes_->CopyAllItems(streamDescriptor_.Get()));
 
@@ -1071,7 +1135,12 @@ namespace morphly::virtualcam
             currentConfig.height = height;
             currentConfig.fpsNumerator = fpsNum;
             currentConfig.fpsDenominator = fpsDen;
-            currentConfig.stride = subtype == MFVideoFormat_YUY2 ? width * 2 : width * 4;
+            if (subtype == MFVideoFormat_NV12)
+                currentConfig.stride = width;          // Y-plane stride
+            else if (subtype == MFVideoFormat_YUY2)
+                currentConfig.stride = width * 2;
+            else
+                currentConfig.stride = width * 4;      // RGB32 / BGRA
 
             std::vector<uint8_t> bgra;
             MediaConfig sharedConfig{};
@@ -1088,7 +1157,11 @@ namespace morphly::virtualcam
             }
 
             std::vector<uint8_t> outputBytes;
-            if (subtype == MFVideoFormat_YUY2)
+            if (subtype == MFVideoFormat_NV12)
+            {
+                ConvertBgraToNV12(mediaConfig_, bgra.data(), &outputBytes);
+            }
+            else if (subtype == MFVideoFormat_YUY2)
             {
                 ConvertBgraToYuy2(mediaConfig_, bgra.data(), &outputBytes);
             }
