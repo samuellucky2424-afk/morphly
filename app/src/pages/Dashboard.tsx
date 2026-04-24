@@ -1433,6 +1433,14 @@ function Dashboard() {
       pollIntervalRef.current = null;
     }
 
+    // Disarm the virtual camera publisher and disable the popup window
+    morphlyCamWindowEnabledRef.current = false;
+    if (window.electron) {
+      void window.electron.invoke('virtual-camera:stop').catch((err: unknown) => {
+        console.warn('Failed to stop virtual camera publisher:', err);
+      });
+    }
+
     sessionTokenRef.current = '';
     sessionIdRef.current = '';
     restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
@@ -1700,6 +1708,14 @@ function Dashboard() {
     setRuntimeModeCap('hd');
     resetHealthCounters();
 
+    // Enable the Morphly cam popup window and arm the virtual camera publisher
+    morphlyCamWindowEnabledRef.current = true;
+    if (window.electron) {
+      void window.electron.invoke('virtual-camera:start').catch((err: unknown) => {
+        console.warn('Failed to arm virtual camera publisher:', err);
+      });
+    }
+
     try {
       const [startResponse, stream] = await Promise.all([
         apiRequest<{
@@ -1720,6 +1736,7 @@ function Dashboard() {
         toast.error(startResponse.error || 'Insufficient credits');
         stopWebcam();
         closeMorphlyCamWindow({ clearStream: true });
+        morphlyCamWindowEnabledRef.current = false;
         setIsLoading(false);
         return;
       }
@@ -1776,6 +1793,7 @@ function Dashboard() {
       }
 
       sessionTokenRef.current = '';
+      morphlyCamWindowEnabledRef.current = false;
       stopWebcam();
       disconnectFromDecart();
       closeMorphlyCamWindow({ clearStream: true });
