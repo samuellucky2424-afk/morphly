@@ -82,6 +82,21 @@ namespace
         const uint64_t expectedBytes = static_cast<uint64_t>(header.stride) * header.height;
         return expectedBytes == header.payloadBytes;
     }
+
+    bool IsRetryableOpenError(HRESULT hr)
+    {
+        switch (HRESULT_CODE(hr))
+        {
+        case ERROR_ACCESS_DENIED:
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_INVALID_HANDLE:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_PRIVILEGE_NOT_HELD:
+            return true;
+        default:
+            return false;
+        }
+    }
 }
 
 int wmain()
@@ -95,6 +110,7 @@ int wmain()
     morphly::Publisher publisher;
     morphly::PublisherConfig currentConfig{};
     bool isOpen = false;
+    bool waitingForBridge = false;
     std::vector<uint8_t> frameBytes;
 
     for (;;)
@@ -127,25 +143,44 @@ int wmain()
         nextConfig.fpsNumerator = header.fpsNumerator;
         nextConfig.fpsDenominator = header.fpsDenominator;
 
+        frameBytes.resize(header.payloadBytes);
+        if (!ReadExact(&std::cin, frameBytes.data(), frameBytes.size()))
+        {
+            std::cerr << "Unexpected end of stream while reading frame payload.\n";
+            return 1;
+        }
+
         if (NeedsReopen(currentConfig, nextConfig, isOpen))
         {
             publisher.Close();
+            isOpen = false;
+
             const HRESULT openHr = publisher.Open(nextConfig);
             if (FAILED(openHr))
             {
+                if (IsRetryableOpenError(openHr))
+                {
+                    if (!waitingForBridge)
+                    {
+                        std::cerr << "Waiting for the Morphly virtual camera bridge to become available.\n";
+                        waitingForBridge = true;
+                    }
+
+                    continue;
+                }
+
                 std::cerr << "Failed to open Morphly publisher. HRESULT=0x" << std::hex << static_cast<unsigned long>(openHr) << "\n";
                 return 1;
             }
 
             currentConfig = nextConfig;
             isOpen = true;
-        }
 
-        frameBytes.resize(header.payloadBytes);
-        if (!ReadExact(&std::cin, frameBytes.data(), frameBytes.size()))
-        {
-            std::cerr << "Unexpected end of stream while reading frame payload.\n";
-            return 1;
+            if (waitingForBridge)
+            {
+                std::cerr << "Morphly virtual camera bridge connected.\n";
+                waitingForBridge = false;
+            }
         }
 
         const int64_t timestampHundredsOfNs = header.timestampHundredsOfNs == 0

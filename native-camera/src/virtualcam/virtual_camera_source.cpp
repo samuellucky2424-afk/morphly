@@ -15,6 +15,7 @@
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <propvarutil.h>
+#include <sddl.h>
 #include <strsafe.h>
 #include <wrl.h>
 
@@ -94,6 +95,48 @@ namespace morphly::virtualcam
             }
 
             return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        struct SecurityDescriptorHolder
+        {
+            ~SecurityDescriptorHolder()
+            {
+                if (descriptor != nullptr)
+                {
+                    LocalFree(descriptor);
+                }
+            }
+
+            PSECURITY_DESCRIPTOR descriptor = nullptr;
+        };
+
+        HRESULT BuildBridgeSecurityAttributes(SECURITY_ATTRIBUTES* attributes, SecurityDescriptorHolder* descriptorHolder)
+        {
+            if (attributes == nullptr || descriptorHolder == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            static constexpr wchar_t kBridgeSecurityDescriptor[] =
+                L"D:P"
+                L"(A;;GA;;;SY)"
+                L"(A;;GA;;;BA)"
+                L"(A;;GA;;;LS)"
+                L"(A;;GA;;;AU)";
+
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    kBridgeSecurityDescriptor,
+                    SDDL_REVISION_1,
+                    &descriptorHolder->descriptor,
+                    nullptr))
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            attributes->nLength = sizeof(*attributes);
+            attributes->lpSecurityDescriptor = descriptorHolder->descriptor;
+            attributes->bInheritHandle = FALSE;
+            return S_OK;
         }
 
         uint32_t ClampToByte(int value) noexcept
@@ -236,6 +279,12 @@ namespace morphly::virtualcam
                 Close();
             }
 
+            void SetDefaultConfig(const MediaConfig& config)
+            {
+                std::lock_guard<std::mutex> guard(lock_);
+                defaultConfig_ = config;
+            }
+
             HRESULT GetConfig(MediaConfig* config)
             {
                 if (config == nullptr)
@@ -320,6 +369,12 @@ namespace morphly::virtualcam
                     CloseHandle(mutex_);
                     mutex_ = nullptr;
                 }
+
+                if (event_ != nullptr)
+                {
+                    CloseHandle(event_);
+                    event_ = nullptr;
+                }
             }
 
         private:
@@ -330,19 +385,48 @@ namespace morphly::virtualcam
                     return S_OK;
                 }
 
-                if (mapping_ == nullptr)
+                SecurityDescriptorHolder securityDescriptor;
+                SECURITY_ATTRIBUTES securityAttributes{};
+                RETURN_IF_FAILED(BuildBridgeSecurityAttributes(&securityAttributes, &securityDescriptor));
+
+                if (mutex_ == nullptr)
                 {
-                    mapping_ = OpenFileMappingW(FILE_MAP_READ, FALSE, kPublisherMappingName);
-                    if (mapping_ == nullptr)
+                    mutex_ = CreateMutexW(&securityAttributes, FALSE, kPublisherMutexName);
+                    if (mutex_ == nullptr)
                     {
                         return HRESULT_FROM_WIN32(GetLastError());
                     }
                 }
 
-                if (mutex_ == nullptr)
+                bool createdMapping = false;
+                if (mapping_ == nullptr)
                 {
-                    mutex_ = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, kPublisherMutexName);
-                    if (mutex_ == nullptr)
+                    const uint32_t width = defaultConfig_.width == 0 ? kDefaultWidth : defaultConfig_.width;
+                    const uint32_t height = defaultConfig_.height == 0 ? kDefaultHeight : defaultConfig_.height;
+                    const uint32_t stride = defaultConfig_.stride == 0 ? (width * 4) : defaultConfig_.stride;
+                    const size_t mappingByteCount = sizeof(SharedFrameHeader) + (static_cast<size_t>(stride) * height);
+
+                    ULARGE_INTEGER mappingSize{};
+                    mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount);
+                    mapping_ = CreateFileMappingW(
+                        INVALID_HANDLE_VALUE,
+                        &securityAttributes,
+                        PAGE_READWRITE,
+                        mappingSize.HighPart,
+                        mappingSize.LowPart,
+                        kPublisherMappingName);
+                    if (mapping_ == nullptr)
+                    {
+                        return HRESULT_FROM_WIN32(GetLastError());
+                    }
+
+                    createdMapping = GetLastError() != ERROR_ALREADY_EXISTS;
+                }
+
+                if (event_ == nullptr)
+                {
+                    event_ = CreateEventW(&securityAttributes, FALSE, FALSE, kPublisherEventName);
+                    if (event_ == nullptr)
                     {
                         return HRESULT_FROM_WIN32(GetLastError());
                     }
@@ -350,11 +434,20 @@ namespace morphly::virtualcam
 
                 if (view_ == nullptr)
                 {
-                    view_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0);
+                    view_ = MapViewOfFile(mapping_, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
                     if (view_ == nullptr)
                     {
                         return HRESULT_FROM_WIN32(GetLastError());
                     }
+                }
+
+                auto* header = static_cast<const SharedFrameHeader*>(view_);
+                if (createdMapping
+                    || header == nullptr
+                    || header->magic != kProtocolMagic
+                    || header->version != kProtocolVersion)
+                {
+                    RETURN_IF_FAILED(InitializeSharedState());
                 }
 
                 return S_OK;
@@ -388,10 +481,53 @@ namespace morphly::virtualcam
                 return S_OK;
             }
 
+            HRESULT InitializeSharedState()
+            {
+                RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
+
+                auto unlock = [&]() noexcept
+                {
+                    if (mutex_ != nullptr)
+                    {
+                        ReleaseMutex(mutex_);
+                    }
+                };
+
+                const uint32_t width = defaultConfig_.width == 0 ? kDefaultWidth : defaultConfig_.width;
+                const uint32_t height = defaultConfig_.height == 0 ? kDefaultHeight : defaultConfig_.height;
+                const uint32_t stride = defaultConfig_.stride == 0 ? (width * 4) : defaultConfig_.stride;
+                const uint32_t fpsNumerator = defaultConfig_.fpsNumerator == 0 ? kDefaultFpsNumerator : defaultConfig_.fpsNumerator;
+                const uint32_t fpsDenominator = defaultConfig_.fpsDenominator == 0 ? kDefaultFpsDenominator : defaultConfig_.fpsDenominator;
+
+                auto* header = static_cast<SharedFrameHeader*>(view_);
+                if (header == nullptr)
+                {
+                    unlock();
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_ADDRESS);
+                }
+
+                const size_t payloadBytes = static_cast<size_t>(stride) * height;
+                std::memset(header, 0, sizeof(SharedFrameHeader) + payloadBytes);
+                header->magic = kProtocolMagic;
+                header->version = kProtocolVersion;
+                header->width = width;
+                header->height = height;
+                header->stride = stride;
+                header->pixelFormat = kPixelFormatBgra32;
+                header->fpsNumerator = fpsNumerator;
+                header->fpsDenominator = fpsDenominator;
+                header->payloadBytes = static_cast<uint32_t>(payloadBytes);
+
+                unlock();
+                return S_OK;
+            }
+
             std::mutex lock_;
             HANDLE mapping_ = nullptr;
             HANDLE mutex_ = nullptr;
+            HANDLE event_ = nullptr;
             void* view_ = nullptr;
+            MediaConfig defaultConfig_{};
         };
 
         class MorphlyMediaSource;
@@ -617,6 +753,7 @@ namespace morphly::virtualcam
 
             parent_ = parent;
             mediaConfig_ = config;
+            frameReader_.SetDefaultConfig(mediaConfig_);
 
             RETURN_IF_FAILED(MFCreateEventQueue(&eventQueue_));
             RETURN_IF_FAILED(MFCreateAttributes(&attributes_, 4));

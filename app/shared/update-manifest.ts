@@ -38,8 +38,8 @@ export function normalizeVersion(version: string): string {
 export function buildAssetName(version: string, packageType: UpdatePackageType): string {
   const safeVersion = normalizeVersion(version);
   return packageType === 'portable'
-    ? `Morphly-${safeVersion}.exe`
-    : `Morphly-Setup-${safeVersion}.exe`;
+    ? `Morphly ${safeVersion}.exe`
+    : `Morphly Setup ${safeVersion}.exe`;
 }
 
 export function buildReleasePageUrl(version: string): string {

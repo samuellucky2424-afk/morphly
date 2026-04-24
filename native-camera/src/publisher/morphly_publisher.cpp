@@ -1,6 +1,7 @@
 #include "morphly/morphly_publisher.h"
 
 #include <cstring>
+#include <sddl.h>
 
 #include "morphly/morphly_ids.h"
 #include "morphly/morphly_protocol.h"
@@ -28,6 +29,48 @@ namespace morphly
             }
 
             return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        struct SecurityDescriptorHolder
+        {
+            ~SecurityDescriptorHolder()
+            {
+                if (descriptor != nullptr)
+                {
+                    LocalFree(descriptor);
+                }
+            }
+
+            PSECURITY_DESCRIPTOR descriptor = nullptr;
+        };
+
+        HRESULT BuildBridgeSecurityAttributes(SECURITY_ATTRIBUTES* attributes, SecurityDescriptorHolder* descriptorHolder)
+        {
+            if (attributes == nullptr || descriptorHolder == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            static constexpr wchar_t kBridgeSecurityDescriptor[] =
+                L"D:P"
+                L"(A;;GA;;;SY)"
+                L"(A;;GA;;;BA)"
+                L"(A;;GA;;;LS)"
+                L"(A;;GA;;;AU)";
+
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    kBridgeSecurityDescriptor,
+                    SDDL_REVISION_1,
+                    &descriptorHolder->descriptor,
+                    nullptr))
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            attributes->nLength = sizeof(*attributes);
+            attributes->lpSecurityDescriptor = descriptorHolder->descriptor;
+            attributes->bInheritHandle = FALSE;
+            return S_OK;
         }
     }
 
@@ -62,14 +105,22 @@ namespace morphly
 
         config_ = config;
 
-        mutex_ = CreateMutexW(nullptr, FALSE, kPublisherMutexName);
+        SecurityDescriptorHolder securityDescriptor;
+        SECURITY_ATTRIBUTES securityAttributes{};
+        const HRESULT securityHr = BuildBridgeSecurityAttributes(&securityAttributes, &securityDescriptor);
+        if (FAILED(securityHr))
+        {
+            return securityHr;
+        }
+
+        mutex_ = CreateMutexW(&securityAttributes, FALSE, kPublisherMutexName);
         if (mutex_ == nullptr)
         {
             Close();
             return HRESULT_FROM_WIN32(GetLastError());
         }
 
-        event_ = CreateEventW(nullptr, FALSE, FALSE, kPublisherEventName);
+        event_ = CreateEventW(&securityAttributes, FALSE, FALSE, kPublisherEventName);
         if (event_ == nullptr)
         {
             Close();
@@ -80,7 +131,7 @@ namespace morphly
         mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount_);
         mapping_ = CreateFileMappingW(
             INVALID_HANDLE_VALUE,
-            nullptr,
+            &securityAttributes,
             PAGE_READWRITE,
             mappingSize.HighPart,
             mappingSize.LowPart,

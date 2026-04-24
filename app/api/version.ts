@@ -44,8 +44,8 @@ function normalizePackageType(value) {
 function buildAssetName(version, packageType) {
   const safeVersion = version.trim();
   return packageType === 'portable'
-    ? `Morphly-${safeVersion}.exe`
-    : `Morphly-Setup-${safeVersion}.exe`;
+    ? `Morphly ${safeVersion}.exe`
+    : `Morphly Setup ${safeVersion}.exe`;
 }
 
 function buildReleasePageUrl(version) {

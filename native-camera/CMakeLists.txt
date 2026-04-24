@@ -39,6 +39,7 @@ add_library(morphly_virtualcam SHARED
     src/virtualcam/virtual_camera_source.cpp
 )
 target_link_libraries(morphly_virtualcam PRIVATE
+    advapi32
     morphly_common
     mf
     mfplat
@@ -86,6 +87,7 @@ add_executable(morphly_cam_feeder
     src/tools/feeder/main.cpp
 )
 target_link_libraries(morphly_cam_feeder PRIVATE
+    advapi32
     morphly_common
     morphly_publisher
 )
@@ -94,6 +96,7 @@ add_executable(morphly_cam_pipe_publisher
     src/tools/pipe_publisher/main.cpp
 )
 target_link_libraries(morphly_cam_pipe_publisher PRIVATE
+    advapi32
     morphly_common
     morphly_publisher
 )
