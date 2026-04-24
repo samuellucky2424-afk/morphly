@@ -10,6 +10,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+
 add_library(morphly_common INTERFACE)
 target_include_directories(morphly_common INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
