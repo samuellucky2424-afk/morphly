@@ -1,0 +1,3 @@
+start
+stopped
+error=The process cannot access the file 'C:\ProgramData\MorphlyG1\MorphlyVirtualCameraMF.dll' because it is being used by another process.

@@ -1,101 +1,96 @@
 #include "virtual_camera_source.h"
 
 #include <algorithm>
-#include <atomic>
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
-#include <vector>
+#include <thread>
 
 #include <ks.h>
 #include <ksmedia.h>
 #include <ksproxy.h>
-#include <mfapi.h>
-#include <mferror.h>
-#include <mfidl.h>
-#include <mfobjects.h>
-#include <propvarutil.h>
 #include <sddl.h>
 #include <strsafe.h>
-#include <wrl.h>
+#include <windows.h>
 
 #include "morphly/morphly_ids.h"
 #include "morphly/morphly_protocol.h"
-
-using Microsoft::WRL::ComPtr;
-using Microsoft::WRL::Make;
-using Microsoft::WRL::RuntimeClass;
-using Microsoft::WRL::RuntimeClassFlags;
-
-#ifndef RETURN_IF_FAILED
-#define RETURN_IF_FAILED(expression)                     \
-    do                                                  \
-    {                                                   \
-        const HRESULT __hr = (expression);              \
-        if (FAILED(__hr))                               \
-        {                                               \
-            return __hr;                                \
-        }                                               \
-    } while (false)
-#endif
 
 namespace morphly::virtualcam
 {
     namespace
     {
-        constexpr uint32_t kDefaultWidth = 1280;
-        constexpr uint32_t kDefaultHeight = 720;
-        constexpr uint32_t kDefaultStride = kDefaultWidth * 4;
-        constexpr uint32_t kDefaultFpsNumerator = 30;
-        constexpr uint32_t kDefaultFpsDenominator = 1;
-        constexpr DWORD kStreamId = 0;
-        constexpr LONGLONG kHundredsOfNsPerSecond = 10'000'000LL;
+        constexpr long kFrameWidth = 1280;
+        constexpr long kFrameHeight = 720;
+        constexpr long kFramesPerSecond = 30;
+        constexpr long kYuy2StrideBytes = kFrameWidth * 2;
+        constexpr long kBgraStrideBytes = kFrameWidth * 4;
+        constexpr std::size_t kYuy2FrameBytes = static_cast<std::size_t>(kYuy2StrideBytes) * kFrameHeight;
+        constexpr std::size_t kBgraFrameBytes = static_cast<std::size_t>(kBgraStrideBytes) * kFrameHeight;
+        constexpr REFERENCE_TIME kFrameDuration = 333333;
+        constexpr auto kFrameDurationChrono = std::chrono::nanoseconds(kFrameDuration * 100LL);
+        constexpr DWORD kFrameReadWaitMs = 5;
+        constexpr DWORD kOpenRetryDelayMs = 250;
+        constexpr DWORD kYuy2FourCc = MAKEFOURCC('Y', 'U', 'Y', '2');
 
-        std::atomic_ulong g_objectCount = 0;
-        std::atomic_ulong g_lockCount = 0;
+#ifdef TEST_PATTERN_MODE
+        constexpr bool kUseExternalFrames = false;
+#else
+        constexpr bool kUseExternalFrames = true;
+#endif
 
-        enum class SourceState
+        std::array<std::vector<uint8_t>, 2> g_frameBuffers;
+        std::mutex g_frameMutex;
+        int g_frontBufferIndex = 0;
+        int g_backBufferIndex = 1;
+        bool g_hasFrame = false;
+        std::uint64_t g_latestFrameSequence = 0;
+
+        std::mutex g_frameProviderLock;
+        std::thread g_frameProviderThread;
+        bool g_stopFrameProvider = false;
+        long g_frameProviderUsers = 0;
+
+        void LogVirtualCameraEvent(const wchar_t* message) noexcept
         {
-            Invalid,
-            Stopped,
-            Started,
-            Shutdown,
-        };
-
-        struct MediaConfig
-        {
-            uint32_t width = kDefaultWidth;
-            uint32_t height = kDefaultHeight;
-            uint32_t stride = kDefaultStride;
-            uint32_t fpsNumerator = kDefaultFpsNumerator;
-            uint32_t fpsDenominator = kDefaultFpsDenominator;
-        };
-
-        void AddObjectRef() noexcept
-        {
-            ++g_objectCount;
-        }
-
-        void ReleaseObjectRef() noexcept
-        {
-            --g_objectCount;
-        }
-
-        HRESULT WaitForOwnedMutex(HANDLE mutex) noexcept
-        {
-            const DWORD waitResult = WaitForSingleObject(mutex, 2000);
-            if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED)
+            if (message == nullptr)
             {
-                return S_OK;
+                return;
             }
 
-            if (waitResult == WAIT_TIMEOUT)
+            wchar_t line[256]{};
+            if (SUCCEEDED(StringCchPrintfW(line, ARRAYSIZE(line), L"[Morphly G1] %s\r\n", message)))
             {
-                return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+                OutputDebugStringW(line);
             }
-
-            return HRESULT_FROM_WIN32(GetLastError());
         }
+
+        inline uint8_t ClampToRange(int value, int minimum, int maximum) noexcept
+        {
+            return static_cast<uint8_t>(std::clamp(value, minimum, maximum));
+        }
+
+        struct BridgeNames
+        {
+            const wchar_t* mappingName = nullptr;
+            const wchar_t* mutexName = nullptr;
+            const wchar_t* eventName = nullptr;
+        };
+
+        const BridgeNames kLocalBridgeNames{
+            kPublisherMappingName,
+            kPublisherMutexName,
+            kPublisherEventName,
+        };
+
+        const BridgeNames kGlobalBridgeNames{
+            kGlobalPublisherMappingName,
+            kGlobalPublisherMutexName,
+            kGlobalPublisherEventName,
+        };
 
         struct SecurityDescriptorHolder
         {
@@ -139,1701 +134,1065 @@ namespace morphly::virtualcam
             return S_OK;
         }
 
-        uint32_t ClampToByte(int value) noexcept
+        inline uint8_t ClampLuma(int value) noexcept
         {
-            return static_cast<uint32_t>(std::clamp(value, 0, 255));
+            return ClampToRange(value, 16, 235);
         }
 
-        uint8_t ToLuma(uint8_t red, uint8_t green, uint8_t blue) noexcept
+        inline uint8_t ClampChroma(int value) noexcept
+        {
+            return ClampToRange(value, 16, 240);
+        }
+
+        inline uint8_t BgraToLuma(uint8_t blue, uint8_t green, uint8_t red) noexcept
         {
             const int value = ((66 * red) + (129 * green) + (25 * blue) + 128) >> 8;
-            return static_cast<uint8_t>(ClampToByte(value + 16));
+            return ClampLuma(value + 16);
         }
 
-        uint8_t ToChromaU(uint8_t red, uint8_t green, uint8_t blue) noexcept
+        inline uint8_t BgraToChromaU(uint8_t blue, uint8_t green, uint8_t red) noexcept
         {
-            const int value = ((-38 * red) - (74 * green) + (112 * blue) + 128) >> 8;
-            return static_cast<uint8_t>(ClampToByte(value + 128));
+            const int value = ((112 * blue) - (74 * green) - (38 * red) + 128) >> 8;
+            return ClampChroma(value + 128);
         }
 
-        uint8_t ToChromaV(uint8_t red, uint8_t green, uint8_t blue) noexcept
+        inline uint8_t BgraToChromaV(uint8_t blue, uint8_t green, uint8_t red) noexcept
         {
             const int value = ((112 * red) - (94 * green) - (18 * blue) + 128) >> 8;
-            return static_cast<uint8_t>(ClampToByte(value + 128));
+            return ClampChroma(value + 128);
         }
 
-        HRESULT CreateVideoType(const GUID& subtype, const MediaConfig& config, IMFMediaType** mediaType)
+        void EnsureLatestFrameStorageAllocated()
+        {
+            std::lock_guard<std::mutex> guard(g_frameMutex);
+            if (!g_frameBuffers[0].empty() && !g_frameBuffers[1].empty())
+            {
+                return;
+            }
+
+            for (auto& buffer : g_frameBuffers)
+            {
+                buffer.resize(kBgraFrameBytes, 0);
+            }
+        }
+
+        void CopyFrameToSharedLatest(const uint8_t* frameBytes) noexcept
+        {
+            if (frameBytes == nullptr)
+            {
+                return;
+            }
+
+            EnsureLatestFrameStorageAllocated();
+
+            const int writeIndex = g_backBufferIndex;
+            std::memcpy(g_frameBuffers[writeIndex].data(), frameBytes, kBgraFrameBytes);
+
+            std::uint64_t frameSequence = 0;
+            {
+                std::lock_guard<std::mutex> guard(g_frameMutex);
+                g_frontBufferIndex = writeIndex;
+                g_backBufferIndex = 1 - writeIndex;
+                g_hasFrame = true;
+                frameSequence = ++g_latestFrameSequence;
+            }
+
+            if ((frameSequence % static_cast<std::uint64_t>(kFramesPerSecond)) == 1ULL)
+            {
+                LogVirtualCameraEvent(L"New frame received");
+            }
+        }
+
+        void ConvertBgraToYuy2(const uint8_t* bgraBytes, uint8_t* yuy2Bytes) noexcept
+        {
+            if (bgraBytes == nullptr || yuy2Bytes == nullptr)
+            {
+                return;
+            }
+
+            for (long y = 0; y < kFrameHeight; ++y)
+            {
+                const uint8_t* sourceRow = bgraBytes + (static_cast<std::size_t>(y) * kBgraStrideBytes);
+                uint8_t* destinationRow = yuy2Bytes + (static_cast<std::size_t>(y) * kYuy2StrideBytes);
+
+                for (long x = 0; x < kFrameWidth; x += 2)
+                {
+                    const uint8_t* pixel0 = sourceRow + (static_cast<std::size_t>(x) * 4);
+                    const uint8_t* pixel1 = pixel0 + 4;
+
+                    const uint8_t y0 = BgraToLuma(pixel0[0], pixel0[1], pixel0[2]);
+                    const uint8_t y1 = BgraToLuma(pixel1[0], pixel1[1], pixel1[2]);
+
+                    const uint8_t u0 = BgraToChromaU(pixel0[0], pixel0[1], pixel0[2]);
+                    const uint8_t u1 = BgraToChromaU(pixel1[0], pixel1[1], pixel1[2]);
+                    const uint8_t v0 = BgraToChromaV(pixel0[0], pixel0[1], pixel0[2]);
+                    const uint8_t v1 = BgraToChromaV(pixel1[0], pixel1[1], pixel1[2]);
+
+                    const std::size_t outputIndex = static_cast<std::size_t>(x) * 2;
+                    destinationRow[outputIndex + 0] = y0;
+                    destinationRow[outputIndex + 1] = static_cast<uint8_t>((static_cast<unsigned>(u0) + static_cast<unsigned>(u1)) / 2U);
+                    destinationRow[outputIndex + 2] = y1;
+                    destinationRow[outputIndex + 3] = static_cast<uint8_t>((static_cast<unsigned>(v0) + static_cast<unsigned>(v1)) / 2U);
+                }
+            }
+        }
+
+        void GenerateAnimatedTestPatternBgra(uint8_t* destination, std::uint64_t frameIndex) noexcept
+        {
+            if (destination == nullptr)
+            {
+                return;
+            }
+
+            const int phase = static_cast<int>((frameIndex * 4ULL) % 256ULL);
+            const long movingBarLeft = static_cast<long>((frameIndex * 12ULL) % static_cast<std::uint64_t>(kFrameWidth));
+            const long movingBarRight = std::min<long>(movingBarLeft + 96L, kFrameWidth);
+
+            for (long y = 0; y < kFrameHeight; ++y)
+            {
+                uint8_t* row = destination + (static_cast<std::size_t>(y) * kBgraStrideBytes);
+                const int bandOffset = ((y / 36) + (phase / 16)) % 8;
+
+                for (long x = 0; x < kFrameWidth; ++x)
+                {
+                    const bool inMovingBar = (x >= movingBarLeft) && (x < movingBarRight);
+                    const int band = (((x / 160) + bandOffset) % 8);
+
+                    uint8_t blue = static_cast<uint8_t>(32 + ((x + phase + (y / 2)) % 144));
+                    uint8_t green = blue;
+                    uint8_t red = blue;
+
+                    switch (band)
+                    {
+                    case 0:
+                        blue = 255; green = 0; red = 255;
+                        break;
+                    case 1:
+                        blue = 255; green = 255; red = 0;
+                        break;
+                    case 2:
+                        blue = 0; green = 255; red = 0;
+                        break;
+                    case 3:
+                        blue = 255; green = 0; red = 0;
+                        break;
+                    case 4:
+                        blue = 0; green = 255; red = 255;
+                        break;
+                    case 5:
+                        blue = 0; green = 0; red = 255;
+                        break;
+                    case 6:
+                        blue = 0; green = 255; red = 0;
+                        break;
+                    default:
+                        blue = 128; green = 128; red = 128;
+                        break;
+                    }
+
+                    if (inMovingBar)
+                    {
+                        blue = static_cast<uint8_t>(128 + ((phase / 2) % 40));
+                        green = 220;
+                        red = static_cast<uint8_t>(128 - ((phase / 3) % 40));
+                    }
+
+                    const std::size_t outputIndex = static_cast<std::size_t>(x) * 4;
+                    row[outputIndex + 0] = blue;
+                    row[outputIndex + 1] = green;
+                    row[outputIndex + 2] = red;
+                    row[outputIndex + 3] = 0xff;
+                }
+            }
+        }
+
+        void FillFixedVideoInfoHeader(VIDEOINFOHEADER* videoInfoHeader) noexcept
+        {
+            if (videoInfoHeader == nullptr)
+            {
+                return;
+            }
+
+            std::memset(videoInfoHeader, 0, sizeof(*videoInfoHeader));
+            videoInfoHeader->AvgTimePerFrame = kFrameDuration;
+            videoInfoHeader->dwBitRate = static_cast<DWORD>(kYuy2FrameBytes * 8 * kFramesPerSecond);
+            videoInfoHeader->dwBitErrorRate = 0;
+            SetRect(&videoInfoHeader->rcSource, 0, 0, kFrameWidth, kFrameHeight);
+            SetRect(&videoInfoHeader->rcTarget, 0, 0, kFrameWidth, kFrameHeight);
+            videoInfoHeader->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            videoInfoHeader->bmiHeader.biWidth = kFrameWidth;
+            videoInfoHeader->bmiHeader.biHeight = kFrameHeight;
+            videoInfoHeader->bmiHeader.biPlanes = 1;
+            videoInfoHeader->bmiHeader.biBitCount = 16;
+            videoInfoHeader->bmiHeader.biCompression = kYuy2FourCc;
+            videoInfoHeader->bmiHeader.biSizeImage = static_cast<DWORD>(kYuy2FrameBytes);
+        }
+
+        void ApplyYuy2Heartbeat(uint8_t* yuy2Bytes, std::size_t byteCount, std::uint64_t frameIndex) noexcept
+        {
+            if (yuy2Bytes == nullptr || byteCount < 4)
+            {
+                return;
+            }
+
+            const uint8_t pulse = static_cast<uint8_t>(frameIndex & 0x01ULL);
+            const std::size_t tailOffset = byteCount >= 8 ? byteCount - 8 : 0;
+
+            yuy2Bytes[0] = static_cast<uint8_t>((yuy2Bytes[0] & 0xfeU) | pulse);
+            yuy2Bytes[2] = static_cast<uint8_t>((yuy2Bytes[2] & 0xfeU) | static_cast<uint8_t>(pulse ^ 0x01U));
+            yuy2Bytes[tailOffset + 0] = static_cast<uint8_t>((yuy2Bytes[tailOffset + 0] & 0xfeU) | pulse);
+            yuy2Bytes[tailOffset + 2] = static_cast<uint8_t>((yuy2Bytes[tailOffset + 2] & 0xfeU) | static_cast<uint8_t>(pulse ^ 0x01U));
+        }
+
+        void FillYuy2NeutralFrame(uint8_t* yuy2Bytes, std::size_t byteCount) noexcept
+        {
+            if (yuy2Bytes == nullptr)
+            {
+                return;
+            }
+
+            for (std::size_t offset = 0; offset + 3 < byteCount; offset += 4)
+            {
+                yuy2Bytes[offset + 0] = 16;
+                yuy2Bytes[offset + 1] = 128;
+                yuy2Bytes[offset + 2] = 16;
+                yuy2Bytes[offset + 3] = 128;
+            }
+        }
+
+        void SleepUntilNextFrame(std::chrono::steady_clock::time_point* nextFrameDue) noexcept
+        {
+            if (nextFrameDue == nullptr)
+            {
+                return;
+            }
+
+            auto now = std::chrono::steady_clock::now();
+            if (nextFrameDue->time_since_epoch().count() == 0)
+            {
+                *nextFrameDue = now;
+            }
+
+            if (*nextFrameDue > now)
+            {
+                while (true)
+                {
+                    now = std::chrono::steady_clock::now();
+                    if (*nextFrameDue <= now)
+                    {
+                        break;
+                    }
+
+                    const auto remaining = *nextFrameDue - now;
+                    if (remaining > std::chrono::milliseconds(2))
+                    {
+                        const auto sleepFor = std::chrono::duration_cast<std::chrono::milliseconds>(remaining - std::chrono::milliseconds(1));
+                        Sleep(static_cast<DWORD>(std::max<long long>(1LL, sleepFor.count())));
+                    }
+                    else
+                    {
+                        Sleep(0);
+                    }
+                }
+            }
+
+            *nextFrameDue += kFrameDurationChrono;
+            const auto maxLag = kFrameDurationChrono * 2;
+            now = std::chrono::steady_clock::now();
+            if (*nextFrameDue + maxLag < now)
+            {
+                *nextFrameDue = now + kFrameDurationChrono;
+            }
+        }
+
+        void FillFixedYuy2MediaType(CMediaType* mediaType) noexcept
         {
             if (mediaType == nullptr)
             {
-                return E_POINTER;
+                return;
             }
 
-            *mediaType = nullptr;
+            mediaType->InitMediaType();
+            mediaType->SetType(&MEDIATYPE_Video);
+            mediaType->SetSubtype(&MEDIASUBTYPE_YUY2);
+            mediaType->SetTemporalCompression(FALSE);
+            mediaType->SetSampleSize(static_cast<ULONG>(kYuy2FrameBytes));
+            mediaType->SetFormatType(&FORMAT_VideoInfo);
 
-            ComPtr<IMFMediaType> value;
-            RETURN_IF_FAILED(MFCreateMediaType(&value));
-            RETURN_IF_FAILED(value->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-            RETURN_IF_FAILED(value->SetGUID(MF_MT_SUBTYPE, subtype));
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_FIXED_SIZE_SAMPLES, TRUE));
-            RETURN_IF_FAILED(MFSetAttributeSize(value.Get(), MF_MT_FRAME_SIZE, config.width, config.height));
-            RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_FRAME_RATE, config.fpsNumerator, config.fpsDenominator));
-            RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-
-            uint32_t sampleSize;
-            uint32_t stride;
-            if (subtype == MFVideoFormat_NV12)
-            {
-                // NV12: Y plane (width*height) + interleaved UV plane (width*height/2)
-                stride = config.width;
-                sampleSize = config.width * config.height * 3 / 2;
-            }
-            else if (subtype == MFVideoFormat_YUY2)
-            {
-                stride = config.width * 2;
-                sampleSize = config.width * config.height * 2;
-            }
-            else
-            {
-                // RGB32 / BGRA32 etc.
-                stride = config.width * 4;
-                sampleSize = stride * config.height;
-            }
-
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, stride));
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_SAMPLE_SIZE, sampleSize));
-
-            *mediaType = value.Detach();
-            return S_OK;
+            VIDEOINFOHEADER* videoInfoHeader = reinterpret_cast<VIDEOINFOHEADER*>(mediaType->AllocFormatBuffer(sizeof(VIDEOINFOHEADER)));
+            FillFixedVideoInfoHeader(videoInfoHeader);
         }
 
-        bool IsSupportedStartPosition(const PROPVARIANT* startPosition) noexcept
-        {
-            if (startPosition == nullptr)
-            {
-                return false;
-            }
-
-            if (startPosition->vt == VT_EMPTY)
-            {
-                return true;
-            }
-
-            return startPosition->vt == VT_I8 && startPosition->hVal.QuadPart == 0;
-        }
-
-        void FillSyntheticBgra(const MediaConfig& config, uint64_t frameIndex, std::vector<uint8_t>* bgra)
-        {
-            const size_t payloadSize = static_cast<size_t>(config.stride) * config.height;
-            bgra->resize(payloadSize);
-
-            for (uint32_t y = 0; y < config.height; ++y)
-            {
-                uint8_t* row = bgra->data() + (static_cast<size_t>(y) * config.stride);
-                for (uint32_t x = 0; x < config.width; ++x)
-                {
-                    const uint8_t phase = static_cast<uint8_t>((frameIndex * 3) & 0xff);
-                    row[(x * 4) + 0] = static_cast<uint8_t>((x + phase) & 0xff);
-                    row[(x * 4) + 1] = static_cast<uint8_t>((y + phase) & 0xff);
-                    row[(x * 4) + 2] = static_cast<uint8_t>(((x / 2) + (y / 3) + phase) & 0xff);
-                    row[(x * 4) + 3] = 0xff;
-                }
-            }
-        }
-
-        void ConvertBgraToYuy2(const MediaConfig& config, const uint8_t* bgra, std::vector<uint8_t>* yuy2)
-        {
-            const uint32_t outputStride = config.width * 2;
-            yuy2->resize(static_cast<size_t>(outputStride) * config.height);
-
-            for (uint32_t y = 0; y < config.height; ++y)
-            {
-                const uint8_t* srcRow = bgra + (static_cast<size_t>(y) * config.stride);
-                uint8_t* dstRow = yuy2->data() + (static_cast<size_t>(y) * outputStride);
-
-                for (uint32_t x = 0; x < config.width; x += 2)
-                {
-                    const uint8_t* pixel0 = srcRow + (x * 4);
-                    const uint8_t* pixel1 = srcRow + (std::min(x + 1, config.width - 1) * 4);
-
-                    const uint8_t blue0 = pixel0[0];
-                    const uint8_t green0 = pixel0[1];
-                    const uint8_t red0 = pixel0[2];
-
-                    const uint8_t blue1 = pixel1[0];
-                    const uint8_t green1 = pixel1[1];
-                    const uint8_t red1 = pixel1[2];
-
-                    const uint8_t y0 = ToLuma(red0, green0, blue0);
-                    const uint8_t y1 = ToLuma(red1, green1, blue1);
-                    const uint8_t u0 = ToChromaU(red0, green0, blue0);
-                    const uint8_t u1 = ToChromaU(red1, green1, blue1);
-                    const uint8_t v0 = ToChromaV(red0, green0, blue0);
-                    const uint8_t v1 = ToChromaV(red1, green1, blue1);
-
-                    const size_t outIndex = static_cast<size_t>(x) * 2;
-                    dstRow[outIndex + 0] = y0;
-                    dstRow[outIndex + 1] = static_cast<uint8_t>((static_cast<uint16_t>(u0) + u1) / 2);
-                    dstRow[outIndex + 2] = y1;
-                    dstRow[outIndex + 3] = static_cast<uint8_t>((static_cast<uint16_t>(v0) + v1) / 2);
-                }
-            }
-        }
-
-        // Convert BGRA32 to NV12 planar.
-        // NV12 layout: full-resolution Y plane followed by half-height interleaved UV plane.
-        void ConvertBgraToNV12(const MediaConfig& config, const uint8_t* bgra, std::vector<uint8_t>* nv12)
-        {
-            const uint32_t yStride  = config.width;
-            const uint32_t uvStride = config.width; // interleaved U+V, same width as Y
-            const size_t   yBytes   = static_cast<size_t>(yStride) * config.height;
-            const size_t   uvBytes  = static_cast<size_t>(uvStride) * (config.height / 2);
-            nv12->resize(yBytes + uvBytes);
-
-            uint8_t* yPlane  = nv12->data();
-            uint8_t* uvPlane = nv12->data() + yBytes;
-
-            // Fill Y plane
-            for (uint32_t y = 0; y < config.height; ++y)
-            {
-                const uint8_t* srcRow = bgra + static_cast<size_t>(y) * config.stride;
-                uint8_t*       dstY   = yPlane + static_cast<size_t>(y) * yStride;
-                for (uint32_t x = 0; x < config.width; ++x)
-                {
-                    const uint8_t b = srcRow[x * 4 + 0];
-                    const uint8_t g = srcRow[x * 4 + 1];
-                    const uint8_t r = srcRow[x * 4 + 2];
-                    dstY[x] = ToLuma(r, g, b);
-                }
-            }
-
-            // Fill UV plane (one UV pair per 2x2 pixel block)
-            for (uint32_t y = 0; y + 1 < config.height; y += 2)
-            {
-                const uint8_t* srcRow0 = bgra + static_cast<size_t>(y)     * config.stride;
-                const uint8_t* srcRow1 = bgra + static_cast<size_t>(y + 1) * config.stride;
-                uint8_t*       dstUV   = uvPlane + static_cast<size_t>(y / 2) * uvStride;
-
-                for (uint32_t x = 0; x + 1 < config.width; x += 2)
-                {
-                    // Average the four pixels in the 2x2 block
-                    const uint16_t b = srcRow0[x*4+0] + srcRow0[(x+1)*4+0] + srcRow1[x*4+0] + srcRow1[(x+1)*4+0];
-                    const uint16_t g = srcRow0[x*4+1] + srcRow0[(x+1)*4+1] + srcRow1[x*4+1] + srcRow1[(x+1)*4+1];
-                    const uint16_t r = srcRow0[x*4+2] + srcRow0[(x+1)*4+2] + srcRow1[x*4+2] + srcRow1[(x+1)*4+2];
-                    const uint8_t  u = ToChromaU(static_cast<uint8_t>(r/4), static_cast<uint8_t>(g/4), static_cast<uint8_t>(b/4));
-                    const uint8_t  v = ToChromaV(static_cast<uint8_t>(r/4), static_cast<uint8_t>(g/4), static_cast<uint8_t>(b/4));
-                    dstUV[x + 0] = u;
-                    dstUV[x + 1] = v;
-                }
-            }
-        }
-
-        class SharedFrameReader
+        class SharedFrameReader final
         {
         public:
-            SharedFrameReader() = default;
+            SharedFrameReader()
+                : bgraScratch_(std::make_unique<uint8_t[]>(kBgraFrameBytes))
+            {
+            }
 
             ~SharedFrameReader()
             {
                 Close();
             }
 
-            void SetDefaultConfig(const MediaConfig& config)
+            bool Pump() noexcept
             {
-                std::lock_guard<std::mutex> guard(lock_);
-                defaultConfig_ = config;
-            }
-
-            HRESULT GetConfig(MediaConfig* config)
-            {
-                if (config == nullptr)
+                if constexpr (!kUseExternalFrames)
                 {
-                    return E_POINTER;
+                    return false;
                 }
 
-                std::lock_guard<std::mutex> guard(lock_);
-                RETURN_IF_FAILED(EnsureOpen());
-                return ReadConfigLocked(config);
-            }
-
-            HRESULT ReadFrame(std::vector<uint8_t>* bgra, MediaConfig* config, int64_t* timestampHundredsOfNs, uint64_t* frameCounter)
-            {
-                if (bgra == nullptr || config == nullptr || timestampHundredsOfNs == nullptr || frameCounter == nullptr)
+                if (!EnsureOpen())
                 {
-                    return E_POINTER;
+                    return false;
                 }
 
-                std::lock_guard<std::mutex> guard(lock_);
-                RETURN_IF_FAILED(EnsureOpen());
-
-                RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
-
-                auto unlock = [&]() noexcept
+                if (eventHandle_ != nullptr)
                 {
-                    if (mutex_ != nullptr)
+                    (void)WaitForSingleObject(eventHandle_, kFrameReadWaitMs);
+                }
+                else
+                {
+                    Sleep(kFrameReadWaitMs);
+                }
+
+                return ReadLatestFrame();
+            }
+
+        private:
+            bool EnsureOpen() noexcept
+            {
+                if (view_ != nullptr && mappingHandle_ != nullptr && mutexHandle_ != nullptr)
+                {
+                    return true;
+                }
+
+                const ULONGLONG now = GetTickCount64();
+                if (now < nextOpenAttemptTickMs_)
+                {
+                    return false;
+                }
+
+                Close();
+                if (EnsureOpenWithNamespace(kGlobalBridgeNames, true))
+                {
+                    return true;
+                }
+
+                Close();
+                if (EnsureOpenWithNamespace(kLocalBridgeNames, false))
+                {
+                    return true;
+                }
+
+                Close();
+                nextOpenAttemptTickMs_ = now + kOpenRetryDelayMs;
+                return false;
+            }
+
+            bool EnsureOpenWithNamespace(const BridgeNames& names, bool allowCreate) noexcept
+            {
+                const std::size_t mappingByteCount = sizeof(SharedFrameHeader) + kBgraFrameBytes;
+
+                mappingHandle_ = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, names.mappingName);
+                mutexHandle_ = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, names.mutexName);
+                eventHandle_ = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, names.eventName);
+
+                bool createdMapping = false;
+                if ((mappingHandle_ == nullptr || mutexHandle_ == nullptr) && allowCreate)
+                {
+                    Close();
+
+                    SecurityDescriptorHolder securityDescriptor;
+                    SECURITY_ATTRIBUTES securityAttributes{};
+                    if (FAILED(BuildBridgeSecurityAttributes(&securityAttributes, &securityDescriptor)))
                     {
-                        ReleaseMutex(mutex_);
+                        Close();
+                        return false;
                     }
-                };
 
-                auto* header = static_cast<const SharedFrameHeader*>(view_);
-                if (header == nullptr || header->magic != kProtocolMagic || header->version != kProtocolVersion)
-                {
-                    unlock();
-                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                    mutexHandle_ = CreateMutexW(&securityAttributes, FALSE, names.mutexName);
+                    eventHandle_ = CreateEventW(&securityAttributes, FALSE, FALSE, names.eventName);
+
+                    ULARGE_INTEGER mappingSize{};
+                    mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount);
+                    mappingHandle_ = CreateFileMappingW(
+                        INVALID_HANDLE_VALUE,
+                        &securityAttributes,
+                        PAGE_READWRITE,
+                        mappingSize.HighPart,
+                        mappingSize.LowPart,
+                        names.mappingName);
+
+                    createdMapping = (mappingHandle_ != nullptr) && (GetLastError() != ERROR_ALREADY_EXISTS);
                 }
 
-                if (header->frameCounter == 0 || header->payloadBytes == 0)
+                if (mappingHandle_ == nullptr || mutexHandle_ == nullptr)
                 {
-                    *frameCounter = 0;
-                    *timestampHundredsOfNs = 0;
-                    unlock();
-                    return S_FALSE;
+                    Close();
+                    return false;
                 }
 
-                config->width = header->width;
-                config->height = header->height;
-                config->stride = header->stride;
-                config->fpsNumerator = header->fpsNumerator == 0 ? kDefaultFpsNumerator : header->fpsNumerator;
-                config->fpsDenominator = header->fpsDenominator == 0 ? kDefaultFpsDenominator : header->fpsDenominator;
+                const DWORD desiredAccess = allowCreate ? (FILE_MAP_READ | FILE_MAP_WRITE) : FILE_MAP_READ;
+                view_ = MapViewOfFile(mappingHandle_, desiredAccess, 0, 0, mappingByteCount);
+                if (view_ == nullptr)
+                {
+                    Close();
+                    return false;
+                }
 
-                const uint8_t* payload = reinterpret_cast<const uint8_t*>(header + 1);
-                bgra->resize(header->payloadBytes);
-                std::memcpy(bgra->data(), payload, header->payloadBytes);
-                *timestampHundredsOfNs = header->timestampHundredsOfNs;
-                *frameCounter = header->frameCounter;
+                if (createdMapping || allowCreate)
+                {
+                    const DWORD waitResult = WaitForSingleObject(mutexHandle_, 2000);
+                    if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED)
+                    {
+                        auto* header = static_cast<SharedFrameHeader*>(view_);
+                        if (header != nullptr &&
+                            (createdMapping ||
+                             header->magic != kProtocolMagic ||
+                             header->version != kProtocolVersion ||
+                             header->width != static_cast<uint32_t>(kFrameWidth) ||
+                             header->height != static_cast<uint32_t>(kFrameHeight) ||
+                             header->stride != static_cast<uint32_t>(kBgraStrideBytes) ||
+                             header->payloadBytes != kBgraFrameBytes))
+                        {
+                            std::memset(view_, 0, mappingByteCount);
+                            header->magic = kProtocolMagic;
+                            header->version = kProtocolVersion;
+                            header->width = static_cast<uint32_t>(kFrameWidth);
+                            header->height = static_cast<uint32_t>(kFrameHeight);
+                            header->stride = static_cast<uint32_t>(kBgraStrideBytes);
+                            header->pixelFormat = kPixelFormatBgra32;
+                            header->fpsNumerator = kFramesPerSecond;
+                            header->fpsDenominator = 1;
+                            header->payloadBytes = static_cast<uint32_t>(kBgraFrameBytes);
+                        }
 
-                unlock();
-                return S_OK;
+                        ReleaseMutex(mutexHandle_);
+                    }
+                }
+
+                return true;
+            }
+
+            bool ReadLatestFrame() noexcept
+            {
+                if (view_ == nullptr || mutexHandle_ == nullptr)
+                {
+                    return false;
+                }
+
+                const DWORD waitResult = WaitForSingleObject(mutexHandle_, 1);
+                if (waitResult != WAIT_OBJECT_0 && waitResult != WAIT_ABANDONED)
+                {
+                    return false;
+                }
+
+                bool copied = false;
+                const SharedFrameHeader* header = static_cast<const SharedFrameHeader*>(view_);
+                if (header != nullptr &&
+                    header->magic == kProtocolMagic &&
+                    header->version == kProtocolVersion &&
+                    header->pixelFormat == kPixelFormatBgra32 &&
+                    header->width == static_cast<uint32_t>(kFrameWidth) &&
+                    header->height == static_cast<uint32_t>(kFrameHeight) &&
+                    header->stride == static_cast<uint32_t>(kBgraStrideBytes) &&
+                    header->payloadBytes == kBgraFrameBytes &&
+                    header->frameCounter != 0 &&
+                    header->frameCounter != lastFrameCounter_)
+                {
+                    const uint8_t* payload = reinterpret_cast<const uint8_t*>(header + 1);
+                    std::memcpy(bgraScratch_.get(), payload, kBgraFrameBytes);
+                    lastFrameCounter_ = header->frameCounter;
+                    copied = true;
+                }
+
+                ReleaseMutex(mutexHandle_);
+
+                if (!copied)
+                {
+                    return false;
+                }
+
+                CopyFrameToSharedLatest(bgraScratch_.get());
+                return true;
             }
 
             void Close() noexcept
             {
-                std::lock_guard<std::mutex> guard(lock_);
-
                 if (view_ != nullptr)
                 {
                     UnmapViewOfFile(view_);
                     view_ = nullptr;
                 }
 
-                if (mapping_ != nullptr)
+                if (eventHandle_ != nullptr)
                 {
-                    CloseHandle(mapping_);
-                    mapping_ = nullptr;
+                    CloseHandle(eventHandle_);
+                    eventHandle_ = nullptr;
                 }
 
-                if (mutex_ != nullptr)
+                if (mutexHandle_ != nullptr)
                 {
-                    CloseHandle(mutex_);
-                    mutex_ = nullptr;
+                    CloseHandle(mutexHandle_);
+                    mutexHandle_ = nullptr;
                 }
 
-                if (event_ != nullptr)
+                if (mappingHandle_ != nullptr)
                 {
-                    CloseHandle(event_);
-                    event_ = nullptr;
+                    CloseHandle(mappingHandle_);
+                    mappingHandle_ = nullptr;
                 }
             }
 
-        private:
-            HRESULT EnsureOpen()
-            {
-                if (mapping_ != nullptr && mutex_ != nullptr && view_ != nullptr)
-                {
-                    return S_OK;
-                }
-
-                SecurityDescriptorHolder securityDescriptor;
-                SECURITY_ATTRIBUTES securityAttributes{};
-                RETURN_IF_FAILED(BuildBridgeSecurityAttributes(&securityAttributes, &securityDescriptor));
-
-                if (mutex_ == nullptr)
-                {
-                    mutex_ = CreateMutexW(&securityAttributes, FALSE, kPublisherMutexName);
-                    if (mutex_ == nullptr)
-                    {
-                        return HRESULT_FROM_WIN32(GetLastError());
-                    }
-                }
-
-                bool createdMapping = false;
-                if (mapping_ == nullptr)
-                {
-                    const uint32_t width = defaultConfig_.width == 0 ? kDefaultWidth : defaultConfig_.width;
-                    const uint32_t height = defaultConfig_.height == 0 ? kDefaultHeight : defaultConfig_.height;
-                    const uint32_t stride = defaultConfig_.stride == 0 ? (width * 4) : defaultConfig_.stride;
-                    const size_t mappingByteCount = sizeof(SharedFrameHeader) + (static_cast<size_t>(stride) * height);
-
-                    ULARGE_INTEGER mappingSize{};
-                    mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount);
-                    mapping_ = CreateFileMappingW(
-                        INVALID_HANDLE_VALUE,
-                        &securityAttributes,
-                        PAGE_READWRITE,
-                        mappingSize.HighPart,
-                        mappingSize.LowPart,
-                        kPublisherMappingName);
-                    if (mapping_ == nullptr)
-                    {
-                        return HRESULT_FROM_WIN32(GetLastError());
-                    }
-
-                    createdMapping = GetLastError() != ERROR_ALREADY_EXISTS;
-                }
-
-                if (event_ == nullptr)
-                {
-                    event_ = CreateEventW(&securityAttributes, FALSE, FALSE, kPublisherEventName);
-                    if (event_ == nullptr)
-                    {
-                        return HRESULT_FROM_WIN32(GetLastError());
-                    }
-                }
-
-                if (view_ == nullptr)
-                {
-                    view_ = MapViewOfFile(mapping_, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
-                    if (view_ == nullptr)
-                    {
-                        return HRESULT_FROM_WIN32(GetLastError());
-                    }
-                }
-
-                auto* header = static_cast<const SharedFrameHeader*>(view_);
-                if (createdMapping
-                    || header == nullptr
-                    || header->magic != kProtocolMagic
-                    || header->version != kProtocolVersion)
-                {
-                    RETURN_IF_FAILED(InitializeSharedState());
-                }
-
-                return S_OK;
-            }
-
-            HRESULT ReadConfigLocked(MediaConfig* config)
-            {
-                RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
-
-                auto unlock = [&]() noexcept
-                {
-                    if (mutex_ != nullptr)
-                    {
-                        ReleaseMutex(mutex_);
-                    }
-                };
-
-                auto* header = static_cast<const SharedFrameHeader*>(view_);
-                if (header == nullptr || header->magic != kProtocolMagic || header->version != kProtocolVersion)
-                {
-                    unlock();
-                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
-                }
-
-                config->width = header->width == 0 ? kDefaultWidth : header->width;
-                config->height = header->height == 0 ? kDefaultHeight : header->height;
-                config->stride = header->stride == 0 ? (config->width * 4) : header->stride;
-                config->fpsNumerator = header->fpsNumerator == 0 ? kDefaultFpsNumerator : header->fpsNumerator;
-                config->fpsDenominator = header->fpsDenominator == 0 ? kDefaultFpsDenominator : header->fpsDenominator;
-                unlock();
-                return S_OK;
-            }
-
-            HRESULT InitializeSharedState()
-            {
-                RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
-
-                auto unlock = [&]() noexcept
-                {
-                    if (mutex_ != nullptr)
-                    {
-                        ReleaseMutex(mutex_);
-                    }
-                };
-
-                const uint32_t width = defaultConfig_.width == 0 ? kDefaultWidth : defaultConfig_.width;
-                const uint32_t height = defaultConfig_.height == 0 ? kDefaultHeight : defaultConfig_.height;
-                const uint32_t stride = defaultConfig_.stride == 0 ? (width * 4) : defaultConfig_.stride;
-                const uint32_t fpsNumerator = defaultConfig_.fpsNumerator == 0 ? kDefaultFpsNumerator : defaultConfig_.fpsNumerator;
-                const uint32_t fpsDenominator = defaultConfig_.fpsDenominator == 0 ? kDefaultFpsDenominator : defaultConfig_.fpsDenominator;
-
-                auto* header = static_cast<SharedFrameHeader*>(view_);
-                if (header == nullptr)
-                {
-                    unlock();
-                    return HRESULT_FROM_WIN32(ERROR_INVALID_ADDRESS);
-                }
-
-                const size_t payloadBytes = static_cast<size_t>(stride) * height;
-                std::memset(header, 0, sizeof(SharedFrameHeader) + payloadBytes);
-                header->magic = kProtocolMagic;
-                header->version = kProtocolVersion;
-                header->width = width;
-                header->height = height;
-                header->stride = stride;
-                header->pixelFormat = kPixelFormatBgra32;
-                header->fpsNumerator = fpsNumerator;
-                header->fpsDenominator = fpsDenominator;
-                header->payloadBytes = static_cast<uint32_t>(payloadBytes);
-
-                unlock();
-                return S_OK;
-            }
-
-            std::mutex lock_;
-            HANDLE mapping_ = nullptr;
-            HANDLE mutex_ = nullptr;
-            HANDLE event_ = nullptr;
+            HANDLE mappingHandle_ = nullptr;
+            HANDLE mutexHandle_ = nullptr;
+            HANDLE eventHandle_ = nullptr;
             void* view_ = nullptr;
-            MediaConfig defaultConfig_{};
+            std::uint64_t lastFrameCounter_ = 0;
+            ULONGLONG nextOpenAttemptTickMs_ = 0;
+            std::unique_ptr<uint8_t[]> bgraScratch_;
         };
 
-        class MorphlyMediaSource;
-
-        class MorphlyMediaStream final : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IMFMediaStream2>
+        void FrameProviderThreadProc()
         {
-        public:
-            MorphlyMediaStream()
-            {
-                AddObjectRef();
-            }
-
-            ~MorphlyMediaStream() override
-            {
-                ReleaseObjectRef();
-            }
-
-            HRESULT Initialize(MorphlyMediaSource* parent, const MediaConfig& config);
-            HRESULT Start(IMFMediaType* mediaType, bool sendEvents);
-            HRESULT Stop(bool sendEvents);
-            HRESULT ShutdownStream();
-            bool IsSelected() const noexcept;
-            DWORD StreamIdentifier() const noexcept;
-            HRESULT CopyAttributes(IMFAttributes** attributes);
-
-            IFACEMETHODIMP QueryInterface(REFIID interfaceId, void** object) override;
-            IFACEMETHODIMP BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state) override;
-            IFACEMETHODIMP EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** eventValue) override;
-            IFACEMETHODIMP GetEvent(DWORD flags, IMFMediaEvent** eventValue) override;
-            IFACEMETHODIMP QueueEvent(MediaEventType eventType, REFGUID extendedType, HRESULT status, const PROPVARIANT* value) override;
-            IFACEMETHODIMP GetMediaSource(IMFMediaSource** mediaSource) override;
-            IFACEMETHODIMP GetStreamDescriptor(IMFStreamDescriptor** streamDescriptor) override;
-            IFACEMETHODIMP RequestSample(IUnknown* token) override;
-            IFACEMETHODIMP SetStreamState(MF_STREAM_STATE value) override;
-            IFACEMETHODIMP GetStreamState(MF_STREAM_STATE* value) override;
-
-        private:
-            HRESULT CreateNextSample(IMFMediaType* mediaType, IMFSample** sample);
-
-            mutable std::mutex lock_;
-            MorphlyMediaSource* parent_ = nullptr;
-            ComPtr<IMFMediaEventQueue> eventQueue_;
-            ComPtr<IMFAttributes> attributes_;
-            ComPtr<IMFStreamDescriptor> streamDescriptor_;
-            ComPtr<IMFMediaType> currentMediaType_;
-            MediaConfig mediaConfig_{};
-            SharedFrameReader frameReader_;
-            bool isShutdown_ = false;
-            bool isSelected_ = false;
-            MF_STREAM_STATE streamState_ = MF_STREAM_STATE_STOPPED;
-            uint64_t syntheticFrameIndex_ = 0;
-        };
-
-        class MorphlyMediaSource final : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IMFMediaSourceEx, IMFGetService, IKsControl, IMFSampleAllocatorControl>
-        {
-        public:
-            MorphlyMediaSource()
-            {
-                AddObjectRef();
-            }
-
-            ~MorphlyMediaSource() override
-            {
-                ReleaseObjectRef();
-            }
-
-            HRESULT Initialize(IMFAttributes* activateAttributes = nullptr);
-
-            IFACEMETHODIMP QueryInterface(REFIID interfaceId, void** object) override;
-            IFACEMETHODIMP BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state) override;
-            IFACEMETHODIMP EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** eventValue) override;
-            IFACEMETHODIMP GetEvent(DWORD flags, IMFMediaEvent** eventValue) override;
-            IFACEMETHODIMP QueueEvent(MediaEventType eventType, REFGUID extendedType, HRESULT status, const PROPVARIANT* value) override;
-            IFACEMETHODIMP GetCharacteristics(DWORD* characteristics) override;
-            IFACEMETHODIMP CreatePresentationDescriptor(IMFPresentationDescriptor** presentationDescriptor) override;
-            IFACEMETHODIMP Start(IMFPresentationDescriptor* presentationDescriptor, const GUID* timeFormat, const PROPVARIANT* startPosition) override;
-            IFACEMETHODIMP Stop() override;
-            IFACEMETHODIMP Pause() override;
-            IFACEMETHODIMP Shutdown() override;
-            IFACEMETHODIMP GetSourceAttributes(IMFAttributes** attributes) override;
-            IFACEMETHODIMP GetStreamAttributes(DWORD streamIdentifier, IMFAttributes** attributes) override;
-            IFACEMETHODIMP SetD3DManager(IUnknown* manager) override;
-            IFACEMETHODIMP GetService(REFGUID serviceGuid, REFIID interfaceId, void** object) override;
-            IFACEMETHODIMP KsProperty(PKSPROPERTY property, ULONG propertyLength, void* propertyData, ULONG dataLength, ULONG* bytesReturned) override;
-            IFACEMETHODIMP KsMethod(PKSMETHOD method, ULONG methodLength, void* methodData, ULONG dataLength, ULONG* bytesReturned) override;
-            IFACEMETHODIMP KsEvent(PKSEVENT eventValue, ULONG eventLength, void* eventData, ULONG dataLength, ULONG* bytesReturned) override;
-            IFACEMETHODIMP SetDefaultAllocator(DWORD outputStreamId, IUnknown* allocator) override;
-            IFACEMETHODIMP GetAllocatorUsage(DWORD outputStreamId, DWORD* inputStreamId, MFSampleAllocatorUsage* usage) override;
-
-        private:
-            mutable std::mutex lock_;
-            bool initialized_ = false;
-            SourceState state_ = SourceState::Invalid;
-            MediaConfig mediaConfig_{};
-            ComPtr<IMFMediaEventQueue> eventQueue_;
-            ComPtr<IMFAttributes> sourceAttributes_;
-            ComPtr<IMFPresentationDescriptor> presentationDescriptor_;
-            ComPtr<MorphlyMediaStream> stream_;
-
-            HRESULT CreateSourceAttributes(IMFAttributes* activateAttributes);
-        };
-
-        class MorphlyMediaSourceActivate final : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IMFActivate>
-        {
-        public:
-            MorphlyMediaSourceActivate()
-            {
-                AddObjectRef();
-            }
-
-            ~MorphlyMediaSourceActivate() override
-            {
-                ReleaseObjectRef();
-            }
-
-            HRESULT Initialize()
-            {
-                return MFCreateAttributes(&attributes_, 4);
-            }
-
-            IFACEMETHODIMP QueryInterface(REFIID interfaceId, void** object) override;
-
-            IFACEMETHODIMP ActivateObject(REFIID interfaceId, void** object) override;
-            IFACEMETHODIMP ShutdownObject() override;
-            IFACEMETHODIMP DetachObject() override;
-
-            IFACEMETHODIMP GetItem(REFGUID key, PROPVARIANT* value) override;
-            IFACEMETHODIMP GetItemType(REFGUID key, MF_ATTRIBUTE_TYPE* type) override;
-            IFACEMETHODIMP CompareItem(REFGUID key, REFPROPVARIANT value, BOOL* result) override;
-            IFACEMETHODIMP Compare(IMFAttributes* theirs, MF_ATTRIBUTES_MATCH_TYPE matchType, BOOL* result) override;
-            IFACEMETHODIMP GetUINT32(REFGUID key, UINT32* value) override;
-            IFACEMETHODIMP GetUINT64(REFGUID key, UINT64* value) override;
-            IFACEMETHODIMP GetDouble(REFGUID key, double* value) override;
-            IFACEMETHODIMP GetGUID(REFGUID key, GUID* value) override;
-            IFACEMETHODIMP GetStringLength(REFGUID key, UINT32* length) override;
-            IFACEMETHODIMP GetString(REFGUID key, LPWSTR value, UINT32 valueSize, UINT32* length) override;
-            IFACEMETHODIMP GetAllocatedString(REFGUID key, LPWSTR* value, UINT32* length) override;
-            IFACEMETHODIMP GetBlobSize(REFGUID key, UINT32* size) override;
-            IFACEMETHODIMP GetBlob(REFGUID key, UINT8* buffer, UINT32 bufferSize, UINT32* size) override;
-            IFACEMETHODIMP GetAllocatedBlob(REFGUID key, UINT8** buffer, UINT32* size) override;
-            IFACEMETHODIMP GetUnknown(REFGUID key, REFIID interfaceId, void** object) override;
-            IFACEMETHODIMP SetItem(REFGUID key, REFPROPVARIANT value) override;
-            IFACEMETHODIMP DeleteItem(REFGUID key) override;
-            IFACEMETHODIMP DeleteAllItems() override;
-            IFACEMETHODIMP SetUINT32(REFGUID key, UINT32 value) override;
-            IFACEMETHODIMP SetUINT64(REFGUID key, UINT64 value) override;
-            IFACEMETHODIMP SetDouble(REFGUID key, double value) override;
-            IFACEMETHODIMP SetGUID(REFGUID key, REFGUID value) override;
-            IFACEMETHODIMP SetString(REFGUID key, LPCWSTR value) override;
-            IFACEMETHODIMP SetBlob(REFGUID key, const UINT8* buffer, UINT32 bufferSize) override;
-            IFACEMETHODIMP SetUnknown(REFGUID key, IUnknown* value) override;
-            IFACEMETHODIMP LockStore() override;
-            IFACEMETHODIMP UnlockStore() override;
-            IFACEMETHODIMP GetCount(UINT32* items) override;
-            IFACEMETHODIMP GetItemByIndex(UINT32 index, GUID* key, PROPVARIANT* value) override;
-            IFACEMETHODIMP CopyAllItems(IMFAttributes* destination) override;
-
-        private:
-            ComPtr<IMFAttributes> attributes_;
-            ComPtr<MorphlyMediaSource> activeSource_;
-        };
-
-        class MorphlyClassFactory final : public RuntimeClass<RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IClassFactory>
-        {
-        public:
-            MorphlyClassFactory()
-            {
-                AddObjectRef();
-            }
-
-            ~MorphlyClassFactory() override
-            {
-                ReleaseObjectRef();
-            }
-
-            IFACEMETHODIMP CreateInstance(IUnknown* outer, REFIID interfaceId, void** object) override
-            {
-                if (object == nullptr)
-                {
-                    return E_POINTER;
-                }
-
-                *object = nullptr;
-
-                if (outer != nullptr)
-                {
-                    return CLASS_E_NOAGGREGATION;
-                }
-
-                auto activate = Make<MorphlyMediaSourceActivate>();
-                if (!activate)
-                {
-                    return E_OUTOFMEMORY;
-                }
-
-                RETURN_IF_FAILED(activate->Initialize());
-                return activate.CopyTo(interfaceId, object);
-            }
-
-            IFACEMETHODIMP LockServer(BOOL lock) override
-            {
-                if (lock)
-                {
-                    ++g_lockCount;
-                }
-                else
-                {
-                    --g_lockCount;
-                }
-
-                return S_OK;
-            }
-        };
-
-        HRESULT MorphlyMediaStream::Initialize(MorphlyMediaSource* parent, const MediaConfig& config)
-        {
-            if (parent == nullptr)
-            {
-                return E_INVALIDARG;
-            }
-
-            std::lock_guard<std::mutex> guard(lock_);
-
-            parent_ = parent;
-            mediaConfig_ = config;
-            frameReader_.SetDefaultConfig(mediaConfig_);
-
-            RETURN_IF_FAILED(MFCreateEventQueue(&eventQueue_));
-            RETURN_IF_FAILED(MFCreateAttributes(&attributes_, 4));
-            RETURN_IF_FAILED(attributes_->SetGUID(MF_DEVICESTREAM_STREAM_CATEGORY, PINNAME_VIDEO_CAPTURE));
-            RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_STREAM_ID, kStreamId));
-            RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, 1));
-            RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, static_cast<UINT32>(MFFrameSourceTypes::MFFrameSourceTypes_Color)));
-
-            // Advertise NV12 first — WhatsApp and most modern apps prefer it.
-            // YUY2 and RGB32 are kept as fallback for legacy apps.
-            ComPtr<IMFMediaType> mediaTypes[3];
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_NV12,  mediaConfig_, &mediaTypes[0]));
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2,  mediaConfig_, &mediaTypes[1]));
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_RGB32, mediaConfig_, &mediaTypes[2]));
-            IMFMediaType* mediaTypePointers[] = { mediaTypes[0].Get(), mediaTypes[1].Get(), mediaTypes[2].Get() };
-            RETURN_IF_FAILED(MFCreateStreamDescriptor(kStreamId, ARRAYSIZE(mediaTypePointers), mediaTypePointers, &streamDescriptor_));
-            RETURN_IF_FAILED(attributes_->CopyAllItems(streamDescriptor_.Get()));
-
-            ComPtr<IMFMediaTypeHandler> handler;
-            RETURN_IF_FAILED(streamDescriptor_->GetMediaTypeHandler(&handler));
-            RETURN_IF_FAILED(handler->SetCurrentMediaType(mediaTypes[0].Get()));
-            currentMediaType_ = mediaTypes[0];
-
-            streamState_ = MF_STREAM_STATE_STOPPED;
-            isSelected_ = false;
-
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::QueryInterface(REFIID interfaceId, void** object)
-        {
-            if (object == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *object = nullptr;
-
-            if (interfaceId == __uuidof(IUnknown) ||
-                interfaceId == __uuidof(IMFMediaEventGenerator) ||
-                interfaceId == __uuidof(IMFMediaStream))
-            {
-                *object = static_cast<IMFMediaStream*>(static_cast<IMFMediaStream2*>(this));
-            }
-            else if (interfaceId == __uuidof(IMFMediaStream2))
-            {
-                *object = static_cast<IMFMediaStream2*>(this);
-            }
-            else
-            {
-                return E_NOINTERFACE;
-            }
-
-            AddRef();
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaStream::Start(IMFMediaType* mediaType, bool sendEvents)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            if (mediaType == nullptr)
-            {
-                return E_INVALIDARG;
-            }
-
-            ComPtr<IMFMediaTypeHandler> handler;
-            RETURN_IF_FAILED(streamDescriptor_->GetMediaTypeHandler(&handler));
-            RETURN_IF_FAILED(handler->SetCurrentMediaType(mediaType));
-            currentMediaType_ = mediaType;
-            streamState_ = MF_STREAM_STATE_RUNNING;
-            isSelected_ = true;
-
-            if (sendEvents)
-            {
-                RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(MEStreamStarted, GUID_NULL, S_OK, nullptr));
-            }
-
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaStream::Stop(bool sendEvents)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            isSelected_ = false;
-            streamState_ = MF_STREAM_STATE_STOPPED;
-
-            if (sendEvents)
-            {
-                RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(MEStreamStopped, GUID_NULL, S_OK, nullptr));
-            }
-
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaStream::ShutdownStream()
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-
-            if (isShutdown_)
-            {
-                return S_OK;
-            }
-
-            isShutdown_ = true;
-            if (eventQueue_)
-            {
-                eventQueue_->Shutdown();
-                eventQueue_.Reset();
-            }
-            attributes_.Reset();
-            currentMediaType_.Reset();
-            streamDescriptor_.Reset();
-            frameReader_.Close();
-            parent_ = nullptr;
-            return S_OK;
-        }
-
-        bool MorphlyMediaStream::IsSelected() const noexcept
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            return isSelected_;
-        }
-
-        DWORD MorphlyMediaStream::StreamIdentifier() const noexcept
-        {
-            return kStreamId;
-        }
-
-        HRESULT MorphlyMediaStream::CopyAttributes(IMFAttributes** attributes)
-        {
-            if (attributes == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *attributes = nullptr;
-
-            return attributes_.CopyTo(attributes);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->BeginGetEvent(callback, state);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** eventValue)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->EndGetEvent(result, eventValue);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::GetEvent(DWORD flags, IMFMediaEvent** eventValue)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->GetEvent(flags, eventValue);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::QueueEvent(MediaEventType eventType, REFGUID extendedType, HRESULT status, const PROPVARIANT* value)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->QueueEventParamVar(eventType, extendedType, status, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::GetMediaSource(IMFMediaSource** mediaSource)
-        {
-            if (mediaSource == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *mediaSource = nullptr;
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return parent_->QueryInterface(IID_PPV_ARGS(mediaSource));
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::GetStreamDescriptor(IMFStreamDescriptor** streamDescriptor)
-        {
-            if (streamDescriptor == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *streamDescriptor = nullptr;
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return streamDescriptor_.CopyTo(streamDescriptor);
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::RequestSample(IUnknown* token)
-        {
-            ComPtr<IMFMediaEventQueue> eventQueue;
-            ComPtr<IMFMediaType> mediaType;
-
-            {
-                std::lock_guard<std::mutex> guard(lock_);
-                if (isShutdown_)
-                {
-                    return MF_E_SHUTDOWN;
-                }
-
-                if (!isSelected_ || streamState_ != MF_STREAM_STATE_RUNNING)
-                {
-                    return MF_E_INVALIDREQUEST;
-                }
-
-                eventQueue = eventQueue_;
-                mediaType = currentMediaType_;
-            }
-
-            ComPtr<IMFSample> sample;
-            RETURN_IF_FAILED(CreateNextSample(mediaType.Get(), &sample));
-
-            if (token != nullptr)
-            {
-                RETURN_IF_FAILED(sample->SetUnknown(MFSampleExtension_Token, token));
-            }
-
-            return eventQueue->QueueEventParamUnk(MEMediaSample, GUID_NULL, S_OK, sample.Get());
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::SetStreamState(MF_STREAM_STATE value)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            streamState_ = value;
-            isSelected_ = value == MF_STREAM_STATE_RUNNING;
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaStream::GetStreamState(MF_STREAM_STATE* value)
-        {
-            if (value == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (isShutdown_)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            *value = streamState_;
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaStream::CreateNextSample(IMFMediaType* mediaType, IMFSample** sample)
-        {
-            if (sample == nullptr || mediaType == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *sample = nullptr;
-
-            MediaConfig currentConfig = mediaConfig_;
-            ComPtr<IMFMediaBuffer> buffer;
-            ComPtr<IMFSample> value;
-            GUID subtype = GUID_NULL;
-            uint32_t width = currentConfig.width;
-            uint32_t height = currentConfig.height;
-            uint32_t fpsNum = currentConfig.fpsNumerator;
-            uint32_t fpsDen = currentConfig.fpsDenominator;
-
-            RETURN_IF_FAILED(mediaType->GetGUID(MF_MT_SUBTYPE, &subtype));
-            RETURN_IF_FAILED(MFGetAttributeSize(mediaType, MF_MT_FRAME_SIZE, &width, &height));
-            RETURN_IF_FAILED(MFGetAttributeRatio(mediaType, MF_MT_FRAME_RATE, &fpsNum, &fpsDen));
-
-            currentConfig.width = width;
-            currentConfig.height = height;
-            currentConfig.fpsNumerator = fpsNum;
-            currentConfig.fpsDenominator = fpsDen;
-            if (subtype == MFVideoFormat_NV12)
-                currentConfig.stride = width;          // Y-plane stride
-            else if (subtype == MFVideoFormat_YUY2)
-                currentConfig.stride = width * 2;
-            else
-                currentConfig.stride = width * 4;      // RGB32 / BGRA
-
-            std::vector<uint8_t> bgra;
-            MediaConfig sharedConfig{};
-            int64_t timestampHundredsOfNs = 0;
-            uint64_t frameCounter = 0;
-            const HRESULT readHr = frameReader_.ReadFrame(&bgra, &sharedConfig, &timestampHundredsOfNs, &frameCounter);
-
-            if (FAILED(readHr) || readHr == S_FALSE || sharedConfig.width != width || sharedConfig.height != height)
-            {
-                ++syntheticFrameIndex_;
-                frameCounter = syntheticFrameIndex_;
-                timestampHundredsOfNs = MFGetSystemTime();
-                FillSyntheticBgra(mediaConfig_, frameCounter, &bgra);
-            }
-
-            std::vector<uint8_t> outputBytes;
-            if (subtype == MFVideoFormat_NV12)
-            {
-                ConvertBgraToNV12(mediaConfig_, bgra.data(), &outputBytes);
-            }
-            else if (subtype == MFVideoFormat_YUY2)
-            {
-                ConvertBgraToYuy2(mediaConfig_, bgra.data(), &outputBytes);
-            }
-            else
-            {
-                outputBytes = std::move(bgra);
-            }
-
-            RETURN_IF_FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(outputBytes.size()), &buffer));
-
-            BYTE* destination = nullptr;
-            DWORD maxLength = 0;
-            RETURN_IF_FAILED(buffer->Lock(&destination, nullptr, &maxLength));
-            std::memcpy(destination, outputBytes.data(), outputBytes.size());
-            RETURN_IF_FAILED(buffer->SetCurrentLength(static_cast<DWORD>(outputBytes.size())));
-            RETURN_IF_FAILED(buffer->Unlock());
-
-            RETURN_IF_FAILED(MFCreateSample(&value));
-            RETURN_IF_FAILED(value->AddBuffer(buffer.Get()));
-            RETURN_IF_FAILED(value->SetSampleTime(timestampHundredsOfNs));
-
-            const LONGLONG duration = (kHundredsOfNsPerSecond * fpsDen) / fpsNum;
-            RETURN_IF_FAILED(value->SetSampleDuration(duration));
-
-            *sample = value.Detach();
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaSource::Initialize(IMFAttributes* activateAttributes)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-
-            if (initialized_)
-            {
-                return MF_E_ALREADY_INITIALIZED;
-            }
-
+            EnsureLatestFrameStorageAllocated();
             SharedFrameReader reader;
-            MediaConfig detected{};
-            if (SUCCEEDED(reader.GetConfig(&detected)))
+
+            while (true)
             {
-                mediaConfig_ = detected;
+                {
+                    std::lock_guard<std::mutex> guard(g_frameProviderLock);
+                    if (g_stopFrameProvider)
+                    {
+                        break;
+                    }
+                }
+
+                if (!reader.Pump())
+                {
+                    Sleep(kFrameReadWaitMs);
+                }
+            }
+        }
+
+        void StartFrameProvider()
+        {
+            EnsureLatestFrameStorageAllocated();
+
+            std::lock_guard<std::mutex> guard(g_frameProviderLock);
+            ++g_frameProviderUsers;
+            if (g_frameProviderUsers > 1)
+            {
+                return;
             }
 
-            RETURN_IF_FAILED(MFCreateEventQueue(&eventQueue_));
-            RETURN_IF_FAILED(CreateSourceAttributes(activateAttributes));
+            g_stopFrameProvider = false;
+            g_frameProviderThread = std::thread(FrameProviderThreadProc);
+        }
 
-            stream_ = Make<MorphlyMediaStream>();
-            if (!stream_)
+        void StopFrameProvider()
+        {
+            std::thread providerThread;
+
             {
-                return E_OUTOFMEMORY;
+                std::lock_guard<std::mutex> guard(g_frameProviderLock);
+                if (g_frameProviderUsers <= 0)
+                {
+                    return;
+                }
+
+                --g_frameProviderUsers;
+                if (g_frameProviderUsers > 0)
+                {
+                    return;
+                }
+
+                g_stopFrameProvider = true;
+                providerThread = std::move(g_frameProviderThread);
             }
 
-            RETURN_IF_FAILED(stream_->Initialize(this, mediaConfig_));
-
-            ComPtr<IMFStreamDescriptor> streamDescriptor;
-            RETURN_IF_FAILED(stream_->GetStreamDescriptor(&streamDescriptor));
-            IMFStreamDescriptor* descriptors[] = { streamDescriptor.Get() };
-            RETURN_IF_FAILED(MFCreatePresentationDescriptor(ARRAYSIZE(descriptors), descriptors, &presentationDescriptor_));
-            RETURN_IF_FAILED(presentationDescriptor_->SelectStream(0));
-
-            state_ = SourceState::Stopped;
-            initialized_ = true;
-            return S_OK;
-        }
-
-        HRESULT MorphlyMediaSource::CreateSourceAttributes(IMFAttributes* activateAttributes)
-        {
-            RETURN_IF_FAILED(MFCreateAttributes(&sourceAttributes_, 4));
-            if (activateAttributes != nullptr)
+            if (providerThread.joinable())
             {
-                RETURN_IF_FAILED(activateAttributes->CopyAllItems(sourceAttributes_.Get()));
+                providerThread.join();
             }
-
-            RETURN_IF_FAILED(sourceAttributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
-            RETURN_IF_FAILED(sourceAttributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kVirtualCameraFriendlyName));
-
-            ComPtr<IMFSensorProfileCollection> profileCollection;
-            ComPtr<IMFSensorProfile> profile;
-            RETURN_IF_FAILED(MFCreateSensorProfileCollection(&profileCollection));
-            RETURN_IF_FAILED(MFCreateSensorProfile(KSCAMERAPROFILE_Legacy, 0, nullptr, &profile));
-            RETURN_IF_FAILED(profile->AddProfileFilter(kStreamId, L"((RES==;FRT<=30,1;SUT==))"));
-            RETURN_IF_FAILED(profileCollection->AddProfile(profile.Get()));
-            RETURN_IF_FAILED(sourceAttributes_->SetUnknown(MF_DEVICEMFT_SENSORPROFILE_COLLECTION, profileCollection.Get()));
-
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::QueryInterface(REFIID interfaceId, void** object)
-        {
-            if (object == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *object = nullptr;
-
-            if (interfaceId == __uuidof(IUnknown) ||
-                interfaceId == __uuidof(IMFMediaEventGenerator) ||
-                interfaceId == __uuidof(IMFMediaSource))
-            {
-                *object = static_cast<IMFMediaSource*>(static_cast<IMFMediaSourceEx*>(this));
-            }
-            else if (interfaceId == __uuidof(IMFMediaSourceEx))
-            {
-                *object = static_cast<IMFMediaSourceEx*>(this);
-            }
-            else if (interfaceId == __uuidof(IMFGetService))
-            {
-                *object = static_cast<IMFGetService*>(this);
-            }
-            else if (interfaceId == __uuidof(IKsControl))
-            {
-                *object = static_cast<IKsControl*>(this);
-            }
-            else if (interfaceId == __uuidof(IMFSampleAllocatorControl))
-            {
-                *object = static_cast<IMFSampleAllocatorControl*>(this);
-            }
-            else
-            {
-                return E_NOINTERFACE;
-            }
-
-            AddRef();
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::QueryInterface(REFIID interfaceId, void** object)
-        {
-            if (object == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *object = nullptr;
-
-            if (interfaceId == __uuidof(IUnknown) || interfaceId == __uuidof(IMFActivate))
-            {
-                *object = static_cast<IMFActivate*>(this);
-            }
-            else if (interfaceId == __uuidof(IMFAttributes))
-            {
-                *object = static_cast<IMFAttributes*>(this);
-            }
-            else
-            {
-                return E_NOINTERFACE;
-            }
-
-            AddRef();
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::ActivateObject(REFIID interfaceId, void** object)
-        {
-            if (object == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *object = nullptr;
-
-            auto source = Make<MorphlyMediaSource>();
-            if (!source)
-            {
-                return E_OUTOFMEMORY;
-            }
-
-            RETURN_IF_FAILED(source->Initialize(attributes_.Get()));
-            activeSource_ = source;
-            return source->QueryInterface(interfaceId, object);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::ShutdownObject()
-        {
-            if (activeSource_)
-            {
-                activeSource_->Shutdown();
-                activeSource_.Reset();
-            }
-
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::DetachObject()
-        {
-            activeSource_.Reset();
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetItem(REFGUID key, PROPVARIANT* value)
-        {
-            return attributes_->GetItem(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetItemType(REFGUID key, MF_ATTRIBUTE_TYPE* type)
-        {
-            return attributes_->GetItemType(key, type);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::CompareItem(REFGUID key, REFPROPVARIANT value, BOOL* result)
-        {
-            return attributes_->CompareItem(key, value, result);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::Compare(IMFAttributes* theirs, MF_ATTRIBUTES_MATCH_TYPE matchType, BOOL* result)
-        {
-            return attributes_->Compare(theirs, matchType, result);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetUINT32(REFGUID key, UINT32* value)
-        {
-            return attributes_->GetUINT32(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetUINT64(REFGUID key, UINT64* value)
-        {
-            return attributes_->GetUINT64(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetDouble(REFGUID key, double* value)
-        {
-            return attributes_->GetDouble(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetGUID(REFGUID key, GUID* value)
-        {
-            return attributes_->GetGUID(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetStringLength(REFGUID key, UINT32* length)
-        {
-            return attributes_->GetStringLength(key, length);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetString(REFGUID key, LPWSTR value, UINT32 valueSize, UINT32* length)
-        {
-            return attributes_->GetString(key, value, valueSize, length);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetAllocatedString(REFGUID key, LPWSTR* value, UINT32* length)
-        {
-            return attributes_->GetAllocatedString(key, value, length);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetBlobSize(REFGUID key, UINT32* size)
-        {
-            return attributes_->GetBlobSize(key, size);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetBlob(REFGUID key, UINT8* buffer, UINT32 bufferSize, UINT32* size)
-        {
-            return attributes_->GetBlob(key, buffer, bufferSize, size);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetAllocatedBlob(REFGUID key, UINT8** buffer, UINT32* size)
-        {
-            return attributes_->GetAllocatedBlob(key, buffer, size);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetUnknown(REFGUID key, REFIID interfaceId, void** object)
-        {
-            return attributes_->GetUnknown(key, interfaceId, object);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetItem(REFGUID key, REFPROPVARIANT value)
-        {
-            return attributes_->SetItem(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::DeleteItem(REFGUID key)
-        {
-            return attributes_->DeleteItem(key);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::DeleteAllItems()
-        {
-            return attributes_->DeleteAllItems();
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetUINT32(REFGUID key, UINT32 value)
-        {
-            return attributes_->SetUINT32(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetUINT64(REFGUID key, UINT64 value)
-        {
-            return attributes_->SetUINT64(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetDouble(REFGUID key, double value)
-        {
-            return attributes_->SetDouble(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetGUID(REFGUID key, REFGUID value)
-        {
-            return attributes_->SetGUID(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetString(REFGUID key, LPCWSTR value)
-        {
-            return attributes_->SetString(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetBlob(REFGUID key, const UINT8* buffer, UINT32 bufferSize)
-        {
-            return attributes_->SetBlob(key, buffer, bufferSize);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::SetUnknown(REFGUID key, IUnknown* value)
-        {
-            return attributes_->SetUnknown(key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::LockStore()
-        {
-            return attributes_->LockStore();
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::UnlockStore()
-        {
-            return attributes_->UnlockStore();
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetCount(UINT32* items)
-        {
-            return attributes_->GetCount(items);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::GetItemByIndex(UINT32 index, GUID* key, PROPVARIANT* value)
-        {
-            return attributes_->GetItemByIndex(index, key, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSourceActivate::CopyAllItems(IMFAttributes* destination)
-        {
-            return attributes_->CopyAllItems(destination);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::BeginGetEvent(IMFAsyncCallback* callback, IUnknown* state)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->BeginGetEvent(callback, state);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::EndGetEvent(IMFAsyncResult* result, IMFMediaEvent** eventValue)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->EndGetEvent(result, eventValue);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetEvent(DWORD flags, IMFMediaEvent** eventValue)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->GetEvent(flags, eventValue);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::QueueEvent(MediaEventType eventType, REFGUID extendedType, HRESULT status, const PROPVARIANT* value)
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return eventQueue_->QueueEventParamVar(eventType, extendedType, status, value);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetCharacteristics(DWORD* characteristics)
-        {
-            if (characteristics == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            *characteristics = MFMEDIASOURCE_IS_LIVE;
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::CreatePresentationDescriptor(IMFPresentationDescriptor** presentationDescriptor)
-        {
-            if (presentationDescriptor == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *presentationDescriptor = nullptr;
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return presentationDescriptor_->Clone(presentationDescriptor);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::Start(IMFPresentationDescriptor* presentationDescriptor, const GUID* timeFormat, const PROPVARIANT* startPosition)
-        {
-            if (presentationDescriptor == nullptr || startPosition == nullptr)
-            {
-                return E_INVALIDARG;
-            }
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            if (state_ == SourceState::Started)
-            {
-                return MF_E_INVALID_STATE_TRANSITION;
-            }
-
-            if (timeFormat != nullptr && *timeFormat != GUID_NULL)
-            {
-                return MF_E_UNSUPPORTED_TIME_FORMAT;
-            }
-
-            if (!IsSupportedStartPosition(startPosition))
-            {
-                return MF_E_INVALIDREQUEST;
-            }
-
-            BOOL selected = FALSE;
-            ComPtr<IMFStreamDescriptor> requestedStream;
-            RETURN_IF_FAILED(presentationDescriptor->GetStreamDescriptorByIndex(0, &selected, &requestedStream));
-
-            if (selected)
-            {
-                ComPtr<IMFMediaTypeHandler> mediaTypeHandler;
-                ComPtr<IMFMediaType> mediaType;
-                RETURN_IF_FAILED(requestedStream->GetMediaTypeHandler(&mediaTypeHandler));
-                RETURN_IF_FAILED(mediaTypeHandler->GetCurrentMediaType(&mediaType));
-
-                const bool wasSelected = stream_->IsSelected();
-                RETURN_IF_FAILED(stream_->Start(mediaType.Get(), true));
-                RETURN_IF_FAILED(presentationDescriptor_->SelectStream(0));
-                RETURN_IF_FAILED(eventQueue_->QueueEventParamUnk(wasSelected ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK, stream_.Get()));
-            }
-            else
-            {
-                RETURN_IF_FAILED(stream_->Stop(false));
-                RETURN_IF_FAILED(presentationDescriptor_->DeselectStream(0));
-            }
-
-            state_ = SourceState::Started;
-            RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, nullptr));
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::Stop()
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            if (state_ != SourceState::Started)
-            {
-                return S_OK;
-            }
-
-            RETURN_IF_FAILED(stream_->Stop(true));
-            state_ = SourceState::Stopped;
-            return eventQueue_->QueueEventParamVar(MESourceStopped, GUID_NULL, S_OK, nullptr);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::Pause()
-        {
-            return MF_E_INVALID_STATE_TRANSITION;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::Shutdown()
-        {
-            std::lock_guard<std::mutex> guard(lock_);
-
-            if (state_ == SourceState::Shutdown)
-            {
-                return S_OK;
-            }
-
-            state_ = SourceState::Shutdown;
-
-            if (stream_)
-            {
-                stream_->ShutdownStream();
-                stream_.Reset();
-            }
-
-            if (eventQueue_)
-            {
-                eventQueue_->Shutdown();
-                eventQueue_.Reset();
-            }
-
-            presentationDescriptor_.Reset();
-            sourceAttributes_.Reset();
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetSourceAttributes(IMFAttributes** attributes)
-        {
-            if (attributes == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *attributes = nullptr;
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            return sourceAttributes_.CopyTo(attributes);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetStreamAttributes(DWORD streamIdentifier, IMFAttributes** attributes)
-        {
-            if (attributes == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *attributes = nullptr;
-
-            std::lock_guard<std::mutex> guard(lock_);
-            if (state_ == SourceState::Shutdown)
-            {
-                return MF_E_SHUTDOWN;
-            }
-
-            if (streamIdentifier != kStreamId)
-            {
-                return MF_E_INVALIDSTREAMNUMBER;
-            }
-
-            return stream_->CopyAttributes(attributes);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::SetD3DManager(IUnknown* /*manager*/)
-        {
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetService(REFGUID /*serviceGuid*/, REFIID interfaceId, void** object)
-        {
-            if (object == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            *object = nullptr;
-
-            if (interfaceId == __uuidof(IKsControl))
-            {
-                return QueryInterface(interfaceId, object);
-            }
-
-            return MF_E_UNSUPPORTED_SERVICE;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::KsProperty(PKSPROPERTY /*property*/, ULONG /*propertyLength*/, void* /*propertyData*/, ULONG /*dataLength*/, ULONG* bytesReturned)
-        {
-            if (bytesReturned != nullptr)
-            {
-                *bytesReturned = 0;
-            }
-
-            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::KsMethod(PKSMETHOD /*method*/, ULONG /*methodLength*/, void* /*methodData*/, ULONG /*dataLength*/, ULONG* bytesReturned)
-        {
-            if (bytesReturned != nullptr)
-            {
-                *bytesReturned = 0;
-            }
-
-            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::KsEvent(PKSEVENT /*eventValue*/, ULONG /*eventLength*/, void* /*eventData*/, ULONG /*dataLength*/, ULONG* bytesReturned)
-        {
-            if (bytesReturned != nullptr)
-            {
-                *bytesReturned = 0;
-            }
-
-            return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::SetDefaultAllocator(DWORD outputStreamId, IUnknown* /*allocator*/)
-        {
-            if (outputStreamId != kStreamId)
-            {
-                return MF_E_INVALIDSTREAMNUMBER;
-            }
-
-            return S_OK;
-        }
-
-        IFACEMETHODIMP MorphlyMediaSource::GetAllocatorUsage(DWORD outputStreamId, DWORD* inputStreamId, MFSampleAllocatorUsage* usage)
-        {
-            if (inputStreamId == nullptr || usage == nullptr)
-            {
-                return E_POINTER;
-            }
-
-            if (outputStreamId != kStreamId)
-            {
-                return MF_E_INVALIDSTREAMNUMBER;
-            }
-
-            *inputStreamId = kStreamId;
-            *usage = MFSampleAllocatorUsage_UsesCustomAllocator;
-            return S_OK;
         }
     }
 
-    bool CanUnloadModule() noexcept
+    HRESULT ValidateFixedYuy2MediaType(const AM_MEDIA_TYPE* mediaType) noexcept
     {
-        return g_objectCount.load() == 0 && g_lockCount.load() == 0;
-    }
-
-    HRESULT CreateClassFactory(REFCLSID classId, REFIID interfaceId, void** object) noexcept
-    {
-        if (object == nullptr)
+        if (mediaType == nullptr)
         {
             return E_POINTER;
         }
 
-        *object = nullptr;
-
-        if (!IsEqualGUID(classId, kVirtualCameraSourceClsid))
+        if (mediaType->majortype != MEDIATYPE_Video ||
+            mediaType->subtype != MEDIASUBTYPE_YUY2 ||
+            mediaType->formattype != FORMAT_VideoInfo ||
+            mediaType->cbFormat < sizeof(VIDEOINFOHEADER) ||
+            mediaType->pbFormat == nullptr)
         {
-            return CLASS_E_CLASSNOTAVAILABLE;
+            return VFW_E_TYPE_NOT_ACCEPTED;
         }
 
-        auto factory = Make<MorphlyClassFactory>();
-        if (!factory)
+        const VIDEOINFOHEADER* videoInfoHeader = reinterpret_cast<const VIDEOINFOHEADER*>(mediaType->pbFormat);
+        if (videoInfoHeader->bmiHeader.biWidth != kFrameWidth ||
+            videoInfoHeader->bmiHeader.biHeight != kFrameHeight ||
+            videoInfoHeader->bmiHeader.biCompression != kYuy2FourCc ||
+            videoInfoHeader->bmiHeader.biBitCount != 16 ||
+            videoInfoHeader->bmiHeader.biPlanes != 1 ||
+            videoInfoHeader->bmiHeader.biSizeImage != static_cast<DWORD>(kYuy2FrameBytes))
+        {
+            return VFW_E_TYPE_NOT_ACCEPTED;
+        }
+
+        return S_OK;
+    }
+
+    HRESULT CreateFixedYuy2MediaType(AM_MEDIA_TYPE** mediaType) noexcept
+    {
+        if (mediaType == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        *mediaType = nullptr;
+
+        CMediaType fixedMediaType;
+        FillFixedYuy2MediaType(&fixedMediaType);
+
+        AM_MEDIA_TYPE* copy = CreateMediaType(&fixedMediaType);
+        if (copy == nullptr)
         {
             return E_OUTOFMEMORY;
         }
 
-        return factory.CopyTo(interfaceId, object);
+        *mediaType = copy;
+        return S_OK;
+    }
+
+    void FillFixedVideoStreamCaps(VIDEO_STREAM_CONFIG_CAPS* capabilities) noexcept
+    {
+        if (capabilities == nullptr)
+        {
+            return;
+        }
+
+        std::memset(capabilities, 0, sizeof(*capabilities));
+        capabilities->guid = FORMAT_VideoInfo;
+        capabilities->VideoStandard = AnalogVideo_None;
+        capabilities->InputSize.cx = kFrameWidth;
+        capabilities->InputSize.cy = kFrameHeight;
+        capabilities->MinCroppingSize.cx = kFrameWidth;
+        capabilities->MinCroppingSize.cy = kFrameHeight;
+        capabilities->MaxCroppingSize.cx = kFrameWidth;
+        capabilities->MaxCroppingSize.cy = kFrameHeight;
+        capabilities->CropGranularityX = 1;
+        capabilities->CropGranularityY = 1;
+        capabilities->CropAlignX = 1;
+        capabilities->CropAlignY = 1;
+        capabilities->MinOutputSize.cx = kFrameWidth;
+        capabilities->MinOutputSize.cy = kFrameHeight;
+        capabilities->MaxOutputSize.cx = kFrameWidth;
+        capabilities->MaxOutputSize.cy = kFrameHeight;
+        capabilities->OutputGranularityX = 1;
+        capabilities->OutputGranularityY = 1;
+        capabilities->StretchTapsX = 0;
+        capabilities->StretchTapsY = 0;
+        capabilities->ShrinkTapsX = 0;
+        capabilities->ShrinkTapsY = 0;
+        capabilities->MinFrameInterval = kFrameDuration;
+        capabilities->MaxFrameInterval = kFrameDuration;
+        capabilities->MinBitsPerSecond = static_cast<LONG>(kYuy2FrameBytes * 8 * kFramesPerSecond);
+        capabilities->MaxBitsPerSecond = capabilities->MinBitsPerSecond;
+    }
+
+    CUnknown* WINAPI MorphlyG1Filter::CreateInstance(LPUNKNOWN outerUnknown, HRESULT* result)
+    {
+        if (result != nullptr)
+        {
+            *result = S_OK;
+        }
+
+        MorphlyG1Filter* filter = new MorphlyG1Filter(outerUnknown, result);
+        if (filter == nullptr && result != nullptr)
+        {
+            *result = E_OUTOFMEMORY;
+        }
+
+        return filter;
+    }
+
+    MorphlyG1Filter::MorphlyG1Filter(LPUNKNOWN outerUnknown, HRESULT* result)
+        : CSource(NAME("Morphly G1"), outerUnknown, kVirtualCameraSourceClsid)
+    {
+        stream_ = new MorphlyG1Stream(result, this, L"Output");
+        if (stream_ == nullptr && result != nullptr)
+        {
+            *result = E_OUTOFMEMORY;
+            return;
+        }
+
+        StartFrameProvider();
+    }
+
+    MorphlyG1Filter::~MorphlyG1Filter()
+    {
+        StopFrameProvider();
+    }
+
+    STDMETHODIMP MorphlyG1Filter::NonDelegatingQueryInterface(REFIID interfaceId, void** object)
+    {
+        CheckPointer(object, E_POINTER);
+
+        if (interfaceId == IID_IAMStreamConfig)
+        {
+            return GetInterface(static_cast<IAMStreamConfig*>(this), object);
+        }
+
+        return CSource::NonDelegatingQueryInterface(interfaceId, object);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Filter::SetFormat(AM_MEDIA_TYPE* mediaType)
+    {
+        return stream_ == nullptr ? E_UNEXPECTED : stream_->SetFormat(mediaType);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Filter::GetFormat(AM_MEDIA_TYPE** mediaType)
+    {
+        return stream_ == nullptr ? E_UNEXPECTED : stream_->GetFormat(mediaType);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Filter::GetNumberOfCapabilities(int* count, int* size)
+    {
+        return stream_ == nullptr ? E_UNEXPECTED : stream_->GetNumberOfCapabilities(count, size);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Filter::GetStreamCaps(int index, AM_MEDIA_TYPE** mediaType, BYTE* capabilities)
+    {
+        return stream_ == nullptr ? E_UNEXPECTED : stream_->GetStreamCaps(index, mediaType, capabilities);
+    }
+
+    MorphlyG1Stream::MorphlyG1Stream(HRESULT* result, MorphlyG1Filter* parentFilter, LPCWSTR pinName)
+        : CSourceStream(NAME("Morphly G1 Stream"), result, parentFilter, pinName)
+    {
+        bgraScratch_.resize(kBgraFrameBytes, 0);
+    }
+
+    MorphlyG1Stream::~MorphlyG1Stream() = default;
+
+    STDMETHODIMP MorphlyG1Stream::NonDelegatingQueryInterface(REFIID interfaceId, void** object)
+    {
+        CheckPointer(object, E_POINTER);
+
+        if (interfaceId == IID_IKsPropertySet)
+        {
+            return GetInterface(static_cast<IKsPropertySet*>(this), object);
+        }
+
+        if (interfaceId == IID_IAMStreamConfig)
+        {
+            return GetInterface(static_cast<IAMStreamConfig*>(this), object);
+        }
+
+        return CSourceStream::NonDelegatingQueryInterface(interfaceId, object);
+    }
+
+    STDMETHODIMP MorphlyG1Stream::Notify(IBaseFilter*, Quality)
+    {
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::DecideBufferSize(IMemAllocator* allocator, ALLOCATOR_PROPERTIES* properties)
+    {
+        CheckPointer(allocator, E_POINTER);
+        CheckPointer(properties, E_POINTER);
+
+        CAutoLock filterLock(m_pFilter->pStateLock());
+        CAutoLock sampleLock(&sampleLock_);
+
+        properties->cBuffers = 2;
+        properties->cbBuffer = currentSampleBytes_;
+        properties->cbAlign = 1;
+        properties->cbPrefix = 0;
+
+        ALLOCATOR_PROPERTIES actualProperties{};
+        const HRESULT result = allocator->SetProperties(properties, &actualProperties);
+        if (FAILED(result))
+        {
+            return result;
+        }
+
+        if (actualProperties.cbBuffer < currentSampleBytes_)
+        {
+            return E_FAIL;
+        }
+
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::FillBuffer(IMediaSample* mediaSample)
+    {
+        CheckPointer(mediaSample, E_POINTER);
+
+        SleepUntilNextFrame(&nextFrameDue_);
+
+        BYTE* sampleBuffer = nullptr;
+        HRESULT result = mediaSample->GetPointer(&sampleBuffer);
+        if (FAILED(result) || sampleBuffer == nullptr)
+        {
+            return FAILED(result) ? result : E_POINTER;
+        }
+
+        try
+        {
+            long sampleBytes = currentSampleBytes_;
+            std::uint64_t frameSequence = 0;
+            bool copiedSharedFrame = false;
+
+            {
+                CAutoLock sampleLock(&sampleLock_);
+                sampleBytes = currentSampleBytes_;
+            }
+
+            if (mediaSample->GetSize() < sampleBytes)
+            {
+                return E_FAIL;
+            }
+
+            {
+                std::unique_lock<std::mutex> guard(g_frameMutex, std::try_to_lock);
+                if (guard.owns_lock() && g_hasFrame && g_frameBuffers[g_frontBufferIndex].size() >= kBgraFrameBytes)
+                {
+                    if (bgraScratch_.size() < kBgraFrameBytes)
+                    {
+                        bgraScratch_.resize(kBgraFrameBytes, 0);
+                    }
+
+                    std::memcpy(bgraScratch_.data(), g_frameBuffers[g_frontBufferIndex].data(), kBgraFrameBytes);
+                    frameSequence = g_latestFrameSequence;
+                    copiedSharedFrame = true;
+                    hasBufferedFrame_ = true;
+                }
+            }
+
+            if (!hasBufferedFrame_)
+            {
+                GenerateAnimatedTestPatternBgra(bgraScratch_.data(), frameIndex_);
+                hasBufferedFrame_ = true;
+                loggedCachedFrameReuse_ = false;
+            }
+            else if (!copiedSharedFrame || frameSequence == lastPresentedFrameSequence_)
+            {
+                if (!loggedCachedFrameReuse_)
+                {
+                    LogVirtualCameraEvent(L"Reusing cached frame");
+                    loggedCachedFrameReuse_ = true;
+                }
+            }
+            else
+            {
+                lastPresentedFrameSequence_ = frameSequence;
+                loggedCachedFrameReuse_ = false;
+            }
+
+            FillYuy2NeutralFrame(sampleBuffer, static_cast<std::size_t>(sampleBytes));
+            ConvertBgraToYuy2(bgraScratch_.data(), sampleBuffer);
+            ApplyYuy2Heartbeat(sampleBuffer, static_cast<std::size_t>(sampleBytes), frameIndex_);
+        }
+        catch (...)
+        {
+            if (bgraScratch_.size() < kBgraFrameBytes)
+            {
+                bgraScratch_.resize(kBgraFrameBytes, 0);
+            }
+
+            GenerateAnimatedTestPatternBgra(bgraScratch_.data(), frameIndex_);
+            hasBufferedFrame_ = true;
+            FillYuy2NeutralFrame(sampleBuffer, static_cast<std::size_t>(currentSampleBytes_));
+            ConvertBgraToYuy2(bgraScratch_.data(), sampleBuffer);
+            ApplyYuy2Heartbeat(sampleBuffer, static_cast<std::size_t>(currentSampleBytes_), frameIndex_);
+        }
+
+        REFERENCE_TIME start = static_cast<REFERENCE_TIME>(frameIndex_) * kFrameDuration;
+        REFERENCE_TIME end = start + kFrameDuration;
+        mediaSample->SetTime(&start, &end);
+        mediaSample->SetSyncPoint(TRUE);
+        mediaSample->SetActualDataLength(currentSampleBytes_);
+
+        ++frameIndex_;
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::GetMediaType(CMediaType* mediaType)
+    {
+        CheckPointer(mediaType, E_POINTER);
+        FillFixedYuy2MediaType(mediaType);
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::CheckMediaType(const CMediaType* mediaType)
+    {
+        return ValidateFixedYuy2MediaType(mediaType);
+    }
+
+    HRESULT MorphlyG1Stream::OnThreadCreate()
+    {
+        nextFrameDue_ = std::chrono::steady_clock::now();
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::SetMediaType(const CMediaType* mediaType)
+    {
+        CheckPointer(mediaType, E_POINTER);
+
+        const HRESULT result = CSourceStream::SetMediaType(mediaType);
+        if (FAILED(result))
+        {
+            return result;
+        }
+
+        {
+            CAutoLock sampleLock(&sampleLock_);
+            currentSubtype_ = MEDIASUBTYPE_YUY2;
+            currentWidth_ = kFrameWidth;
+            currentHeight_ = kFrameHeight;
+            currentOutputStride_ = kYuy2StrideBytes;
+            currentSampleBytes_ = static_cast<long>(kYuy2FrameBytes);
+        }
+
+        LogVirtualCameraEvent(L"Media type changed");
+        return S_OK;
+    }
+
+    HRESULT MorphlyG1Stream::OnThreadDestroy()
+    {
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::Set(REFGUID, DWORD, LPVOID, DWORD, LPVOID, DWORD)
+    {
+        return E_NOTIMPL;
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::Get(
+        REFGUID propertySet,
+        DWORD propertyId,
+        LPVOID,
+        DWORD,
+        LPVOID propertyData,
+        DWORD propertyDataSize,
+        DWORD* bytesReturned)
+    {
+        if (propertySet != AMPROPSETID_Pin)
+        {
+            return E_PROP_SET_UNSUPPORTED;
+        }
+
+        if (propertyId != AMPROPERTY_PIN_CATEGORY)
+        {
+            return E_PROP_ID_UNSUPPORTED;
+        }
+
+        if (propertyData == nullptr && bytesReturned == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        if (bytesReturned != nullptr)
+        {
+            *bytesReturned = sizeof(GUID);
+        }
+
+        if (propertyData != nullptr)
+        {
+            if (propertyDataSize < sizeof(GUID))
+            {
+                return E_UNEXPECTED;
+            }
+
+            *reinterpret_cast<GUID*>(propertyData) = PIN_CATEGORY_CAPTURE;
+        }
+
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::QuerySupported(REFGUID propertySet, DWORD propertyId, DWORD* typeSupport)
+    {
+        if (propertySet != AMPROPSETID_Pin)
+        {
+            return E_PROP_SET_UNSUPPORTED;
+        }
+
+        if (propertyId != AMPROPERTY_PIN_CATEGORY)
+        {
+            return E_PROP_ID_UNSUPPORTED;
+        }
+
+        if (typeSupport != nullptr)
+        {
+            *typeSupport = KSPROPERTY_SUPPORT_GET;
+        }
+
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::SetFormat(AM_MEDIA_TYPE* mediaType)
+    {
+        CheckPointer(mediaType, E_POINTER);
+
+        const HRESULT validationResult = ValidateFixedYuy2MediaType(mediaType);
+        if (FAILED(validationResult))
+        {
+            return validationResult;
+        }
+
+        CMediaType requestedType(*mediaType);
+        return SetMediaType(&requestedType);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::GetFormat(AM_MEDIA_TYPE** mediaType)
+    {
+        return CreateFixedYuy2MediaType(mediaType);
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::GetNumberOfCapabilities(int* count, int* size)
+    {
+        if (count == nullptr || size == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        *count = 1;
+        *size = sizeof(VIDEO_STREAM_CONFIG_CAPS);
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE MorphlyG1Stream::GetStreamCaps(int index, AM_MEDIA_TYPE** mediaType, BYTE* capabilities)
+    {
+        if (mediaType == nullptr || capabilities == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        if (index != 0)
+        {
+            return S_FALSE;
+        }
+
+        HRESULT result = CreateFixedYuy2MediaType(mediaType);
+        if (FAILED(result))
+        {
+            return result;
+        }
+
+        FillFixedVideoStreamCaps(reinterpret_cast<VIDEO_STREAM_CONFIG_CAPS*>(capabilities));
+        return S_OK;
+    }
+
+    MorphlyG1Filter* MorphlyG1Stream::GetParentFilter() const
+    {
+        return static_cast<MorphlyG1Filter*>(m_pFilter);
     }
 }

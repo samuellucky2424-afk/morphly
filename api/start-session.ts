@@ -4,6 +4,10 @@ import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 const CREDITS_PER_SECOND = 2;
 const MAX_BILLABLE_SECONDS = 7200;
 
+function getDecartApiKey() {
+  return process.env.DECART_API_KEY?.trim() || null;
+}
+
 function normalizeCredits(value) {
   const credits = Number(value ?? 0);
   return Number.isFinite(credits) ? credits : 0;
@@ -30,6 +34,11 @@ export default async function handler(req, res) {
   try {
     if (!supabaseAdmin) {
       return res.status(503).json({ allowed: false, error: supabaseAdminConfigError || 'Supabase admin is not configured' });
+    }
+
+    const decartApiKey = getDecartApiKey();
+    if (!decartApiKey) {
+      return res.status(503).json({ allowed: false, error: 'Missing DECART_API_KEY in server environment' });
     }
 
     const { userId } = req.body;
@@ -111,7 +120,7 @@ export default async function handler(req, res) {
       return res.status(500).json({ allowed: false, error: 'Failed to create session' });
     }
 
-    res.json({ allowed: true, sessionId: newSession.id, credits: userCredits, maxSeconds, token: process.env.DECART_API_KEY });
+    res.json({ allowed: true, sessionId: newSession.id, credits: userCredits, maxSeconds, token: decartApiKey });
   } catch (error) {
     console.error('start-session unexpected error:', error);
     res.status(500).json({ allowed: false, error: 'Internal server error' });

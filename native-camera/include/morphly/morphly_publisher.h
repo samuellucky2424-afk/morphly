@@ -33,9 +33,14 @@ namespace morphly
         HANDLE mapping_ = nullptr;
         HANDLE mutex_ = nullptr;
         HANDLE event_ = nullptr;
+        HANDLE globalMapping_ = nullptr;
+        HANDLE globalMutex_ = nullptr;
+        HANDLE globalEvent_ = nullptr;
         size_t mappingByteCount_ = 0;
         size_t payloadByteCount_ = 0;
         void* view_ = nullptr;
+        void* globalView_ = nullptr;
+        ULONGLONG lastGlobalAttachAttemptTickMs_ = 0;
     };
 }
 

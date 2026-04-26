@@ -60,7 +60,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       apiFetch(`/wallet?userId=${user.id}`)
         .then(async res => {
           if (!res.ok) {
-            throw new Error(`API returned ${res.status}`);
+            const rawBody = await res.text();
+            let apiError = rawBody;
+            try {
+              const parsedBody = JSON.parse(rawBody);
+              apiError = parsedBody?.error || parsedBody?.message || rawBody;
+            } catch {
+              // Keep raw body when response is not JSON.
+            }
+
+            const errorDetail = apiError ? `: ${apiError}` : '';
+            throw new Error(`API returned ${res.status}${errorDetail}`);
           }
           const text = await res.text();
           try {
@@ -80,7 +90,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setTransactions(data.transactions || []);
           }
         })
-        .catch(err => console.warn('Failed to sync wallet (backend might need restart):', err));
+        .catch(err => console.warn('Failed to sync wallet data:', err));
     }
   }, [user?.id]);
 

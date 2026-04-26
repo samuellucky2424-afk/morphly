@@ -138,8 +138,6 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
 const DECART_REALTIME_MODEL = 'lucy-2.1';
-const MORPHLY_CAM_WINDOW_WIDTH = 640;
-const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
 const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;
@@ -179,6 +177,48 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function drawVideoFrameCover(
+  context: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  targetWidth: number,
+  targetHeight: number,
+) {
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+
+  if (!sourceWidth || !sourceHeight || !targetWidth || !targetHeight) {
+    return;
+  }
+
+  const sourceAspect = sourceWidth / sourceHeight;
+  const targetAspect = targetWidth / targetHeight;
+
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceDrawWidth = sourceWidth;
+  let sourceDrawHeight = sourceHeight;
+
+  if (sourceAspect > targetAspect) {
+    sourceDrawWidth = Math.max(1, Math.round(sourceHeight * targetAspect));
+    sourceX = Math.max(0, Math.floor((sourceWidth - sourceDrawWidth) / 2));
+  } else if (sourceAspect < targetAspect) {
+    sourceDrawHeight = Math.max(1, Math.round(sourceWidth / targetAspect));
+    sourceY = Math.max(0, Math.floor((sourceHeight - sourceDrawHeight) / 2));
+  }
+
+  context.drawImage(
+    video,
+    sourceX,
+    sourceY,
+    sourceDrawWidth,
+    sourceDrawHeight,
+    0,
+    0,
+    targetWidth,
+    targetHeight,
+  );
 }
 
 function getStartSessionErrorToast(error: unknown): string | null {
@@ -315,11 +355,13 @@ function Dashboard() {
   const morphlyCamCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const morphlyCamStatusRef = useRef<HTMLDivElement | null>(null);
   const morphlyCamPlaceholderRef = useRef<HTMLDivElement | null>(null);
-  const morphlyCamPopupWarnedRef = useRef(false);
   const morphlyCamWindowEnabledRef = useRef(false);
   const latestRemoteStreamRef = useRef<MediaStream | null>(null);
   const morphlyCamRenderHandleRef = useRef<number | null>(null);
   const morphlyCamLastFrameSentAtRef = useRef(0);
+  const mainVirtualCamCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mainVirtualCamRenderHandleRef = useRef<number | null>(null);
+  const mainVirtualCamLastFrameSentAtRef = useRef(0);
 
   const promptRef = useRef(prompt);
   const referenceImageRef = useRef(referenceImage);
@@ -429,6 +471,14 @@ function Dashboard() {
     morphlyCamRenderHandleRef.current = null;
   }, []);
 
+  const stopMainVirtualCamRenderLoop = useCallback(() => {
+    if (mainVirtualCamRenderHandleRef.current !== null) {
+      window.cancelAnimationFrame(mainVirtualCamRenderHandleRef.current);
+    }
+
+    mainVirtualCamRenderHandleRef.current = null;
+  }, []);
+
   const pushMorphlyCamFrame = useCallback((canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
     if (!window.electron?.sendVirtualCameraFrame) {
       return;
@@ -479,7 +529,7 @@ function Dashboard() {
       context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
 
       if (currentVideo.readyState >= 2 && currentVideo.videoWidth > 0 && currentVideo.videoHeight > 0) {
-        context.drawImage(currentVideo, 0, 0, currentCanvas.width, currentCanvas.height);
+        drawVideoFrameCover(context, currentVideo, currentCanvas.width, currentCanvas.height);
 
         const now = currentPopup.performance?.now?.() ?? performance.now();
         if ((now - morphlyCamLastFrameSentAtRef.current) >= MORPHLY_CAM_FRAME_INTERVAL_MS) {
@@ -493,6 +543,65 @@ function Dashboard() {
 
     morphlyCamRenderHandleRef.current = popup.requestAnimationFrame(renderFrame);
   }, [pushMorphlyCamFrame, stopMorphlyCamRenderLoop]);
+
+  const startMainVirtualCamRenderLoop = useCallback(() => {
+    if (!morphlyCamWindowEnabledRef.current) {
+      return;
+    }
+
+    const video = outputVideoRef.current;
+    if (!video) {
+      return;
+    }
+
+    let canvas = mainVirtualCamCanvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = MORPHLY_CAM_FRAME_WIDTH;
+      canvas.height = MORPHLY_CAM_FRAME_HEIGHT;
+      mainVirtualCamCanvasRef.current = canvas;
+    }
+
+    stopMainVirtualCamRenderLoop();
+    mainVirtualCamLastFrameSentAtRef.current = 0;
+
+    const context = canvas.getContext('2d', {
+      alpha: false,
+      desynchronized: true,
+      willReadFrequently: true,
+    });
+
+    if (!context) {
+      return;
+    }
+
+    const renderFrame = () => {
+      const currentVideo = outputVideoRef.current;
+      const currentCanvas = mainVirtualCamCanvasRef.current;
+
+      if (!morphlyCamWindowEnabledRef.current || !currentVideo || !currentCanvas) {
+        mainVirtualCamRenderHandleRef.current = null;
+        return;
+      }
+
+      context.fillStyle = '#000000';
+      context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+
+      if (currentVideo.readyState >= 2 && currentVideo.videoWidth > 0 && currentVideo.videoHeight > 0) {
+        drawVideoFrameCover(context, currentVideo, currentCanvas.width, currentCanvas.height);
+
+        const now = performance.now();
+        if ((now - mainVirtualCamLastFrameSentAtRef.current) >= MORPHLY_CAM_FRAME_INTERVAL_MS) {
+          pushMorphlyCamFrame(currentCanvas, context);
+          mainVirtualCamLastFrameSentAtRef.current = now;
+        }
+      }
+
+      mainVirtualCamRenderHandleRef.current = window.requestAnimationFrame(renderFrame);
+    };
+
+    mainVirtualCamRenderHandleRef.current = window.requestAnimationFrame(renderFrame);
+  }, [pushMorphlyCamFrame, stopMainVirtualCamRenderLoop]);
 
   const renderMorphlyCamWindowShell = useCallback((popup: Window) => {
     const doc = popup.document;
@@ -619,31 +728,13 @@ function Dashboard() {
       return null;
     }
 
-    let popup = morphlyCamWindowRef.current;
-    const isFreshWindow = !popup || popup.closed;
-
-    if (isFreshWindow) {
-      popup = window.open(
-        '',
-        'Morphly cam',
-        `popup=yes,width=${MORPHLY_CAM_WINDOW_WIDTH},height=${MORPHLY_CAM_WINDOW_HEIGHT},resizable=yes,scrollbars=no,toolbar=no,location=no,status=no,menubar=no`,
-      );
-
-      if (!popup) {
-        if (!morphlyCamPopupWarnedRef.current) {
-          morphlyCamPopupWarnedRef.current = true;
-          toast.error('Morphly cam could not open. Please allow popup windows for Morphly.');
-        }
-
-        return null;
-      }
-
-      morphlyCamWindowRef.current = popup;
-      renderMorphlyCamWindowShell(popup);
-      popup.focus();
+    const popup = morphlyCamWindowRef.current;
+    if (!popup) {
+      return null;
     }
 
-    if (!popup) {
+    if (popup.closed) {
+      resetMorphlyCamRefs();
       return null;
     }
 
@@ -659,7 +750,7 @@ function Dashboard() {
     }
 
     return popup;
-  }, [getMorphlyCamGuideMessage, renderMorphlyCamWindowShell, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
+  }, [getMorphlyCamGuideMessage, renderMorphlyCamWindowShell, resetMorphlyCamRefs, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const syncMorphlyCamStream = useCallback((stream: MediaStream, statusMessage?: string | null) => {
     latestRemoteStreamRef.current = stream;
@@ -668,8 +759,10 @@ function Dashboard() {
       return;
     }
 
+    startMainVirtualCamRenderLoop();
+
     const popup = ensureMorphlyCamWindow(statusMessage ?? 'Preparing Morphly cam...');
-    if (!popup) {
+    if (!popup || popup.closed) {
       return;
     }
 
@@ -696,7 +789,7 @@ function Dashboard() {
       updateMorphlyCamStatus(null);
       updateMorphlyCamPlaceholder(null);
     }
-  }, [ensureMorphlyCamWindow, startMorphlyCamRenderLoop, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
+  }, [ensureMorphlyCamWindow, startMainVirtualCamRenderLoop, startMorphlyCamRenderLoop, updateMorphlyCamPlaceholder, updateMorphlyCamStatus]);
 
   const closeMorphlyCamWindow = useCallback((options?: { clearStream?: boolean }) => {
     if (options?.clearStream) {
@@ -704,6 +797,7 @@ function Dashboard() {
     }
 
     stopMorphlyCamRenderLoop();
+    stopMainVirtualCamRenderLoop();
 
     if (morphlyCamVideoRef.current) {
       morphlyCamVideoRef.current.srcObject = null;
@@ -715,7 +809,7 @@ function Dashboard() {
     }
 
     resetMorphlyCamRefs();
-  }, [resetMorphlyCamRefs, stopMorphlyCamRenderLoop]);
+  }, [resetMorphlyCamRefs, stopMainVirtualCamRenderLoop, stopMorphlyCamRenderLoop]);
 
   const clearSoftReconnectTimer = useCallback(() => {
     if (softReconnectTimerRef.current) {
@@ -1708,16 +1802,22 @@ function Dashboard() {
     setRuntimeModeCap('hd');
     resetHealthCounters();
 
-    // Enable the Morphly cam popup window and arm the virtual camera publisher
+    // Arm the virtual camera publisher. The live frames come from the main
+    // Morphly output stream; the popup, if opened, is only an optional mirror.
     morphlyCamWindowEnabledRef.current = true;
-    if (window.electron) {
-      void window.electron.invoke('virtual-camera:start').catch((err: unknown) => {
-        console.warn('Failed to arm virtual camera publisher:', err);
-      });
-    }
+    const virtualCameraStartPromise = window.electron
+      ? window.electron.invoke('virtual-camera:start').catch((err: unknown) => {
+          console.warn('Failed to arm virtual camera publisher:', err);
+          return {
+            success: false,
+            error: err instanceof Error ? err.message : 'Unknown virtual camera error',
+          };
+        })
+      : Promise.resolve(null);
 
     try {
-      const [startResponse, stream] = await Promise.all([
+      const [virtualCameraStartResult, startResponse, stream] = await Promise.all([
+        virtualCameraStartPromise,
         apiRequest<{
           allowed: boolean;
           token?: string;
@@ -1731,6 +1831,12 @@ function Dashboard() {
         }),
         startWebcam(activeMode, { forceNewStream: true }),
       ]);
+
+      if (virtualCameraStartResult && virtualCameraStartResult.success === false) {
+        const virtualCameraMessage = virtualCameraStartResult.error || virtualCameraStartResult.message || 'Morphly virtual camera is unavailable';
+        console.warn('Morphly virtual camera is unavailable:', virtualCameraMessage);
+        toast.error(virtualCameraMessage);
+      }
 
       if (!startResponse.allowed) {
         toast.error(startResponse.error || 'Insufficient credits');

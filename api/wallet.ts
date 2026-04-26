@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -7,6 +7,14 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (!supabaseAdmin) {
+    return res.status(200).json({
+      balance: 0,
+      credits: 0,
+      transactions: [],
+      warning: supabaseAdminConfigError || 'Supabase admin is not configured'
+    });
+  }
   
   const userId = req.query.userId || req.query.id;
   if (!userId) return res.status(400).json({ error: 'User ID is required' });

@@ -10,6 +10,27 @@ namespace morphly
 {
     namespace
     {
+        constexpr DWORD kGlobalAttachRetryMs = 1000;
+
+        struct BridgeNames
+        {
+            const wchar_t* mappingName = nullptr;
+            const wchar_t* mutexName = nullptr;
+            const wchar_t* eventName = nullptr;
+        };
+
+        const BridgeNames kLocalBridgeNames{
+            kPublisherMappingName,
+            kPublisherMutexName,
+            kPublisherEventName,
+        };
+
+        const BridgeNames kGlobalBridgeNames{
+            kGlobalPublisherMappingName,
+            kGlobalPublisherMutexName,
+            kGlobalPublisherEventName,
+        };
+
         size_t ComputePayloadBytes(const PublisherConfig& config)
         {
             return static_cast<size_t>(config.stride) * static_cast<size_t>(config.height);
@@ -72,6 +93,230 @@ namespace morphly
             attributes->bInheritHandle = FALSE;
             return S_OK;
         }
+
+        void CloseEndpoint(HANDLE* mapping, HANDLE* mutex, HANDLE* eventValue, void** view) noexcept
+        {
+            if (view != nullptr && *view != nullptr)
+            {
+                UnmapViewOfFile(*view);
+                *view = nullptr;
+            }
+
+            if (eventValue != nullptr && *eventValue != nullptr)
+            {
+                CloseHandle(*eventValue);
+                *eventValue = nullptr;
+            }
+
+            if (mutex != nullptr && *mutex != nullptr)
+            {
+                CloseHandle(*mutex);
+                *mutex = nullptr;
+            }
+
+            if (mapping != nullptr && *mapping != nullptr)
+            {
+                CloseHandle(*mapping);
+                *mapping = nullptr;
+            }
+        }
+
+        HRESULT InitializeEndpointHeader(
+            HANDLE mutex,
+            void* view,
+            const PublisherConfig& config,
+            size_t mappingByteCount,
+            size_t payloadByteCount)
+        {
+            if (mutex == nullptr || view == nullptr)
+            {
+                return HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE);
+            }
+
+            const HRESULT lockHr = WaitForOwnedMutex(mutex);
+            if (FAILED(lockHr))
+            {
+                return lockHr;
+            }
+
+            auto unlock = [&]() noexcept
+            {
+                ReleaseMutex(mutex);
+            };
+
+            auto* header = static_cast<SharedFrameHeader*>(view);
+            if (header == nullptr)
+            {
+                unlock();
+                return HRESULT_FROM_WIN32(ERROR_INVALID_ADDRESS);
+            }
+
+            const bool needsReset =
+                header->magic != kProtocolMagic ||
+                header->version != kProtocolVersion ||
+                header->width != config.width ||
+                header->height != config.height ||
+                header->stride != config.stride ||
+                header->pixelFormat != kPixelFormatBgra32 ||
+                header->fpsNumerator != config.fpsNumerator ||
+                header->fpsDenominator != config.fpsDenominator ||
+                header->payloadBytes != payloadByteCount;
+
+            if (needsReset)
+            {
+                std::memset(view, 0, mappingByteCount);
+                header->magic = kProtocolMagic;
+                header->version = kProtocolVersion;
+                header->width = config.width;
+                header->height = config.height;
+                header->stride = config.stride;
+                header->pixelFormat = kPixelFormatBgra32;
+                header->fpsNumerator = config.fpsNumerator;
+                header->fpsDenominator = config.fpsDenominator;
+                header->payloadBytes = static_cast<uint32_t>(payloadByteCount);
+            }
+
+            unlock();
+            return S_OK;
+        }
+
+        HRESULT CreateEndpoint(
+            const BridgeNames& names,
+            const SECURITY_ATTRIBUTES* securityAttributes,
+            const PublisherConfig& config,
+            size_t mappingByteCount,
+            size_t payloadByteCount,
+            HANDLE* mapping,
+            HANDLE* mutex,
+            HANDLE* eventValue,
+            void** view)
+        {
+            if (mapping == nullptr || mutex == nullptr || eventValue == nullptr || view == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            ULARGE_INTEGER mappingSize{};
+            mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount);
+
+            *mutex = CreateMutexW(const_cast<SECURITY_ATTRIBUTES*>(securityAttributes), FALSE, names.mutexName);
+            if (*mutex == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *eventValue = CreateEventW(const_cast<SECURITY_ATTRIBUTES*>(securityAttributes), FALSE, FALSE, names.eventName);
+            if (*eventValue == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *mapping = CreateFileMappingW(
+                INVALID_HANDLE_VALUE,
+                const_cast<SECURITY_ATTRIBUTES*>(securityAttributes),
+                PAGE_READWRITE,
+                mappingSize.HighPart,
+                mappingSize.LowPart,
+                names.mappingName);
+            if (*mapping == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *view = MapViewOfFile(*mapping, FILE_MAP_ALL_ACCESS, 0, 0, mappingByteCount);
+            if (*view == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            return InitializeEndpointHeader(*mutex, *view, config, mappingByteCount, payloadByteCount);
+        }
+
+        HRESULT AttachExistingEndpoint(
+            const BridgeNames& names,
+            const PublisherConfig& config,
+            size_t mappingByteCount,
+            size_t payloadByteCount,
+            HANDLE* mapping,
+            HANDLE* mutex,
+            HANDLE* eventValue,
+            void** view)
+        {
+            if (mapping == nullptr || mutex == nullptr || eventValue == nullptr || view == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            *mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, names.mappingName);
+            if (*mapping == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *mutex = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, names.mutexName);
+            if (*mutex == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *eventValue = OpenEventW(SYNCHRONIZE | EVENT_MODIFY_STATE, FALSE, names.eventName);
+            if (*eventValue == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            *view = MapViewOfFile(*mapping, FILE_MAP_ALL_ACCESS, 0, 0, mappingByteCount);
+            if (*view == nullptr)
+            {
+                CloseEndpoint(mapping, mutex, eventValue, view);
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+
+            return InitializeEndpointHeader(*mutex, *view, config, mappingByteCount, payloadByteCount);
+        }
+
+        HRESULT PublishFrameToEndpoint(
+            HANDLE mutex,
+            HANDLE eventValue,
+            void* view,
+            size_t payloadByteCount,
+            const uint8_t* bgraFrame,
+            size_t byteCount,
+            int64_t timestampHundredsOfNs)
+        {
+            if (view == nullptr || mutex == nullptr || eventValue == nullptr)
+            {
+                return HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE);
+            }
+
+            if (bgraFrame == nullptr || byteCount < payloadByteCount)
+            {
+                return E_INVALIDARG;
+            }
+
+            const HRESULT lockHr = WaitForOwnedMutex(mutex);
+            if (FAILED(lockHr))
+            {
+                return lockHr;
+            }
+
+            auto* header = static_cast<SharedFrameHeader*>(view);
+            auto* payload = reinterpret_cast<uint8_t*>(header + 1);
+            std::memcpy(payload, bgraFrame, payloadByteCount);
+            header->frameCounter += 1;
+            header->timestampHundredsOfNs = timestampHundredsOfNs;
+            ReleaseMutex(mutex);
+
+            SetEvent(eventValue);
+            return S_OK;
+        }
     }
 
     Publisher::~Publisher()
@@ -113,61 +358,23 @@ namespace morphly
             return securityHr;
         }
 
-        mutex_ = CreateMutexW(&securityAttributes, FALSE, kPublisherMutexName);
-        if (mutex_ == nullptr)
-        {
-            Close();
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-
-        event_ = CreateEventW(&securityAttributes, FALSE, FALSE, kPublisherEventName);
-        if (event_ == nullptr)
-        {
-            Close();
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-
-        ULARGE_INTEGER mappingSize{};
-        mappingSize.QuadPart = static_cast<unsigned long long>(mappingByteCount_);
-        mapping_ = CreateFileMappingW(
-            INVALID_HANDLE_VALUE,
+        const HRESULT createHr = CreateEndpoint(
+            kLocalBridgeNames,
             &securityAttributes,
-            PAGE_READWRITE,
-            mappingSize.HighPart,
-            mappingSize.LowPart,
-            kPublisherMappingName);
-        if (mapping_ == nullptr)
+            config_,
+            mappingByteCount_,
+            payloadByteCount_,
+            &mapping_,
+            &mutex_,
+            &event_,
+            &view_);
+        if (FAILED(createHr))
         {
             Close();
-            return HRESULT_FROM_WIN32(GetLastError());
+            return createHr;
         }
 
-        view_ = MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, mappingByteCount_);
-        if (view_ == nullptr)
-        {
-            Close();
-            return HRESULT_FROM_WIN32(GetLastError());
-        }
-
-        const HRESULT lockHr = WaitForOwnedMutex(mutex_);
-        if (FAILED(lockHr))
-        {
-            Close();
-            return lockHr;
-        }
-
-        auto* header = static_cast<SharedFrameHeader*>(view_);
-        std::memset(view_, 0, mappingByteCount_);
-        header->magic = kProtocolMagic;
-        header->version = kProtocolVersion;
-        header->width = config.width;
-        header->height = config.height;
-        header->stride = config.stride;
-        header->pixelFormat = kPixelFormatBgra32;
-        header->fpsNumerator = config.fpsNumerator;
-        header->fpsDenominator = config.fpsDenominator;
-        header->payloadBytes = static_cast<uint32_t>(payloadByteCount_);
-        ReleaseMutex(mutex_);
+        lastGlobalAttachAttemptTickMs_ = 0;
 
         return S_OK;
     }
@@ -179,55 +386,64 @@ namespace morphly
             return HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE);
         }
 
-        if (bgraFrame == nullptr || byteCount < payloadByteCount_)
+        const HRESULT localHr = PublishFrameToEndpoint(
+            mutex_,
+            event_,
+            view_,
+            payloadByteCount_,
+            bgraFrame,
+            byteCount,
+            timestampHundredsOfNs);
+        if (FAILED(localHr))
         {
-            return E_INVALIDARG;
+            return localHr;
         }
 
-        const HRESULT lockHr = WaitForOwnedMutex(mutex_);
-        if (FAILED(lockHr))
+        const ULONGLONG now = GetTickCount64();
+        if (globalView_ == nullptr && (now - lastGlobalAttachAttemptTickMs_) >= kGlobalAttachRetryMs)
         {
-            return lockHr;
+            lastGlobalAttachAttemptTickMs_ = now;
+            const HRESULT globalAttachHr = AttachExistingEndpoint(
+                kGlobalBridgeNames,
+                config_,
+                mappingByteCount_,
+                payloadByteCount_,
+                &globalMapping_,
+                &globalMutex_,
+                &globalEvent_,
+                &globalView_);
+            if (FAILED(globalAttachHr))
+            {
+                CloseEndpoint(&globalMapping_, &globalMutex_, &globalEvent_, &globalView_);
+            }
         }
 
-        auto* header = static_cast<SharedFrameHeader*>(view_);
-        auto* payload = reinterpret_cast<uint8_t*>(header + 1);
-        std::memcpy(payload, bgraFrame, payloadByteCount_);
-        header->frameCounter += 1;
-        header->timestampHundredsOfNs = timestampHundredsOfNs;
-        ReleaseMutex(mutex_);
+        if (globalView_ != nullptr)
+        {
+            const HRESULT globalHr = PublishFrameToEndpoint(
+                globalMutex_,
+                globalEvent_,
+                globalView_,
+                payloadByteCount_,
+                bgraFrame,
+                byteCount,
+                timestampHundredsOfNs);
+            if (FAILED(globalHr))
+            {
+                CloseEndpoint(&globalMapping_, &globalMutex_, &globalEvent_, &globalView_);
+            }
+        }
 
-        SetEvent(event_);
         return S_OK;
     }
 
     void Publisher::Close()
     {
-        if (view_ != nullptr)
-        {
-            UnmapViewOfFile(view_);
-            view_ = nullptr;
-        }
-
-        if (event_ != nullptr)
-        {
-            CloseHandle(event_);
-            event_ = nullptr;
-        }
-
-        if (mutex_ != nullptr)
-        {
-            CloseHandle(mutex_);
-            mutex_ = nullptr;
-        }
-
-        if (mapping_ != nullptr)
-        {
-            CloseHandle(mapping_);
-            mapping_ = nullptr;
-        }
+        CloseEndpoint(&globalMapping_, &globalMutex_, &globalEvent_, &globalView_);
+        CloseEndpoint(&mapping_, &mutex_, &event_, &view_);
 
         mappingByteCount_ = 0;
         payloadByteCount_ = 0;
+        lastGlobalAttachAttemptTickMs_ = 0;
     }
 }

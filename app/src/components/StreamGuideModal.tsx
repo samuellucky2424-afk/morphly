@@ -137,9 +137,9 @@ export function StreamGuideModal({ isOpen, onClose }: StreamGuideModalProps) {
             <div>
               <h4 className="text-sm font-semibold text-blue-100">Pro Tip</h4>
               <p className="mt-1 text-xs leading-relaxed text-blue-200/80">
-                The Morphly cam window is a capture window, not a standalone webcam device. In SplitCam or OBS, add it
-                as a Window Capture source first, then publish it through SplitCam Camera or OBS Virtual Camera if
-                another app needs a webcam input.
+                If your app shows Morphly G1 in its camera list, select it directly. If Morphly G1 is not available,
+                add the Morphly cam window in SplitCam or OBS as Window Capture, then publish through SplitCam Camera
+                or OBS Virtual Camera for Zoom, WhatsApp, and similar apps.
               </p>
             </div>
           </div>

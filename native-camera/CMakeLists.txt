@@ -15,6 +15,8 @@ if(POLICY CMP0091)
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+option(TEST_PATTERN_MODE "Build the DirectShow virtual camera in animated test-pattern mode." OFF)
+
 
 add_library(morphly_common INTERFACE)
 target_include_directories(morphly_common INTERFACE
@@ -25,6 +27,33 @@ target_compile_definitions(morphly_common INTERFACE
     _UNICODE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
+)
+
+set(MORPHLY_DSHOW_BASECLASSES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/baseclasses)
+
+add_library(morphly_dshow_baseclasses STATIC
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/amfilter.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/amvideo.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/combase.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/dllentry.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/dllsetup.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/mtype.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/source.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/winutil.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/wxdebug.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/wxlist.cpp
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}/wxutil.cpp
+)
+target_include_directories(morphly_dshow_baseclasses PUBLIC
+    ${MORPHLY_DSHOW_BASECLASSES_DIR}
+)
+target_compile_definitions(morphly_dshow_baseclasses PUBLIC
+    WIN32
+    _CRT_SECURE_NO_WARNINGS
+)
+target_link_libraries(morphly_dshow_baseclasses PUBLIC
+    morphly_common
+    strmiids
 )
 
 add_library(morphly_publisher STATIC
@@ -40,6 +69,39 @@ add_library(morphly_virtualcam SHARED
 )
 target_link_libraries(morphly_virtualcam PRIVATE
     advapi32
+    morphly_dshow_baseclasses
+    morphly_common
+    ole32
+    oleaut32
+    shlwapi
+    strmiids
+    winmm
+)
+target_include_directories(morphly_virtualcam PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+if(TEST_PATTERN_MODE)
+    target_compile_definitions(morphly_virtualcam PRIVATE TEST_PATTERN_MODE=1)
+endif()
+set_target_properties(morphly_virtualcam PROPERTIES
+    OUTPUT_NAME "MorphlyVirtualCamera"
+)
+if(MSVC)
+    target_link_options(morphly_virtualcam PRIVATE
+        "/EXPORT:DllCanUnloadNow,PRIVATE"
+        "/EXPORT:DllGetClassObject,PRIVATE"
+        "/EXPORT:DllRegisterServer,PRIVATE"
+        "/EXPORT:DllUnregisterServer,PRIVATE"
+    )
+endif()
+
+add_library(morphly_virtualcam_mf SHARED
+    src/common/morphly_ids.cpp
+    src/virtualcam/mf_dllmain.cpp
+    src/virtualcam/mf_virtual_camera_source.cpp
+)
+target_link_libraries(morphly_virtualcam_mf PRIVATE
+    advapi32
     morphly_common
     mf
     mfplat
@@ -48,15 +110,15 @@ target_link_libraries(morphly_virtualcam PRIVATE
     ole32
     shlwapi
 )
-set_target_properties(morphly_virtualcam PROPERTIES
-    OUTPUT_NAME "MorphlyVirtualCamera"
+set_target_properties(morphly_virtualcam_mf PROPERTIES
+    OUTPUT_NAME "MorphlyVirtualCameraMF"
 )
 if(MSVC)
-    target_link_options(morphly_virtualcam PRIVATE
-        "/EXPORT:DllCanUnloadNow"
-        "/EXPORT:DllGetClassObject"
-        "/EXPORT:DllRegisterServer"
-        "/EXPORT:DllUnregisterServer"
+    target_link_options(morphly_virtualcam_mf PRIVATE
+        "/EXPORT:DllCanUnloadNow,PRIVATE"
+        "/EXPORT:DllGetClassObject,PRIVATE"
+        "/EXPORT:DllRegisterServer,PRIVATE"
+        "/EXPORT:DllUnregisterServer,PRIVATE"
     )
 endif()
 
@@ -65,24 +127,18 @@ add_executable(morphly_cam_registrar
     src/tools/registrar/main.cpp
 )
 target_link_libraries(morphly_cam_registrar PRIVATE
-    morphly_common
     mf
     mfplat
     mfsensorgroup
-    mfuuid        # MF GUIDs (MF_DEVSOURCE_ATTRIBUTE_*)
+    mfuuid
+    morphly_common
     ole32
     oleaut32
     strmiids      # DirectShow GUIDs (CLSID_FilterMapper2, CLSID_VideoInputDeviceCategory, MEDIATYPE_Video, …)
     shell32       # ShellExecuteEx (UAC self-elevation)
     advapi32      # AllocateAndInitializeSid / CheckTokenMembership
+    shlwapi       # StrStrIW (case-insensitive substring search)
 )
-if(MSVC)
-    # Request requireAdministrator elevation for registry writes
-    target_link_options(morphly_cam_registrar PRIVATE
-        "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
-    )
-endif()
-
 add_executable(morphly_cam_feeder
     src/tools/feeder/main.cpp
 )

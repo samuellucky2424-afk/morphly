@@ -4,7 +4,8 @@ const path = require('path');
 const NATIVE_ARTIFACTS = [
   'morphly_cam_pipe_publisher.exe',
   'morphly_cam_registrar.exe',
-  'MorphlyVirtualCamera.dll'
+  'MorphlyVirtualCamera.dll',
+  'MorphlyVirtualCameraMF.dll'
 ];
 
 const BUILD_CONFIGS = [

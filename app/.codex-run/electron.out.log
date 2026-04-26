@@ -1,0 +1,2 @@
+
+[2026-04-25T19:40:40.824Z][updater] Fetching update manifest. {"reason":"startup","requestUrl":"https://morphly-alpha.vercel.app/api/version?build=installer&platform=win32&currentVersion=1.2.33"}

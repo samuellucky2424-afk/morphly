@@ -1,11 +1,8 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-
-// Load environment variables
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -18,9 +15,13 @@ import startSessionRouter from './api/start-session.ts';
 import sessionStatusRouter from './api/session-status.ts';
 import endSessionRouter from './api/end-session.ts';
 import versionRouter from './api/version.ts';
+import { supabaseAdminConfigError } from './api/supabase.ts';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const decartConfigError = process.env.DECART_API_KEY?.trim()
+  ? null
+  : 'Missing DECART_API_KEY';
 
 // Middleware
 app.use(cors());
@@ -45,4 +46,10 @@ if (process.env.NODE_ENV === 'production') {
 
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+  if (supabaseAdminConfigError) {
+    console.warn(`[config] ${supabaseAdminConfigError}`);
+  }
+  if (decartConfigError) {
+    console.warn(`[config] ${decartConfigError}`);
+  }
 });
