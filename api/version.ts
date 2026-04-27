@@ -80,6 +80,19 @@ function getBuildType(req) {
   return normalizePackageType(candidate);
 }
 
+async function assetExists(url: string): Promise<boolean> {
+  try {
+    const resp = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: { 'User-Agent': 'morphly-updater' },
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -103,6 +116,14 @@ export default async function handler(req, res) {
       releaseNotes,
       checksum: null,
     });
+
+    // Verify the release asset actually exists before advertising it.
+    // If it hasn't been uploaded yet, point users to the releases page instead.
+    const exists = await assetExists(manifest.downloadUrl);
+    if (!exists) {
+      manifest.downloadUrl = manifest.releasePageUrl;
+      manifest.assetName = null;
+    }
 
     return res.status(200).json(manifest);
   } catch (error) {

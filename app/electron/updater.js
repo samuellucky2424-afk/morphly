@@ -397,6 +397,22 @@ export function createDesktopUpdater(options = {}) {
     }
 
     const downloadTask = (async () => {
+      // If the download URL points to a web page rather than a binary asset,
+      // open it in the browser and mark as download-only so the user can grab it manually.
+      const isWebPage = !sourceUrl.endsWith('.exe') && !sourceUrl.match(/\/download\//);
+      if (isWebPage) {
+        log('Download URL appears to be a release page — opening in browser.', { reason, sourceUrl });
+        try { await shell.openExternal(sourceUrl); } catch { /* ignore */ }
+        patchState({
+          downloadInProgress: false,
+          readyToInstall: false,
+          canAutoInstall: false,
+          status: 'update-available',
+          error: null
+        }, `${reason}:release-page-opened`);
+        return snapshot();
+      }
+
       patchState({
         downloadInProgress: true,
         status: 'downloading',

@@ -43,6 +43,77 @@ namespace morphly::virtualcam
 {
     namespace
     {
+        void AppendMfVirtualCameraLogLine(const wchar_t* message) noexcept
+        {
+            if (message == nullptr || *message == L'\0')
+            {
+                return;
+            }
+
+            wchar_t wideLine[768]{};
+            if (FAILED(StringCchPrintfW(
+                    wideLine,
+                    ARRAYSIZE(wideLine),
+                    L"[pid=%lu] %s\r\n",
+                    GetCurrentProcessId(),
+                    message)))
+            {
+                return;
+            }
+
+            OutputDebugStringW(wideLine);
+
+            HANDLE file = CreateFileW(
+                L"C:\\ProgramData\\MorphlyG1\\mf_source.log",
+                FILE_APPEND_DATA,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_ALWAYS,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (file == INVALID_HANDLE_VALUE)
+            {
+                return;
+            }
+
+            char utf8Line[1536]{};
+            const int utf8Bytes = WideCharToMultiByte(
+                CP_UTF8,
+                0,
+                wideLine,
+                -1,
+                utf8Line,
+                static_cast<int>(sizeof(utf8Line)),
+                nullptr,
+                nullptr);
+            if (utf8Bytes > 1)
+            {
+                DWORD written = 0;
+                WriteFile(file, utf8Line, static_cast<DWORD>(utf8Bytes - 1), &written, nullptr);
+            }
+
+            CloseHandle(file);
+        }
+
+        void TryEnableCreateGlobalPrivilege() noexcept
+        {
+            HANDLE token = nullptr;
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+            {
+                return;
+            }
+
+            TOKEN_PRIVILEGES tp{};
+            tp.PrivilegeCount = 1;
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+            if (LookupPrivilegeValueW(nullptr, SE_CREATE_GLOBAL_NAME, &tp.Privileges[0].Luid))
+            {
+                AdjustTokenPrivileges(token, FALSE, &tp, 0, nullptr, nullptr);
+            }
+
+            CloseHandle(token);
+        }
+
         constexpr uint32_t kDefaultWidth = 1280;
         constexpr uint32_t kDefaultHeight = 720;
         constexpr uint32_t kDefaultStride = kDefaultWidth * 4;
@@ -50,6 +121,9 @@ namespace morphly::virtualcam
         constexpr uint32_t kDefaultFpsDenominator = 1;
         constexpr DWORD kStreamId = 0;
         constexpr LONGLONG kHundredsOfNsPerSecond = 10'000'000LL;
+
+    const GUID kMfVirtualCameraProvideAssociatedCameraSources =
+    { 0xF0273718, 0x4A4D, 0x4AC5, { 0xA1, 0x5D, 0x30, 0x5E, 0xB5, 0xE9, 0x06, 0x67 } };
 
         std::atomic_ulong g_objectCount = 0;
         std::atomic_ulong g_lockCount = 0;
@@ -92,6 +166,21 @@ namespace morphly::virtualcam
             if (waitResult == WAIT_TIMEOUT)
             {
                 return HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+            }
+
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        HRESULT EnsureBridgeDirectoryExists(const wchar_t* directoryPath)
+        {
+            if (directoryPath == nullptr || *directoryPath == L'\0')
+            {
+                return E_INVALIDARG;
+            }
+
+            if (CreateDirectoryW(directoryPath, nullptr) || GetLastError() == ERROR_ALREADY_EXISTS)
+            {
+                return S_OK;
             }
 
             return HRESULT_FROM_WIN32(GetLastError());
@@ -162,6 +251,36 @@ namespace morphly::virtualcam
             return static_cast<uint8_t>(ClampToByte(value + 128));
         }
 
+        uint32_t GetSubtypeStride(const GUID& subtype, uint32_t width) noexcept
+        {
+            if (subtype == MFVideoFormat_YUY2)
+            {
+                return width * 2;
+            }
+
+            if (subtype == MFVideoFormat_NV12)
+            {
+                return width;
+            }
+
+            return 0;
+        }
+
+        uint32_t GetSubtypeSampleSize(const GUID& subtype, uint32_t width, uint32_t height) noexcept
+        {
+            if (subtype == MFVideoFormat_YUY2)
+            {
+                return width * height * 2;
+            }
+
+            if (subtype == MFVideoFormat_NV12)
+            {
+                return width * height * 3 / 2;
+            }
+
+            return 0;
+        }
+
         HRESULT CreateVideoType(const GUID& subtype, const MediaConfig& config, IMFMediaType** mediaType)
         {
             if (mediaType == nullptr)
@@ -169,7 +288,7 @@ namespace morphly::virtualcam
                 return E_POINTER;
             }
 
-            if (subtype != MFVideoFormat_YUY2)
+            if (subtype != MFVideoFormat_YUY2 && subtype != MFVideoFormat_NV12)
             {
                 return MF_E_INVALIDMEDIATYPE;
             }
@@ -187,8 +306,9 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_FRAME_RATE, config.fpsNumerator, config.fpsDenominator));
             RETURN_IF_FAILED(MFSetAttributeRatio(value.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
-            const uint32_t sampleSize = config.width * config.height * 2;
-            RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, config.width * 2));
+            const uint32_t sampleSize = GetSubtypeSampleSize(subtype, config.width, config.height);
+            const uint32_t stride = GetSubtypeStride(subtype, config.width);
+            RETURN_IF_FAILED(value->SetUINT32(MF_MT_DEFAULT_STRIDE, stride));
 
             RETURN_IF_FAILED(value->SetUINT32(MF_MT_SAMPLE_SIZE, sampleSize));
 
@@ -269,6 +389,57 @@ namespace morphly::virtualcam
             }
         }
 
+        void ConvertBgraToNv12(const MediaConfig& config, const uint8_t* bgra, std::vector<uint8_t>* nv12)
+        {
+            const uint32_t yStride = config.width;
+            const size_t yPlaneBytes = static_cast<size_t>(yStride) * config.height;
+            nv12->resize(yPlaneBytes + (yPlaneBytes / 2));
+
+            uint8_t* yPlane = nv12->data();
+            uint8_t* uvPlane = nv12->data() + yPlaneBytes;
+
+            for (uint32_t y = 0; y < config.height; ++y)
+            {
+                const uint8_t* srcRow = bgra + (static_cast<size_t>(y) * config.stride);
+                uint8_t* yRow = yPlane + (static_cast<size_t>(y) * yStride);
+
+                for (uint32_t x = 0; x < config.width; ++x)
+                {
+                    const uint8_t* pixel = srcRow + (static_cast<size_t>(x) * 4);
+                    yRow[x] = ToLuma(pixel[2], pixel[1], pixel[0]);
+                }
+            }
+
+            for (uint32_t y = 0; y < config.height; y += 2)
+            {
+                const uint8_t* srcRow0 = bgra + (static_cast<size_t>(y) * config.stride);
+                const uint8_t* srcRow1 = bgra + (static_cast<size_t>(std::min(y + 1, config.height - 1)) * config.stride);
+                uint8_t* uvRow = uvPlane + (static_cast<size_t>(y / 2) * yStride);
+
+                for (uint32_t x = 0; x < config.width; x += 2)
+                {
+                    const uint8_t* pixel00 = srcRow0 + (static_cast<size_t>(x) * 4);
+                    const uint8_t* pixel01 = srcRow0 + (static_cast<size_t>(std::min(x + 1, config.width - 1)) * 4);
+                    const uint8_t* pixel10 = srcRow1 + (static_cast<size_t>(x) * 4);
+                    const uint8_t* pixel11 = srcRow1 + (static_cast<size_t>(std::min(x + 1, config.width - 1)) * 4);
+
+                    const uint8_t u00 = ToChromaU(pixel00[2], pixel00[1], pixel00[0]);
+                    const uint8_t u01 = ToChromaU(pixel01[2], pixel01[1], pixel01[0]);
+                    const uint8_t u10 = ToChromaU(pixel10[2], pixel10[1], pixel10[0]);
+                    const uint8_t u11 = ToChromaU(pixel11[2], pixel11[1], pixel11[0]);
+
+                    const uint8_t v00 = ToChromaV(pixel00[2], pixel00[1], pixel00[0]);
+                    const uint8_t v01 = ToChromaV(pixel01[2], pixel01[1], pixel01[0]);
+                    const uint8_t v10 = ToChromaV(pixel10[2], pixel10[1], pixel10[0]);
+                    const uint8_t v11 = ToChromaV(pixel11[2], pixel11[1], pixel11[0]);
+
+                    const size_t uvIndex = x;
+                    uvRow[uvIndex + 0] = static_cast<uint8_t>((static_cast<uint16_t>(u00) + u01 + u10 + u11) / 4);
+                    uvRow[uvIndex + 1] = static_cast<uint8_t>((static_cast<uint16_t>(v00) + v01 + v10 + v11) / 4);
+                }
+            }
+        }
+
         void ApplyYuy2Heartbeat(uint8_t* yuy2Bytes, size_t byteCount, uint64_t frameIndex) noexcept
         {
             if (yuy2Bytes == nullptr || byteCount < 4)
@@ -283,6 +454,24 @@ namespace morphly::virtualcam
             yuy2Bytes[2] = static_cast<uint8_t>((yuy2Bytes[2] & 0xfeU) | static_cast<uint8_t>(pulse ^ 0x01U));
             yuy2Bytes[tailOffset + 0] = static_cast<uint8_t>((yuy2Bytes[tailOffset + 0] & 0xfeU) | pulse);
             yuy2Bytes[tailOffset + 2] = static_cast<uint8_t>((yuy2Bytes[tailOffset + 2] & 0xfeU) | static_cast<uint8_t>(pulse ^ 0x01U));
+        }
+
+        void ApplyNv12Heartbeat(uint8_t* nv12Bytes, size_t byteCount, uint32_t width, uint32_t height, uint64_t frameIndex) noexcept
+        {
+            if (nv12Bytes == nullptr || width == 0 || height == 0)
+            {
+                return;
+            }
+
+            const size_t yPlaneBytes = static_cast<size_t>(width) * height;
+            if (byteCount < yPlaneBytes + 2)
+            {
+                return;
+            }
+
+            const uint8_t pulse = static_cast<uint8_t>(frameIndex & 0x01ULL);
+            nv12Bytes[0] = static_cast<uint8_t>((nv12Bytes[0] & 0xfeU) | pulse);
+            nv12Bytes[yPlaneBytes - 1] = static_cast<uint8_t>((nv12Bytes[yPlaneBytes - 1] & 0xfeU) | static_cast<uint8_t>(pulse ^ 0x01U));
         }
 
         class SharedFrameReader
@@ -309,7 +498,7 @@ namespace morphly::virtualcam
                 }
 
                 std::lock_guard<std::mutex> guard(lock_);
-                RETURN_IF_FAILED(EnsureOpen());
+                RETURN_IF_FAILED(EnsureOpenLocked());
                 return ReadConfigLocked(config);
             }
 
@@ -321,7 +510,12 @@ namespace morphly::virtualcam
                 }
 
                 std::lock_guard<std::mutex> guard(lock_);
-                RETURN_IF_FAILED(EnsureOpen());
+                RETURN_IF_FAILED(EnsureOpenLocked());
+
+                if (usingFileBridge_)
+                {
+                    return ReadFrameFromFileBridgeLocked(bgra, config, timestampHundredsOfNs, frameCounter);
+                }
 
                 RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
 
@@ -367,7 +561,11 @@ namespace morphly::virtualcam
             void Close() noexcept
             {
                 std::lock_guard<std::mutex> guard(lock_);
+                CloseLocked();
+            }
 
+            void CloseLocked() noexcept
+            {
                 if (view_ != nullptr)
                 {
                     UnmapViewOfFile(view_);
@@ -378,6 +576,12 @@ namespace morphly::virtualcam
                 {
                     CloseHandle(mapping_);
                     mapping_ = nullptr;
+                }
+
+                if (bridgeFile_ != nullptr && bridgeFile_ != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(bridgeFile_);
+                    bridgeFile_ = nullptr;
                 }
 
                 if (mutex_ != nullptr)
@@ -391,15 +595,43 @@ namespace morphly::virtualcam
                     CloseHandle(event_);
                     event_ = nullptr;
                 }
+
+                usingFileBridge_ = false;
+                mappingByteCount_ = 0;
             }
 
         private:
-            HRESULT EnsureOpen()
+            // EnsureOpenLocked must only be called while lock_ is held.
+            HRESULT EnsureOpenLocked()
             {
                 if (mapping_ != nullptr && mutex_ != nullptr && view_ != nullptr)
                 {
                     return S_OK;
                 }
+
+                if (mapping_ != nullptr && usingFileBridge_ && view_ != nullptr)
+                {
+                    return S_OK;
+                }
+
+                HRESULT fileBridgeHr = EnsureOpenFileBridgeLocked();
+                if (SUCCEEDED(fileBridgeHr))
+                {
+                    AppendMfVirtualCameraLogLine(L"Using file-backed Morphly camera bridge.");
+                    return S_OK;
+                }
+
+                wchar_t fileBridgeFailureLine[256]{};
+                if (SUCCEEDED(StringCchPrintfW(
+                        fileBridgeFailureLine,
+                        ARRAYSIZE(fileBridgeFailureLine),
+                        L"File-backed bridge open failed with hr=0x%08X.",
+                        static_cast<unsigned int>(fileBridgeHr))))
+                {
+                    AppendMfVirtualCameraLogLine(fileBridgeFailureLine);
+                }
+
+                TryEnableCreateGlobalPrivilege();
 
                 HRESULT globalHr = EnsureOpenWithNamespace(
                     kGlobalPublisherMappingName,
@@ -407,16 +639,90 @@ namespace morphly::virtualcam
                     kGlobalPublisherEventName);
                 if (SUCCEEDED(globalHr))
                 {
+                    AppendMfVirtualCameraLogLine(L"Using Global Morphly camera bridge.");
                     return S_OK;
                 }
 
-                Close();
+                wchar_t globalFailureLine[256]{};
+                if (SUCCEEDED(StringCchPrintfW(
+                        globalFailureLine,
+                        ARRAYSIZE(globalFailureLine),
+                        L"Global bridge open failed with hr=0x%08X. Falling back to Local bridge.",
+                        static_cast<unsigned int>(globalHr))))
+                {
+                    AppendMfVirtualCameraLogLine(globalFailureLine);
+                }
+
+                // Close without re-acquiring lock_ (we already hold it).
+                CloseLocked();
 
                 RETURN_IF_FAILED(EnsureOpenWithNamespace(
                     kPublisherMappingName,
                     kPublisherMutexName,
                     kPublisherEventName));
 
+                AppendMfVirtualCameraLogLine(L"Using Local Morphly camera bridge.");
+
+                return S_OK;
+            }
+
+            HRESULT EnsureOpenFileBridgeLocked()
+            {
+                RETURN_IF_FAILED(EnsureBridgeDirectoryExists(kMfPublisherBridgeDirectoryPath));
+
+                bridgeFile_ = CreateFileW(
+                    kMfPublisherBridgeFilePath,
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr);
+                if (bridgeFile_ == INVALID_HANDLE_VALUE)
+                {
+                    bridgeFile_ = nullptr;
+                    return HRESULT_FROM_WIN32(GetLastError());
+                }
+
+                LARGE_INTEGER fileSize{};
+                if (!GetFileSizeEx(bridgeFile_, &fileSize))
+                {
+                    const HRESULT sizeHr = HRESULT_FROM_WIN32(GetLastError());
+                    CloseLocked();
+                    return sizeHr;
+                }
+
+                if (fileSize.QuadPart < static_cast<LONGLONG>(sizeof(SharedFrameHeader)))
+                {
+                    CloseLocked();
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                }
+
+                mappingByteCount_ = static_cast<size_t>(fileSize.QuadPart);
+                mapping_ = CreateFileMappingW(bridgeFile_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+                if (mapping_ == nullptr)
+                {
+                    const HRESULT mappingHr = HRESULT_FROM_WIN32(GetLastError());
+                    CloseLocked();
+                    return mappingHr;
+                }
+
+                view_ = MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0);
+                if (view_ == nullptr)
+                {
+                    const HRESULT viewHr = HRESULT_FROM_WIN32(GetLastError());
+                    CloseLocked();
+                    return viewHr;
+                }
+
+                const auto* header = static_cast<const SharedFrameHeader*>(view_);
+                if (header == nullptr || header->magic != kProtocolMagic || header->version != kProtocolVersion)
+                {
+                    CloseLocked();
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                }
+
+                usingFileBridge_ = true;
                 return S_OK;
             }
 
@@ -495,6 +801,11 @@ namespace morphly::virtualcam
 
             HRESULT ReadConfigLocked(MediaConfig* config)
             {
+                if (usingFileBridge_)
+                {
+                    return ReadConfigFromFileBridgeLocked(config);
+                }
+
                 RETURN_IF_FAILED(WaitForOwnedMutex(mutex_));
 
                 auto unlock = [&]() noexcept
@@ -519,6 +830,88 @@ namespace morphly::virtualcam
                 config->fpsDenominator = header->fpsDenominator == 0 ? kDefaultFpsDenominator : header->fpsDenominator;
                 unlock();
                 return S_OK;
+            }
+
+            HRESULT ReadConfigFromFileBridgeLocked(MediaConfig* config)
+            {
+                if (config == nullptr)
+                {
+                    return E_POINTER;
+                }
+
+                const auto* header = static_cast<const SharedFrameHeader*>(view_);
+                if (header == nullptr || header->magic != kProtocolMagic || header->version != kProtocolVersion)
+                {
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                }
+
+                config->width = header->width == 0 ? kDefaultWidth : header->width;
+                config->height = header->height == 0 ? kDefaultHeight : header->height;
+                config->stride = header->stride == 0 ? (config->width * 4) : header->stride;
+                config->fpsNumerator = header->fpsNumerator == 0 ? kDefaultFpsNumerator : header->fpsNumerator;
+                config->fpsDenominator = header->fpsDenominator == 0 ? kDefaultFpsDenominator : header->fpsDenominator;
+                return S_OK;
+            }
+
+            HRESULT ReadFrameFromFileBridgeLocked(
+                std::vector<uint8_t>* bgra,
+                MediaConfig* config,
+                int64_t* timestampHundredsOfNs,
+                uint64_t* frameCounter)
+            {
+                const auto* header = static_cast<const SharedFrameHeader*>(view_);
+                if (header == nullptr || header->magic != kProtocolMagic || header->version != kProtocolVersion)
+                {
+                    return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                }
+
+                for (int attempt = 0; attempt < 3; ++attempt)
+                {
+                    const LONG sequenceStart = static_cast<LONG>(header->reserved);
+                    if ((sequenceStart & 0x1L) != 0)
+                    {
+                        continue;
+                    }
+
+                    MemoryBarrier();
+
+                    const uint32_t payloadBytes = header->payloadBytes;
+                    if (payloadBytes == 0 || header->frameCounter == 0)
+                    {
+                        *frameCounter = 0;
+                        *timestampHundredsOfNs = 0;
+                        return S_FALSE;
+                    }
+
+                    if (mappingByteCount_ < (sizeof(SharedFrameHeader) + static_cast<size_t>(payloadBytes)))
+                    {
+                        return HRESULT_FROM_WIN32(ERROR_INVALID_DATA);
+                    }
+
+                    config->width = header->width == 0 ? kDefaultWidth : header->width;
+                    config->height = header->height == 0 ? kDefaultHeight : header->height;
+                    config->stride = header->stride == 0 ? (config->width * 4) : header->stride;
+                    config->fpsNumerator = header->fpsNumerator == 0 ? kDefaultFpsNumerator : header->fpsNumerator;
+                    config->fpsDenominator = header->fpsDenominator == 0 ? kDefaultFpsDenominator : header->fpsDenominator;
+
+                    const uint64_t snapshotFrameCounter = header->frameCounter;
+                    const int64_t snapshotTimestamp = header->timestampHundredsOfNs;
+                    const uint8_t* payload = reinterpret_cast<const uint8_t*>(header + 1);
+                    bgra->resize(payloadBytes);
+                    std::memcpy(bgra->data(), payload, payloadBytes);
+
+                    MemoryBarrier();
+
+                    const LONG sequenceEnd = static_cast<LONG>(header->reserved);
+                    if (sequenceStart == sequenceEnd && (sequenceEnd & 0x1L) == 0)
+                    {
+                        *frameCounter = snapshotFrameCounter;
+                        *timestampHundredsOfNs = snapshotTimestamp;
+                        return S_OK;
+                    }
+                }
+
+                return S_FALSE;
             }
 
             HRESULT InitializeSharedState()
@@ -564,9 +957,12 @@ namespace morphly::virtualcam
 
             std::mutex lock_;
             HANDLE mapping_ = nullptr;
+            HANDLE bridgeFile_ = nullptr;
             HANDLE mutex_ = nullptr;
             HANDLE event_ = nullptr;
             void* view_ = nullptr;
+            bool usingFileBridge_ = false;
+            size_t mappingByteCount_ = 0;
             MediaConfig defaultConfig_{};
         };
 
@@ -688,7 +1084,11 @@ namespace morphly::virtualcam
 
             HRESULT Initialize()
             {
-                return MFCreateAttributes(&attributes_, 4);
+                RETURN_IF_FAILED(MFCreateAttributes(&attributes_, 3));
+                RETURN_IF_FAILED(attributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
+                RETURN_IF_FAILED(attributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_CATEGORY, KSCATEGORY_VIDEO_CAMERA));
+                RETURN_IF_FAILED(attributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kVirtualCameraFriendlyName));
+                return S_OK;
             }
 
             IFACEMETHODIMP QueryInterface(REFIID interfaceId, void** object) override;
@@ -805,16 +1205,18 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_FRAMESERVER_SHARED, 1));
             RETURN_IF_FAILED(attributes_->SetUINT32(MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, static_cast<UINT32>(MFFrameSourceTypes::MFFrameSourceTypes_Color)));
 
-            ComPtr<IMFMediaType> mediaTypes[1];
-            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2, mediaConfig_, &mediaTypes[0]));
-            IMFMediaType* mediaTypePointers[] = { mediaTypes[0].Get() };
+            ComPtr<IMFMediaType> nv12MediaType;
+            ComPtr<IMFMediaType> yuy2MediaType;
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_NV12, mediaConfig_, &nv12MediaType));
+            RETURN_IF_FAILED(CreateVideoType(MFVideoFormat_YUY2, mediaConfig_, &yuy2MediaType));
+            IMFMediaType* mediaTypePointers[] = { nv12MediaType.Get(), yuy2MediaType.Get() };
             RETURN_IF_FAILED(MFCreateStreamDescriptor(kStreamId, ARRAYSIZE(mediaTypePointers), mediaTypePointers, &streamDescriptor_));
             RETURN_IF_FAILED(attributes_->CopyAllItems(streamDescriptor_.Get()));
 
             ComPtr<IMFMediaTypeHandler> handler;
             RETURN_IF_FAILED(streamDescriptor_->GetMediaTypeHandler(&handler));
-            RETURN_IF_FAILED(handler->SetCurrentMediaType(mediaTypes[0].Get()));
-            currentMediaType_ = mediaTypes[0];
+            RETURN_IF_FAILED(handler->SetCurrentMediaType(nv12MediaType.Get()));
+            currentMediaType_ = nv12MediaType;
 
             streamState_ = MF_STREAM_STATE_STOPPED;
             isSelected_ = false;
@@ -870,6 +1272,7 @@ namespace morphly::virtualcam
             currentMediaType_ = mediaType;
             streamState_ = MF_STREAM_STATE_RUNNING;
             isSelected_ = true;
+            sampleFrameIndex_ = 0;
 
             if (sendEvents)
             {
@@ -1027,6 +1430,7 @@ namespace morphly::virtualcam
 
         IFACEMETHODIMP MorphlyMediaStream::RequestSample(IUnknown* token)
         {
+            AppendMfVirtualCameraLogLine(L"[Stream::RequestSample] called.");
             ComPtr<IMFMediaEventQueue> eventQueue;
             ComPtr<IMFMediaType> mediaType;
 
@@ -1106,8 +1510,21 @@ namespace morphly::virtualcam
             uint32_t fpsDen = currentConfig.fpsDenominator;
 
             RETURN_IF_FAILED(mediaType->GetGUID(MF_MT_SUBTYPE, &subtype));
-            RETURN_IF_FAILED(MFGetAttributeSize(mediaType, MF_MT_FRAME_SIZE, &width, &height));
-            RETURN_IF_FAILED(MFGetAttributeRatio(mediaType, MF_MT_FRAME_RATE, &fpsNum, &fpsDen));
+            if (FAILED(MFGetAttributeSize(mediaType, MF_MT_FRAME_SIZE, &width, &height)))
+            {
+                width = currentConfig.width;
+                height = currentConfig.height;
+            }
+            if (FAILED(MFGetAttributeRatio(mediaType, MF_MT_FRAME_RATE, &fpsNum, &fpsDen)))
+            {
+                fpsNum = currentConfig.fpsNumerator;
+                fpsDen = currentConfig.fpsDenominator;
+            }
+            if (fpsNum == 0 || fpsDen == 0)
+            {
+                fpsNum = kDefaultFpsNumerator;
+                fpsDen = kDefaultFpsDenominator;
+            }
 
             currentConfig.width = width;
             currentConfig.height = height;
@@ -1127,6 +1544,37 @@ namespace morphly::virtualcam
                 && sharedConfig.width == width
                 && sharedConfig.height == height
                 && sharedConfig.stride >= (width * 4);
+
+            if ((sampleFrameIndex_ % 90) == 0 || FAILED(readHr) || !hasFreshBridgeFrame)
+            {
+                const wchar_t* subtypeName = L"OTHER";
+                if (subtype == MFVideoFormat_YUY2)
+                {
+                    subtypeName = L"YUY2";
+                }
+                else if (subtype == MFVideoFormat_NV12)
+                {
+                    subtypeName = L"NV12";
+                }
+
+                wchar_t logLine[640]{};
+                if (SUCCEEDED(StringCchPrintfW(
+                        logLine,
+                        ARRAYSIZE(logLine),
+                        L"CreateNextSample hr=0x%08X fresh=%u frameCounter=%llu sampleIndex=%llu subtype=%s shared=%ux%u stride=%u bgraBytes=%zu",
+                        static_cast<unsigned int>(readHr),
+                        hasFreshBridgeFrame ? 1u : 0u,
+                        static_cast<unsigned long long>(frameCounter),
+                        static_cast<unsigned long long>(sampleFrameIndex_),
+                        subtypeName,
+                        sharedConfig.width,
+                        sharedConfig.height,
+                        sharedConfig.stride,
+                        bgra.size())))
+                {
+                    AppendMfVirtualCameraLogLine(logLine);
+                }
+            }
 
             if (hasFreshBridgeFrame)
             {
@@ -1155,14 +1603,22 @@ namespace morphly::virtualcam
                 }
             }
 
-            if (subtype != MFVideoFormat_YUY2)
+            if (subtype != MFVideoFormat_YUY2 && subtype != MFVideoFormat_NV12)
             {
                 return MF_E_INVALIDMEDIATYPE;
             }
 
             std::vector<uint8_t> outputBytes;
-            ConvertBgraToYuy2(currentConfig, bgra.data(), &outputBytes);
-            ApplyYuy2Heartbeat(outputBytes.data(), outputBytes.size(), sampleFrameIndex_);
+            if (subtype == MFVideoFormat_NV12)
+            {
+                ConvertBgraToNv12(currentConfig, bgra.data(), &outputBytes);
+                ApplyNv12Heartbeat(outputBytes.data(), outputBytes.size(), width, height, sampleFrameIndex_);
+            }
+            else
+            {
+                ConvertBgraToYuy2(currentConfig, bgra.data(), &outputBytes);
+                ApplyYuy2Heartbeat(outputBytes.data(), outputBytes.size(), sampleFrameIndex_);
+            }
 
             RETURN_IF_FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(outputBytes.size()), &buffer));
 
@@ -1177,10 +1633,21 @@ namespace morphly::virtualcam
             RETURN_IF_FAILED(value->AddBuffer(buffer.Get()));
 
             const LONGLONG duration = (kHundredsOfNsPerSecond * fpsDen) / fpsNum;
-            const LONGLONG sampleTime = static_cast<LONGLONG>(sampleFrameIndex_) * duration;
             ++sampleFrameIndex_;
-            RETURN_IF_FAILED(value->SetSampleTime(sampleTime));
+            // Use real device time for sample time so the FrameServer clock matches.
+            // For a live source the presentation clock runs at wall time; counter-based
+            // timestamps (starting from 0) are far in the past and may be dropped.
+            const LONGLONG deviceTime = static_cast<LONGLONG>(MFGetSystemTime());
+            RETURN_IF_FAILED(value->SetSampleTime(deviceTime));
             RETURN_IF_FAILED(value->SetSampleDuration(duration));
+
+            // Required by the Windows Camera FrameServer to forward samples.
+            RETURN_IF_FAILED(value->SetUINT64(MFSampleExtension_DeviceTimestamp,
+                static_cast<UINT64>(deviceTime)));
+
+            // Every raw NV12/YUY2 frame is a clean point (no inter-frame compression).
+            // Without this flag the FrameServer pipeline stalls waiting for a keyframe.
+            RETURN_IF_FAILED(value->SetUINT32(MFSampleExtension_CleanPoint, TRUE));
 
             *sample = value.Detach();
             return S_OK;
@@ -1233,6 +1700,7 @@ namespace morphly::virtualcam
             }
 
             RETURN_IF_FAILED(sourceAttributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID));
+            RETURN_IF_FAILED(sourceAttributes_->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_CATEGORY, KSCATEGORY_VIDEO_CAMERA));
             RETURN_IF_FAILED(sourceAttributes_->SetString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, kVirtualCameraFriendlyName));
 
             ComPtr<IMFSensorProfileCollection> profileCollection;
@@ -1580,6 +2048,7 @@ namespace morphly::virtualcam
 
         IFACEMETHODIMP MorphlyMediaSource::Start(IMFPresentationDescriptor* presentationDescriptor, const GUID* timeFormat, const PROPVARIANT* startPosition)
         {
+            AppendMfVirtualCameraLogLine(L"[Source::Start] called.");
             if (presentationDescriptor == nullptr || startPosition == nullptr)
             {
                 return E_INVALIDARG;
@@ -1589,11 +2058,6 @@ namespace morphly::virtualcam
             if (state_ == SourceState::Shutdown)
             {
                 return MF_E_SHUTDOWN;
-            }
-
-            if (state_ == SourceState::Started)
-            {
-                return MF_E_INVALID_STATE_TRANSITION;
             }
 
             if (timeFormat != nullptr && *timeFormat != GUID_NULL)
@@ -1606,6 +2070,9 @@ namespace morphly::virtualcam
                 return MF_E_INVALIDREQUEST;
             }
 
+            const bool isSeek = state_ == SourceState::Started && startPosition->vt != VT_EMPTY;
+            const MediaEventType sourceEventType = isSeek ? MESourceSeeked : MESourceStarted;
+            const MediaEventType streamEventType = isSeek ? MEStreamSeeked : MEStreamStarted;
             BOOL selected = FALSE;
             ComPtr<IMFStreamDescriptor> requestedStream;
             RETURN_IF_FAILED(presentationDescriptor->GetStreamDescriptorByIndex(0, &selected, &requestedStream));
@@ -1618,7 +2085,7 @@ namespace morphly::virtualcam
                 RETURN_IF_FAILED(mediaTypeHandler->GetCurrentMediaType(&mediaType));
 
                 const bool wasSelected = stream_->IsSelected();
-                RETURN_IF_FAILED(stream_->Start(mediaType.Get(), true));
+                RETURN_IF_FAILED(stream_->Start(mediaType.Get(), false));
                 RETURN_IF_FAILED(presentationDescriptor_->SelectStream(0));
                 RETURN_IF_FAILED(eventQueue_->QueueEventParamUnk(wasSelected ? MEUpdatedStream : MENewStream, GUID_NULL, S_OK, stream_.Get()));
             }
@@ -1629,7 +2096,33 @@ namespace morphly::virtualcam
             }
 
             state_ = SourceState::Started;
-            RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(MESourceStarted, GUID_NULL, S_OK, nullptr));
+
+            // When starting (not seeking) and the requested position is VT_EMPTY,
+            // the spec requires MF_EVENT_SOURCE_ACTUAL_START to be set on the event.
+            if (sourceEventType == MESourceStarted &&
+                (startPosition == nullptr || startPosition->vt == VT_EMPTY))
+            {
+                PROPVARIANT zeroStart{};
+                PropVariantInit(&zeroStart);
+                zeroStart.vt = VT_I8;
+                zeroStart.hVal.QuadPart = 0;
+                ComPtr<IMFMediaEvent> startEvent;
+                RETURN_IF_FAILED(MFCreateMediaEvent(MESourceStarted, GUID_NULL, S_OK,
+                    &zeroStart, &startEvent));
+                RETURN_IF_FAILED(startEvent->SetUINT64(MF_EVENT_SOURCE_ACTUAL_START, 0));
+                RETURN_IF_FAILED(eventQueue_->QueueEvent(startEvent.Get()));
+            }
+            else
+            {
+                RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(sourceEventType, GUID_NULL,
+                    S_OK, startPosition));
+            }
+
+            if (selected)
+            {
+                RETURN_IF_FAILED(stream_->QueueEvent(streamEventType, GUID_NULL, S_OK, startPosition));
+            }
+
             return S_OK;
         }
 

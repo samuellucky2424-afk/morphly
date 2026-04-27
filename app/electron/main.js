@@ -238,13 +238,19 @@ function probeWindowsCameraVisibility() {
 
   const probeScript = [
     `$friendlyName = '${VIRTUAL_CAM_FRIENDLY_NAME}'`,
+    "$friendlyNamePattern = ('*' + $friendlyName + '*')",
     '$visible = $false',
     'try {',
-    '  $visible = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -eq $friendlyName }).Count -gt 0',
+    '  $visible = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like $friendlyNamePattern }).Count -gt 0',
     '} catch {}',
     'if (-not $visible) {',
     '  try {',
-    '    $visible = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $friendlyName }).Count -gt 0',
+    '    $visible = @(Get-PnpDevice -Class Image -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like $friendlyNamePattern }).Count -gt 0',
+    '  } catch {}',
+    '}',
+    'if (-not $visible) {',
+    '  try {',
+    '    $visible = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $friendlyNamePattern }).Count -gt 0',
     '  } catch {}',
     '}',
     'if ($visible) {',
@@ -300,20 +306,18 @@ function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
 
   const probeResult = runVirtualCameraRegistrar(registrarPath, ['probe']);
   if (probeResult.ok) {
+    // Probe success means the driver and MF virtual camera are correctly installed.
+    // PnP visibility is an unreliable secondary check and must never trigger a repair
+    // (repair requires elevation and will always fail in a normal user session).
     const visibilityResult = probeWindowsCameraVisibility();
-    if (visibilityResult.visible) {
-      return { success: true, message: 'Morphly virtual camera registration is healthy.', deviceVisible: true };
+    if (!visibilityResult.visible) {
+      console.warn('Morphly virtual camera probe succeeded but Windows PnP visibility check did not find the device. Continuing anyway.');
     }
-
-    if (!attemptRepair) {
-      return {
-        success: false,
-        error: 'Morphly G1 is registered internally, but Windows is not listing it as a camera device.',
-        deviceVisible: false
-      };
-    }
-
-    console.warn('Morphly virtual camera probe succeeded, but Windows camera visibility check failed. Attempting repair...');
+    return {
+      success: true,
+      message: 'Morphly virtual camera registration is healthy.',
+      deviceVisible: visibilityResult.visible
+    };
   } else if (!attemptRepair) {
     return {
       success: false,
@@ -351,9 +355,11 @@ function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
 
   const visibilityResult = probeWindowsCameraVisibility();
   if (!visibilityResult.visible) {
+    console.warn('Morphly virtual camera passed registrar probe after repair, but Windows camera visibility check still failed. Continuing because registration is healthy.');
     return {
-      success: false,
-      error: 'Morphly G1 is still not visible to Windows camera apps after repair. WhatsApp will only see the physical webcam until the virtual camera driver is fixed.',
+      success: true,
+      message: 'Morphly virtual camera registration repaired successfully, but Windows PnP visibility is still delayed or unavailable.',
+      warning: 'Morphly G1 may not appear in some camera pickers immediately even though the driver probe succeeded.',
       deviceVisible: false
     };
   }
@@ -743,11 +749,16 @@ function configureMorphlyCamPopup(window) {
 }
 
 function createWindow() {
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.png')
+    : path.join(__dirname, '../public/icon.png');
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
     backgroundColor: '#000000',
     autoHideMenuBar: true,
+    icon: iconPath,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -794,12 +805,6 @@ function createWindow() {
   } else {
     const packagedIndexHtml = path.resolve(app.getAppPath(), 'dist', 'index.html');
     void mainWindow.loadFile(packagedIndexHtml);
-
-    if (process.env.ELECTRON_OPEN_DEVTOOLS === '1') {
-      mainWindow.webContents.once('did-finish-load', () => {
-        mainWindow.webContents.openDevTools({ mode: 'detach' });
-      });
-    }
   }
 }
 

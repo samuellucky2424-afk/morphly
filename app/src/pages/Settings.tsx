@@ -437,6 +437,42 @@ function Settings() {
 
         <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
+            <CardTitle className="text-lg font-semibold text-white tracking-tight">Contact &amp; Support</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">Reach out for help or feedback</CardDescription>
+          </CardHeader>
+          <CardContent className="p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium text-white">Email Support</Label>
+                <p className="text-xs text-[#71717a]">samuellucky2424@gmail.com</p>
+              </div>
+              <Button
+                onClick={() => { window.open('mailto:samuellucky2424@gmail.com', '_blank'); }}
+                variant="outline"
+                className="border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]"
+              >
+                Send Email
+              </Button>
+            </div>
+            <Separator className="bg-[#27272a]" />
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium text-white">WhatsApp</Label>
+                <p className="text-xs text-[#71717a]">+234 703 819 5038</p>
+              </div>
+              <Button
+                onClick={() => { window.open('https://wa.me/2347038195038', '_blank'); }}
+                variant="outline"
+                className="border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]"
+              >
+                Open WhatsApp
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
+          <CardHeader className="border-b border-[#1f1f23]">
             <CardTitle className="text-lg font-semibold text-white tracking-tight">Danger Zone</CardTitle>
             <CardDescription className="text-xs text-[#71717a]">Irreversible actions</CardDescription>
           </CardHeader>

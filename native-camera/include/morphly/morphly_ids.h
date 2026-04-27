@@ -13,4 +13,6 @@ namespace morphly
     extern const wchar_t* const kGlobalPublisherMappingName;
     extern const wchar_t* const kGlobalPublisherMutexName;
     extern const wchar_t* const kGlobalPublisherEventName;
+    extern const wchar_t* const kMfPublisherBridgeDirectoryPath;
+    extern const wchar_t* const kMfPublisherBridgeFilePath;
 }

@@ -15,4 +15,6 @@ namespace morphly
     const wchar_t* const kGlobalPublisherMappingName = L"Global\\MorphlyCam.FrameBuffer";
     const wchar_t* const kGlobalPublisherMutexName = L"Global\\MorphlyCam.FrameMutex";
     const wchar_t* const kGlobalPublisherEventName = L"Global\\MorphlyCam.FrameEvent";
+    const wchar_t* const kMfPublisherBridgeDirectoryPath = L"C:\\Users\\Public\\Documents\\MorphlyG1";
+    const wchar_t* const kMfPublisherBridgeFilePath = L"C:\\Users\\Public\\Documents\\MorphlyG1\\mf-bridge.bin";
 }

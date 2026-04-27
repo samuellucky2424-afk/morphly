@@ -305,7 +305,19 @@ namespace
             error);
         if (error)
         {
-            return HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
+            const HRESULT copyResult = HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
+            if (copyResult == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) && std::filesystem::exists(targetPath))
+            {
+                LogInfo(
+                    std::wstring(L"Staged binary is already in use; reusing existing copy for ") +
+                    fileName +
+                    L" because " +
+                    FormatHResult(copyResult));
+                *stagedPath = targetPath;
+                return S_OK;
+            }
+
+            return copyResult;
         }
 
         *stagedPath = targetPath;
