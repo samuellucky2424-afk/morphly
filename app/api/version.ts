@@ -34,7 +34,15 @@ async function fetchLatestVersion() {
     throw new Error('GitHub API returned an empty tag_name');
   }
 
-  return { version, releaseNotes: data.body || null };
+  // Build a set of uploaded asset names from the API response — much more
+  // reliable than a HEAD request which can follow redirects to HTML pages.
+  const uploadedAssets = new Set(
+    Array.isArray(data.assets)
+      ? data.assets.map((a) => a.name)
+      : [],
+  );
+
+  return { version, releaseNotes: data.body || null, uploadedAssets };
 }
 
 function normalizePackageType(value) {
@@ -96,13 +104,21 @@ export default async function handler(req, res) {
 
   try {
     const packageType = getBuildType(req);
-    const { version, releaseNotes } = await fetchLatestVersion();
+    const { version, releaseNotes, uploadedAssets } = await fetchLatestVersion();
     const manifest = createVersionManifest({
       version,
       packageType,
       releaseNotes,
       checksum: null,
     });
+
+    // Use the GitHub API asset list to check existence — more reliable than
+    // a HEAD request which can follow redirects to HTML pages and return 200.
+    const assetName = buildAssetName(version, packageType);
+    if (!uploadedAssets.has(assetName)) {
+      manifest.downloadUrl = manifest.releasePageUrl;
+      manifest.assetName = null;
+    }
 
     return res.status(200).json(manifest);
   } catch (error) {

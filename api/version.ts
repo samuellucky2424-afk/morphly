@@ -34,7 +34,15 @@ async function fetchLatestVersion() {
     throw new Error('GitHub API returned an empty tag_name');
   }
 
-  return { version, releaseNotes: data.body || null };
+  // Build a set of uploaded asset names from the API response — much more
+  // reliable than a HEAD request which can follow redirects to HTML pages.
+  const uploadedAssets: Set<string> = new Set(
+    Array.isArray(data.assets)
+      ? data.assets.map((a: { name: string }) => a.name)
+      : [],
+  );
+
+  return { version, releaseNotes: data.body || null, uploadedAssets };
 }
 
 function normalizePackageType(value) {
@@ -80,19 +88,6 @@ function getBuildType(req) {
   return normalizePackageType(candidate);
 }
 
-async function assetExists(url: string): Promise<boolean> {
-  try {
-    const resp = await fetch(url, {
-      method: 'HEAD',
-      redirect: 'follow',
-      headers: { 'User-Agent': 'morphly-updater' },
-    });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -109,7 +104,7 @@ export default async function handler(req, res) {
 
   try {
     const packageType = getBuildType(req);
-    const { version, releaseNotes } = await fetchLatestVersion();
+    const { version, releaseNotes, uploadedAssets } = await fetchLatestVersion();
     const manifest = createVersionManifest({
       version,
       packageType,
@@ -117,10 +112,10 @@ export default async function handler(req, res) {
       checksum: null,
     });
 
-    // Verify the release asset actually exists before advertising it.
-    // If it hasn't been uploaded yet, point users to the releases page instead.
-    const exists = await assetExists(manifest.downloadUrl);
-    if (!exists) {
+    // Use the GitHub API asset list to check existence — more reliable than
+    // a HEAD request which can follow redirects to HTML pages and return 200.
+    const assetName = buildAssetName(version, packageType);
+    if (!uploadedAssets.has(assetName)) {
       manifest.downloadUrl = manifest.releasePageUrl;
       manifest.assetName = null;
     }
