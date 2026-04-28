@@ -36,11 +36,59 @@ jobs:
       working-directory: app
       run: npm ci
 
+    - name: Prepare release env
+      working-directory: app
+      shell: pwsh
+      env:
+        VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+        VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        VITE_API_URL: ${{ vars.VITE_API_URL }}
+        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY }}
+        FLUTTERWAVE_SECRET_KEY: ${{ secrets.FLUTTERWAVE_SECRET_KEY }}
+        FLUTTERWAVE_WEBHOOK_SECRET_HASH: ${{ secrets.FLUTTERWAVE_WEBHOOK_SECRET_HASH }}
+        SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        DECART_API_KEY: ${{ secrets.DECART_API_KEY }}
+      run: |
+        $required = @{
+          VITE_SUPABASE_URL = $env:VITE_SUPABASE_URL
+          VITE_SUPABASE_ANON_KEY = $env:VITE_SUPABASE_ANON_KEY
+          VITE_FLUTTERWAVE_PUBLIC_KEY = $env:VITE_FLUTTERWAVE_PUBLIC_KEY
+          FLUTTERWAVE_SECRET_KEY = $env:FLUTTERWAVE_SECRET_KEY
+          SUPABASE_URL = $env:SUPABASE_URL
+          SUPABASE_SERVICE_KEY = $env:SUPABASE_SERVICE_KEY
+        }
+
+        $missing = $required.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) } | ForEach-Object { $_.Key }
+        if ($missing.Count -gt 0) {
+          throw "Missing release environment values: $($missing -join ', ')"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($env:VITE_API_URL)) {
+          $env:VITE_API_URL = "/api"
+        }
+
+        @(
+          "VITE_SUPABASE_URL=$env:VITE_SUPABASE_URL"
+          "VITE_SUPABASE_ANON_KEY=$env:VITE_SUPABASE_ANON_KEY"
+          "SUPABASE_URL=$env:SUPABASE_URL"
+          "SUPABASE_SERVICE_KEY=$env:SUPABASE_SERVICE_KEY"
+          "VITE_API_URL=$env:VITE_API_URL"
+          "VITE_FLUTTERWAVE_PUBLIC_KEY=$env:VITE_FLUTTERWAVE_PUBLIC_KEY"
+          "FLUTTERWAVE_SECRET_KEY=$env:FLUTTERWAVE_SECRET_KEY"
+          "FLUTTERWAVE_WEBHOOK_SECRET_HASH=$env:FLUTTERWAVE_WEBHOOK_SECRET_HASH"
+          "DECART_API_KEY=$env:DECART_API_KEY"
+        ) | Set-Content -Path .env -Encoding ascii
+
     - name: Build Electron app
       working-directory: app
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         MORPHLY_NATIVE_BUILD_DIR: ../native-camera/build
+        VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+        VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        VITE_API_URL: ${{ vars.VITE_API_URL }}
+        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY }}
       run: npm run electron:release
 
     - name: Resolve release version
