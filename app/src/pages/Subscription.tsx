@@ -42,7 +42,6 @@ function loadFlutterwaveScript(): Promise<void> {
 }
 
 const CREDIT_PLANS = [
-  { credits: 2, priceNGN: 100 },
   { credits: 500, priceNGN: 11500 },
   { credits: 1000, priceNGN: 23000 },
   { credits: 2000, priceNGN: 46000 },
