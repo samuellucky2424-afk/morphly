@@ -116,17 +116,14 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Substitute the character in the video with the person in the reference image while keeping the result indistinguishable from a real live webcam recording.
-Maintain true human anatomy, realistic skin texture, natural lighting, accurate facial proportions, and normal camera softness.
-Never produce a cartoon, anime, illustration, painting, CGI, 3D render, doll, waxy skin, plastic skin, or beautified filter look.
-Preserve the live camera framing, body position, shoulder alignment, arm position, clothing silhouette, and background exactly as seen.
-Ensure accurate lip sync and natural facial expressions that match the live camera input.
-Preserve the exact wrist, hand, finger, and gesture pose from the live camera at every moment.
-Only show hands, arms, fingers, or limbs that are clearly visible in the live camera frame.
-If a hand is partially visible, occluded, lowered, or outside the frame, keep it hidden or cropped the same way.
-Do not invent a hand, add extra fingers, change the gesture, or bring any hand back into frame when it is not clearly visible.
-Keep the output stable, grounded, and as close to a real human camera feed as possible.`;
-const DEFAULT_ENHANCE = true;
+const BASE_PROMPT = `Virtually try on the garment from the reference image on the person in the video.
+Keep the person's face, hair, skin tone, pose, and background exactly as seen in the live camera feed.
+The output should be photorealistic and indistinguishable from a real camera recording.
+Preserve natural lighting, realistic fabric texture, and accurate garment fit on the body.
+Do not alter the person's face, body proportions, hair, or background in any way.
+Maintain true human anatomy and normal camera softness at all times.
+Never produce a cartoon, anime, illustration, painting, CGI, 3D render, or beautified filter look.`;
+const DEFAULT_ENHANCE = false;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
@@ -137,7 +134,7 @@ const INITIAL_PROMPT_INJECTION_DELAY_MS = 500;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
-const DECART_REALTIME_MODEL = 'lucy-2.1';
+const DECART_REALTIME_MODEL = 'lucy-vton-latest';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
 const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;

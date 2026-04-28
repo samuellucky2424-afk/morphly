@@ -750,8 +750,8 @@ function configureMorphlyCamPopup(window) {
 
 function createWindow() {
   const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'icon.png')
-    : path.join(__dirname, '../public/icon.png');
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(__dirname, '../build/icon.ico');
 
   mainWindow = new BrowserWindow({
     width: 1280,
