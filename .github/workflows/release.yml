@@ -43,8 +43,8 @@ jobs:
         VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
         VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
         VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
-        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY || vars.VITE_FLUTTERWAVE_PUBLIC_KEY || secrets.FLUTTERWAVE_PUBLIC_KEY || vars.FLUTTERWAVE_PUBLIC_KEY }}
-        FLUTTERWAVE_SECRET_KEY: ${{ secrets.FLUTTERWAVE_SECRET_KEY || vars.FLUTTERWAVE_SECRET_KEY }}
+        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY || vars.VITE_FLUTTERWAVE_PUBLIC_KEY || secrets.VITE_FLW_PUBLIC_KEY || vars.VITE_FLW_PUBLIC_KEY || secrets.FLUTTERWAVE_PUBLIC_KEY || vars.FLUTTERWAVE_PUBLIC_KEY || secrets.FLW_PUBLIC_KEY || vars.FLW_PUBLIC_KEY }}
+        FLUTTERWAVE_SECRET_KEY: ${{ secrets.FLUTTERWAVE_SECRET_KEY || vars.FLUTTERWAVE_SECRET_KEY || secrets.FLW_SECRET_KEY || vars.FLW_SECRET_KEY }}
         FLUTTERWAVE_WEBHOOK_SECRET_HASH: ${{ secrets.FLUTTERWAVE_WEBHOOK_SECRET_HASH || vars.FLUTTERWAVE_WEBHOOK_SECRET_HASH || secrets.FLW_SECRET_HASH || vars.FLW_SECRET_HASH }}
         SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL || vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL }}
         SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY || secrets.SUPABASE_SERVICE_ROLE_KEY || vars.SUPABASE_SERVICE_KEY || vars.SUPABASE_SERVICE_ROLE_KEY }}
@@ -57,7 +57,7 @@ jobs:
 
         $missing = $required.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) } | ForEach-Object { $_.Key }
         if ($missing.Count -gt 0) {
-          throw "Missing release environment values: $($missing -join ', ')"
+          throw "Missing release environment values: $($missing -join ', '). Configure repo/org Secrets or Variables for one of these aliases: VITE_FLUTTERWAVE_PUBLIC_KEY|VITE_FLW_PUBLIC_KEY|FLUTTERWAVE_PUBLIC_KEY|FLW_PUBLIC_KEY and FLUTTERWAVE_SECRET_KEY|FLW_SECRET_KEY."
         }
 
         $optional = @{
@@ -98,7 +98,7 @@ jobs:
         VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
         VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
         VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
-        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY || vars.VITE_FLUTTERWAVE_PUBLIC_KEY || secrets.FLUTTERWAVE_PUBLIC_KEY || vars.FLUTTERWAVE_PUBLIC_KEY }}
+        VITE_FLUTTERWAVE_PUBLIC_KEY: ${{ secrets.VITE_FLUTTERWAVE_PUBLIC_KEY || vars.VITE_FLUTTERWAVE_PUBLIC_KEY || secrets.VITE_FLW_PUBLIC_KEY || vars.VITE_FLW_PUBLIC_KEY || secrets.FLUTTERWAVE_PUBLIC_KEY || vars.FLUTTERWAVE_PUBLIC_KEY || secrets.FLW_PUBLIC_KEY || vars.FLW_PUBLIC_KEY }}
       run: npm run electron:release
 
     - name: Resolve release version
