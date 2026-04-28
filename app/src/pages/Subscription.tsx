@@ -17,6 +17,26 @@ declare global {
 
 const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
 
+function resolveFlutterwavePublicKey(): string {
+  const candidateKeys = [
+    import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY,
+    import.meta.env.VITE_FLW_PUBLIC_KEY,
+    import.meta.env.FLUTTERWAVE_PUBLIC_KEY,
+  ];
+
+  for (const key of candidateKeys) {
+    if (typeof key === 'string' && key.trim().length > 0) {
+      return key.trim();
+    }
+  }
+
+  return '';
+}
+
+function isValidFlutterwavePublicKey(key: string): boolean {
+  return /^FLWPUBK(?:_TEST)?-[A-Za-z0-9_-]+-X$/.test(key);
+}
+
 function loadFlutterwaveScript(): Promise<void> {
   if (window.FlutterwaveCheckout) {
     return Promise.resolve();
@@ -71,6 +91,8 @@ function Subscription() {
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
   const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
+  const flutterwavePublicKey = resolveFlutterwavePublicKey();
+  const hasValidFlutterwavePublicKey = isValidFlutterwavePublicKey(flutterwavePublicKey);
   const paymentCompletedRef = useRef(false);
 
   useEffect(() => {
@@ -140,7 +162,12 @@ function Subscription() {
       }
     }
 
-    const flutterwavePublicKey = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY || 'FLWPUBK_TEST-mock_public_key-X';
+    if (!hasValidFlutterwavePublicKey) {
+      toast.error('Payment is unavailable. Flutterwave public key is missing or invalid.');
+      setIsProcessing(false);
+      return;
+    }
+
     const txRef = `morphly_${user.id}_${Date.now()}`;
     const amountNGN = selectedPlan.priceNGN;
     const priceUSD = Number((selectedPlan.priceNGN / ngnRate).toFixed(2));
@@ -333,6 +360,11 @@ function Subscription() {
               Showing fallback pricing. Configure `EXCHANGE_RATE_API_KEY` in the active API environment for live USD to NGN rates.
             </p>
           )}
+          {!hasValidFlutterwavePublicKey && (
+            <p className="text-xs text-red-400 mt-2">
+              Payments are temporarily unavailable due to invalid Flutterwave configuration.
+            </p>
+          )}
           {!isFallbackRate && rateUpdatedAt && (
             <p className="text-xs text-[#52525b] mt-2">
               Last updated: {new Date(rateUpdatedAt).toLocaleString()}
@@ -361,7 +393,7 @@ function Subscription() {
             </div>
             <Button
               onClick={handleProceedToPayment}
-              disabled={isProcessing || !isFlutterwaveReady}
+              disabled={isProcessing || !isFlutterwaveReady || !hasValidFlutterwavePublicKey}
               className="h-12 px-8 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg shadow-blue-500/30 hover:scale-105 transition-all"
             >
               {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : 'Pay Now'}
