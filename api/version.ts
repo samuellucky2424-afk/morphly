@@ -36,9 +36,9 @@ async function fetchLatestVersion() {
 
   // Build a set of uploaded asset names from the API response — much more
   // reliable than a HEAD request which can follow redirects to HTML pages.
-  const uploadedAssets: Set<string> = new Set(
+  const uploadedAssets = new Set(
     Array.isArray(data.assets)
-      ? data.assets.map((a: { name: string }) => a.name)
+      ? data.assets.map((a) => a.name)
       : [],
   );
 
@@ -119,6 +119,8 @@ export default async function handler(req, res) {
       manifest.downloadUrl = manifest.releasePageUrl;
       manifest.assetName = null;
     }
+
+    manifest._debug = { assetName, uploadedAssets: [...uploadedAssets] };
 
     return res.status(200).json(manifest);
   } catch (error) {
