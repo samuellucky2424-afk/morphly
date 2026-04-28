@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Coins, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
@@ -11,32 +11,32 @@ import { CREDITS_PER_SECOND } from '@/lib/billing';
 
 declare global {
   interface Window {
-    PaystackPop?: any;
+    FlutterwaveCheckout?: (options: any) => void;
   }
 }
 
-const PAYSTACK_SCRIPT_ID = 'paystack-inline-js';
+const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
 
-function loadPaystackScript(): Promise<void> {
-  if (window.PaystackPop) {
+function loadFlutterwaveScript(): Promise<void> {
+  if (window.FlutterwaveCheckout) {
     return Promise.resolve();
   }
 
-  const existingScript = document.getElementById(PAYSTACK_SCRIPT_ID) as HTMLScriptElement | null;
+  const existingScript = document.getElementById(FLUTTERWAVE_SCRIPT_ID) as HTMLScriptElement | null;
   if (existingScript) {
     return new Promise((resolve, reject) => {
       existingScript.addEventListener('load', () => resolve(), { once: true });
-      existingScript.addEventListener('error', () => reject(new Error('Failed to load Paystack SDK')), { once: true });
+      existingScript.addEventListener('error', () => reject(new Error('Failed to load Flutterwave SDK')), { once: true });
     });
   }
 
   return new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.id = PAYSTACK_SCRIPT_ID;
-    script.src = 'https://js.paystack.co/v1/inline.js';
+    script.id = FLUTTERWAVE_SCRIPT_ID;
+    script.src = 'https://checkout.flutterwave.com/v3.js';
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load Paystack SDK'));
+    script.onerror = () => reject(new Error('Failed to load Flutterwave SDK'));
     document.body.appendChild(script);
   });
 }
@@ -70,16 +70,17 @@ function Subscription() {
   const [isLoadingRate, setIsLoadingRate] = useState(true);
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
-  const [isPaystackReady, setIsPaystackReady] = useState(false);
+  const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
+  const paymentCompletedRef = useRef(false);
 
   useEffect(() => {
-    void loadPaystackScript()
+    void loadFlutterwaveScript()
       .then(() => {
-        setIsPaystackReady(true);
+        setIsFlutterwaveReady(true);
       })
       .catch((error) => {
         console.error(error);
-        setIsPaystackReady(false);
+        setIsFlutterwaveReady(false);
       });
   }, []);
 
@@ -123,10 +124,15 @@ function Subscription() {
       return;
     }
 
-    if (!window.PaystackPop) {
+    if (!user.email) {
+      toast.error('Your account is missing an email address.');
+      return;
+    }
+
+    if (!window.FlutterwaveCheckout) {
       try {
-        await loadPaystackScript();
-        setIsPaystackReady(true);
+        await loadFlutterwaveScript();
+        setIsFlutterwaveReady(true);
       } catch (error) {
         console.error(error);
         toast.error('Payment gateway not loaded. Check your network and try again.');
@@ -134,29 +140,53 @@ function Subscription() {
       }
     }
 
-    const paystackPublicKey = import.meta.env.VITE_PAYSTACK_PUBLIC_KEY || 'pk_test_mock_public';
-    const amountNGN = Math.round(selectedPlan.priceNGN * 100); // Convert to kobo
+    const flutterwavePublicKey = import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY || 'FLWPUBK_TEST-mock_public_key-X';
+    const txRef = `morphly_${user.id}_${Date.now()}`;
+    const amountNGN = selectedPlan.priceNGN;
+    const priceUSD = Number((selectedPlan.priceNGN / ngnRate).toFixed(2));
 
+    paymentCompletedRef.current = false;
     setIsProcessing(true);
 
     try {
-      const handler = window.PaystackPop.setup({
-        key: paystackPublicKey,
-        email: user.email,
+      window.FlutterwaveCheckout?.({
+        public_key: flutterwavePublicKey,
+        tx_ref: txRef,
         amount: amountNGN,
         currency: 'NGN',
-        ref: `ref_${Math.floor((Math.random() * 1000000000) + 1)}`,
+        payment_options: 'card,banktransfer,ussd',
+        customer: {
+          email: user.email,
+          name: user.name || user.email.split('@')[0] || 'Morphly User',
+        },
+        meta: {
+          userId: user.id,
+          credits: selectedPlan.credits,
+          priceUSD,
+        },
+        customizations: {
+          title: 'Morphly Credits',
+          description: `Purchase ${selectedPlan.credits} credits`,
+        },
         callback: function (response: any) {
+          if (!response?.transaction_id) {
+            setIsProcessing(false);
+            toast.error('Payment was not completed.');
+            return;
+          }
+
+          paymentCompletedRef.current = true;
+
           (async () => {
             try {
-              const priceUSD = selectedPlan.priceNGN / ngnRate; // Calculate USD from NGN
               const res = await apiFetch('/verify-payment', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                  reference: response.reference,
+                  reference: response.tx_ref || txRef,
+                  transactionId: response.transaction_id,
                   userId: user?.id,
                   credits: selectedPlan.credits,
                   priceUSD: priceUSD,
@@ -188,13 +218,13 @@ function Subscription() {
             }
           })();
         },
-        onClose: function () {
-          toast.info('Payment cancelled');
-          setIsProcessing(false);
+        onclose: function () {
+          if (!paymentCompletedRef.current) {
+            toast.info('Payment cancelled');
+            setIsProcessing(false);
+          }
         },
       });
-
-      handler.openIframe();
     } catch (error) {
       console.error(error);
       toast.error('Failed to initialize payment gateway');
@@ -286,7 +316,6 @@ function Subscription() {
             <li>- Credits never expire</li>
           </ul>
         </div>
-            disabled={!selectedPlan || isProcessing || !isPaystackReady}
         <div className="text-center">
           <p className="text-sm text-[#71717a] mb-4">All purchases are one-time. No subscriptions or hidden fees.</p>
           {hasLiveRate && (
@@ -296,7 +325,7 @@ function Subscription() {
           )}
           {isLoadingRate && (
             <p className="text-xs text-[#52525b]">
-                {isPaystackReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
+                {isFlutterwaveReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
             </p>
           )}
           {isFallbackRate && (
@@ -332,7 +361,7 @@ function Subscription() {
             </div>
             <Button
               onClick={handleProceedToPayment}
-              disabled={isProcessing}
+              disabled={isProcessing || !isFlutterwaveReady}
               className="h-12 px-8 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg shadow-blue-500/30 hover:scale-105 transition-all"
             >
               {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : 'Pay Now'}

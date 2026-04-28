@@ -37,7 +37,7 @@ The pricing is proportional across all tiers:
 ## How It Works
 
 1. **Frontend Display**: The Subscription page shows USD prices with live NGN conversion
-2. **Payment Processing**: Paystack processes payments in NGN
+2. **Payment Processing**: Flutterwave processes payments in NGN
 3. **Database Storage**: Plans are stored with both NGN and USD pricing
 4. **Exchange Rate**: Live rates are fetched from the API, with fallback to 1500 NGN/USD
 
