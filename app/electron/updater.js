@@ -13,8 +13,8 @@ function normalizePackageType(value) {
 function buildAssetName(version, packageType) {
   const safeVersion = typeof version === 'string' ? version.trim() : String(version ?? '').trim();
   return packageType === 'portable'
-    ? `Morphly ${safeVersion}.exe`
-    : `Morphly Setup ${safeVersion}.exe`;
+    ? `Morphly-${safeVersion}.exe`
+    : `Morphly-Setup-${safeVersion}.exe`;
 }
 
 const DEFAULT_MANIFEST_URL = process.env.MORPHLY_UPDATE_MANIFEST_URL
