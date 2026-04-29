@@ -37,13 +37,13 @@ app.disableHardwareAcceleration();
 
 function configureChromiumCachePaths() {
   try {
-    const sessionDataPath = path.join(app.getPath('userData'), 'session-data');
-    const diskCachePath = path.join(sessionDataPath, 'Cache');
-    const gpuCachePath = path.join(sessionDataPath, 'GPUCache');
+    const userDataPath = app.getPath('userData');
+    const diskCachePath = path.join(userDataPath, 'Cache');
+    const gpuCachePath = path.join(userDataPath, 'GPUCache');
 
+    fs.mkdirSync(diskCachePath, { recursive: true });
     fs.mkdirSync(gpuCachePath, { recursive: true });
 
-    app.setPath('sessionData', sessionDataPath);
     app.commandLine.appendSwitch('disk-cache-dir', diskCachePath);
     app.commandLine.appendSwitch('gpu-shader-disk-cache-dir', gpuCachePath);
   } catch (error) {
