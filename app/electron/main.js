@@ -680,6 +680,74 @@ function resolveRendererDevUrl() {
   return process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
 }
 
+function buildLoadFailureHtml(failedUrl, errorCode, errorDescription) {
+  const safeUrl = String(failedUrl ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const safeDescription = String(errorDescription ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Morphly Startup Error</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at top left, #151b2e, #05070d 60%);
+        color: #f2f4ff;
+        font-family: Segoe UI, Tahoma, sans-serif;
+      }
+      .card {
+        width: min(720px, 92vw);
+        border: 1px solid #2b3154;
+        background: rgba(10, 14, 26, 0.9);
+        border-radius: 14px;
+        padding: 24px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 24px;
+      }
+      p {
+        margin: 0 0 12px;
+        color: #c6cde8;
+      }
+      code {
+        color: #d7ddff;
+        background: #11162a;
+        border: 1px solid #2f3b64;
+        padding: 2px 6px;
+        border-radius: 6px;
+      }
+      ul {
+        margin: 10px 0 0;
+        padding-left: 20px;
+        color: #d9dff9;
+      }
+      li { margin: 6px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Morphly could not load the app UI</h1>
+      <p>Electron started, but the renderer URL was unavailable.</p>
+      <p>URL: <code>${safeUrl}</code></p>
+      <p>Error: <code>${errorCode} ${safeDescription}</code></p>
+      <ul>
+        <li>If this is development mode, start with <code>npm run electron:dev</code> in the app folder.</li>
+        <li>If another process uses port 5173 or 3000, stop it and retry.</li>
+        <li>Check terminal logs for Vite or API startup failures.</li>
+      </ul>
+    </div>
+  </body>
+</html>`;
+}
+
 function isMorphlyCamPopup(details) {
   return details.frameName === MORPHLY_CAM_WINDOW_NAME;
 }
@@ -787,6 +855,13 @@ function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`Failed to load ${validatedURL}: ${errorCode} ${errorDescription}`);
+
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+
+    const loadFailureHtml = buildLoadFailureHtml(validatedURL, errorCode, errorDescription);
+    void mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(loadFailureHtml)}`);
   });
 
   mainWindow.webContents.once('did-finish-load', () => {
