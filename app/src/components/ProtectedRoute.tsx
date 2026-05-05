@@ -36,8 +36,72 @@ export function ProtectedRoute({ children, redirectTo }: RouteGuardProps) {
   return <>{children}</>;
 }
 
+export function AdminRoute({ children, redirectTo }: RouteGuardProps) {
+  const { isAuthenticated, isAdmin, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
+          <p className="text-[#71717a] text-sm">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <Navigate
+        to={redirectTo || ROUTES.PUBLIC.LOGIN}
+        state={{ from: location }}
+        replace
+      />
+    );
+  }
+
+  if (!isAdmin) {
+    return <Navigate to={ROUTES.PROTECTED.DASHBOARD} replace />;
+  }
+
+  return <>{children}</>;
+}
+
+export function UserRoute({ children, redirectTo }: RouteGuardProps) {
+  const { isAuthenticated, isAdmin, loading, defaultRoute } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
+          <p className="text-[#71717a] text-sm">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <Navigate
+        to={redirectTo || ROUTES.PUBLIC.LOGIN}
+        state={{ from: location }}
+        replace
+      />
+    );
+  }
+
+  if (isAdmin) {
+    return <Navigate to={defaultRoute} replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export function PublicRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, loading, defaultRoute } = useAuth();
   
   if (loading) {
     return (
@@ -51,7 +115,7 @@ export function PublicRoute({ children }: { children: ReactNode }) {
   }
 
   if (isAuthenticated) {
-    return <Navigate to={ROUTES.DEFAULT} replace />;
+    return <Navigate to={defaultRoute} replace />;
   }
 
   return <>{children}</>;

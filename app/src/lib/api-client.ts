@@ -1,3 +1,5 @@
+import { supabase } from './supabase';
+
 const DEPLOYED_APP_ORIGIN = 'https://morphly-alpha.vercel.app';
 const LOCAL_API_BASE = '/api';
 
@@ -36,4 +38,18 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
   const normalizedPath = withLeadingSlash(path);
   const apiBase = getApiBase();
   return fetch(`${apiBase}${normalizedPath}`, init);
+}
+
+export async function apiFetchWithAuth(path: string, init?: RequestInit): Promise<Response> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = new Headers(init?.headers || {});
+
+  if (session?.access_token) {
+    headers.set('Authorization', `Bearer ${session.access_token}`);
+  }
+
+  return apiFetch(path, {
+    ...init,
+    headers,
+  });
 }

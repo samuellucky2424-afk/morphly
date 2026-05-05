@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { createClient } from '@supabase/supabase-js';
-import { logDbQueryEvent, logErrorEvent } from '../shared/backend-logger.js';
+import { logDbQueryEvent, logErrorEvent } from '../../shared/backend-logger.js';
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;

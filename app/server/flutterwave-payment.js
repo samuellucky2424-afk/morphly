@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase.js';
+import { supabaseAdmin } from './supabase-admin.js';
+import { logPaymentEvent } from '../../shared/backend-logger.js';
 
 export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
   const response = await fetch(`https://api.flutterwave.com/v3/transactions/${encodeURIComponent(String(transactionId))}/verify`, {
@@ -91,6 +92,12 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, credi
       .eq('user_id', userId)
       .single();
 
+    await logPaymentEvent('payment.duplicate_ignored', {
+      reference,
+      userId,
+      newCredits: walletData?.credits || 0,
+    });
+
     return {
       status: 'success',
       message: 'Payment already verified',
@@ -131,6 +138,15 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, credi
     credits: creditsToAdd,
     status: 'active',
     created_at: new Date()
+  });
+
+  await logPaymentEvent('payment.credits_applied', {
+    reference,
+    userId,
+    amountPaidNGN,
+    creditsAdded: creditsToAdd,
+    newCredits,
+    planName,
   });
 
   return {

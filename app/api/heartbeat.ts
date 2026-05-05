@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
 
 const HEARTBEAT_SECONDS = 30;
 const CREDITS_PER_SECOND = 2;

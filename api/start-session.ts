@@ -1,8 +1,8 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { logErrorEvent, logRequestEvent } from '../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
-const MAX_BILLABLE_SECONDS = 7200;
 
 function getDecartApiKey() {
   return process.env.DECART_API_KEY?.trim() || null;
@@ -13,14 +13,14 @@ function normalizeCredits(value) {
   return Number.isFinite(credits) ? credits : 0;
 }
 
-function getBillableSeconds(startTime) {
-  const timestamp = new Date(startTime).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return 0;
-  }
+function normalizeSecondsUsed(value) {
+  const seconds = Number(value ?? 0);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+}
 
-  const elapsedSeconds = Math.floor((Date.now() - timestamp) / 1000);
-  return Math.min(Math.max(elapsedSeconds, 0), MAX_BILLABLE_SECONDS);
+function normalizeRecordedCost(session) {
+  const cost = Number(session?.cost ?? 0);
+  return Number.isFinite(cost) && cost > 0 ? cost : 0;
 }
 
 export default async function handler(req, res) {
@@ -44,9 +44,15 @@ export default async function handler(req, res) {
     const { userId } = req.body;
     if (!userId) return res.status(400).json({ allowed: false, error: 'User ID is required' });
 
+    await logRequestEvent('start-session.request', {
+      method: req.method,
+      path: '/api/start-session',
+      userId,
+    });
+
     // Fetch orphaned sessions and wallet in parallel
     const [activeSessionsResult, walletResult] = await Promise.all([
-      supabaseAdmin.from('sessions').select('id, start_time').eq('user_id', userId).eq('status', 'active'),
+      supabaseAdmin.from('sessions').select('id, seconds_used, cost').eq('user_id', userId).eq('status', 'active'),
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
     ]);
 
@@ -63,40 +69,41 @@ export default async function handler(req, res) {
     const existingActiveSessions = activeSessionsResult.data ?? [];
     const walletNow = walletResult.data;
 
-    // Bill and close all orphaned sessions in one parallel batch
-    let runningCredits = normalizeCredits(walletNow?.credits);
+    // Close any leftover active sessions without retroactively re-billing wall time.
+    // If a session was already accruing tracked usage, preserve that recorded cost.
     if (existingActiveSessions && existingActiveSessions.length > 0) {
-      let totalDeduction = 0;
-      const sessionCalcs = existingActiveSessions.map(session => {
-        const billableSeconds = getBillableSeconds(session.start_time);
-        const creditsToDeduct = billableSeconds * CREDITS_PER_SECOND;
-        totalDeduction += creditsToDeduct;
-        return { id: session.id, billableSeconds, creditsToDeduct };
-      });
-      const actualDeduction = Math.min(runningCredits, totalDeduction);
-      runningCredits = runningCredits - actualDeduction;
-      // Close all sessions + update wallet in one parallel round-trip
-      const cleanupResults = await Promise.all([
-        ...sessionCalcs.map(s =>
+      const cleanupResults = await Promise.all(
+        existingActiveSessions.map(session =>
           supabaseAdmin.from('sessions')
-            .update({ end_time: new Date(), status: 'ended', seconds_used: s.billableSeconds, cost: s.creditsToDeduct })
-            .eq('id', s.id).eq('status', 'active'),
+            .update({
+              end_time: new Date(),
+              status: 'ended',
+              seconds_used: normalizeSecondsUsed(session.seconds_used),
+              cost: normalizeRecordedCost(session),
+            })
+            .eq('id', session.id)
+            .eq('status', 'active'),
         ),
-        actualDeduction > 0
-          ? supabaseAdmin.from('wallets').update({ credits: runningCredits }).eq('user_id', userId)
-          : Promise.resolve(),
-      ]);
+      );
 
       const cleanupError = cleanupResults.find(result => result?.error);
       if (cleanupError?.error) {
         console.error('Failed to close orphaned sessions:', cleanupError.error);
         return res.status(500).json({ allowed: false, error: 'Failed to close previous sessions' });
       }
+
+      await logRequestEvent('start-session.stale_sessions_closed', {
+        userId,
+        count: existingActiveSessions.length,
+      });
     }
 
-    // Use the already-fetched (and post-billing-adjusted) credit balance
-    const userCredits = runningCredits;
+    const userCredits = normalizeCredits(walletNow?.credits);
     if (userCredits <= 0) {
+      await logRequestEvent('start-session.insufficient_credits', {
+        userId,
+        credits: userCredits,
+      });
       return res.json({ allowed: false, error: 'Insufficient credits' });
     }
 
@@ -120,9 +127,17 @@ export default async function handler(req, res) {
       return res.status(500).json({ allowed: false, error: 'Failed to create session' });
     }
 
+    await logRequestEvent('start-session.started', {
+      userId,
+      sessionId: newSession.id,
+      credits: userCredits,
+      maxSeconds,
+    });
+
     res.json({ allowed: true, sessionId: newSession.id, credits: userCredits, maxSeconds, token: decartApiKey });
   } catch (error) {
     console.error('start-session unexpected error:', error);
+    await logErrorEvent('start-session.exception', error);
     res.status(500).json({ allowed: false, error: 'Internal server error' });
   }
 }

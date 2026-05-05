@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "installCommand": "npm ci",
+  "functions": {
+    "api/**/*.ts": {
+      "memory": 1024,
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    { "source": "/api/admin-me", "destination": "/api/admin?route=me" },
+    { "source": "/api/admin-overview", "destination": "/api/admin?route=overview" },
+    { "source": "/api/admin-users", "destination": "/api/admin?route=users" },
+    { "source": "/api/admin-credit-packages", "destination": "/api/admin?route=credit-packages" },
+    { "source": "/api/admin-audit-log", "destination": "/api/admin?route=audit-log" },
+    { "source": "/api/(.*)", "destination": "/api/$1" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+      ]
+    }
+  ]
+}

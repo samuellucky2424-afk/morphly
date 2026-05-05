@@ -7,7 +7,8 @@ import {
   X,
   LogOut,
   Menu,
-  Settings
+  Settings,
+  ShieldCheck
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -21,17 +22,22 @@ interface NavItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-const navItems: NavItem[] = [
+const userNavItems: NavItem[] = [
   { path: ROUTES.PROTECTED.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard },
   { path: ROUTES.PROTECTED.WALLET, label: 'Wallet', icon: Wallet },
   { path: ROUTES.PROTECTED.SUBSCRIPTION, label: 'Subscription', icon: CreditCard },
   { path: ROUTES.PROTECTED.SETTINGS, label: 'Settings', icon: Settings },
 ];
 
+const adminNavItems: NavItem[] = [
+  { path: ROUTES.PROTECTED.ADMIN, label: 'Admin Dashboard', icon: ShieldCheck },
+];
+
 export default function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUI();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const navItems = user?.isAdmin ? adminNavItems : userNavItems;
 
   const handleLogout = () => {
     logout();

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { logErrorEvent, logRequestEvent } from '../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
 const MAX_BILLABLE_SECONDS = 7200;
@@ -28,6 +29,12 @@ export default async function handler(req, res) {
 
   const userId = req.query.userId || req.query.id;
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+  await logRequestEvent('session-status.request', {
+    method: req.method,
+    path: '/api/session-status',
+    userId,
+  });
 
   try {
     if (!supabaseAdmin) {
@@ -82,6 +89,9 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('session-status unexpected error:', error);
+    await logErrorEvent('session-status.exception', error, {
+      userId,
+    });
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

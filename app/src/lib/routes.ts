@@ -4,6 +4,7 @@ export const ROUTES = {
     SIGNUP: '/signup',
   },
   PROTECTED: {
+    ADMIN: '/admin',
     DASHBOARD: '/dashboard',
     WALLET: '/wallet',
     SUBSCRIPTION: '/subscription',
@@ -11,6 +12,10 @@ export const ROUTES = {
   },
   DEFAULT: '/dashboard',
 } as const;
+
+export function getDefaultRoute(isAdmin: boolean): string {
+  return isAdmin ? ROUTES.PROTECTED.ADMIN : ROUTES.PROTECTED.DASHBOARD;
+}
 
 export const PUBLIC_ROUTES = Object.values(ROUTES.PUBLIC);
 export const PROTECTED_ROUTES = Object.values(ROUTES.PROTECTED);

@@ -1,5 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -18,6 +19,12 @@ export default async function handler(req, res) {
   
   const userId = req.query.userId || req.query.id;
   if (!userId) return res.status(400).json({ error: 'User ID is required' });
+
+  await logRequestEvent('wallet.request', {
+    method: req.method,
+    path: '/api/wallet',
+    userId,
+  });
 
   try {
     let { data: wallet } = await supabaseAdmin.from('wallets').select('balance, credits').eq('user_id', userId).single();
@@ -39,6 +46,9 @@ export default async function handler(req, res) {
       transactions: mappedTxs
     });
   } catch (error) {
+    await logErrorEvent('wallet.exception', error, {
+      userId,
+    });
     res.status(500).json({ error: 'Internal server error' });
   }
 }

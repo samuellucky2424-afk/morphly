@@ -44,3 +44,5 @@ scripts/monitor-morphly.ps1
 
 # IDE
 .vscode/*.log
+.vercel
+.env*.local

@@ -1,13 +1,19 @@
 // @ts-nocheck
 import crypto from 'crypto';
 
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
+import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../shared/backend-logger.js';
 import {
   applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
   verifyFlutterwaveTransaction
-} from './flutterwave-payment.js';
+} from '../server/flutterwave-payment.js';
+
+function shouldApplyCreditsFromWebhook() {
+  const value = String(process.env.FLUTTERWAVE_WEBHOOK_APPLIES_CREDITS || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
 
 function getHeader(req, name) {
   const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
@@ -53,18 +59,35 @@ export default async function handler(req, res) {
   try {
     const rawBody = await readRawBody(req);
     const signature = getHeader(req, 'flutterwave-signature') || getHeader(req, 'verif-hash');
+    await logRequestEvent('flutterwave-webhook.request', {
+      method: req.method,
+      path: '/api/flutterwave-webhook',
+      signaturePresent: Boolean(signature),
+    });
+
     if (!hasValidFlutterwaveSignature(rawBody, signature, webhookSecretHash)) {
+      await logPaymentEvent('flutterwave-webhook.invalid_signature', {
+        method: req.method,
+        path: '/api/flutterwave-webhook',
+      });
       return res.status(401).json({ status: 'failed', message: 'Invalid webhook signature' });
     }
 
     const payload = req.body && typeof req.body === 'object' ? req.body : JSON.parse(rawBody || '{}');
     if (payload?.type && payload.type !== 'charge.completed') {
+      await logPaymentEvent('flutterwave-webhook.ignored_type', {
+        type: payload?.type,
+      });
       return res.status(200).json({ received: true, ignored: true });
     }
 
     const webhookTransaction = payload?.data || {};
     const webhookStatus = String(webhookTransaction?.status || '').toLowerCase();
     if (webhookStatus && webhookStatus !== 'successful' && webhookStatus !== 'succeeded') {
+      await logPaymentEvent('flutterwave-webhook.ignored_status', {
+        status: webhookStatus,
+        transactionId,
+      });
       return res.status(200).json({ received: true, ignored: true });
     }
 
@@ -91,7 +114,26 @@ export default async function handler(req, res) {
 
     const validation = validateFlutterwaveTransaction(verification.transaction, paymentContext.reference);
     if (!validation.ok) {
+      await logPaymentEvent('flutterwave-webhook.invalid', {
+        transactionId,
+        userId: paymentContext.userId,
+        message: validation.message,
+      });
       return res.status(400).json({ status: 'failed', message: validation.message });
+    }
+
+    if (!shouldApplyCreditsFromWebhook()) {
+      await logPaymentEvent('flutterwave-webhook.observed_only', {
+        reference: validation.reference,
+        transactionId,
+        userId: paymentContext.userId,
+      });
+      return res.status(200).json({
+        received: true,
+        processed: false,
+        ignored: true,
+        reason: 'webhook_credit_application_disabled',
+      });
     }
 
     const result = await applyVerifiedFlutterwavePayment({
@@ -101,8 +143,21 @@ export default async function handler(req, res) {
       amountPaidNGN: validation.amountPaidNGN
     });
 
+    await logPaymentEvent('flutterwave-webhook.processed', {
+      reference: validation.reference,
+      transactionId,
+      userId: paymentContext.userId,
+      creditsAdded: result.creditsAdded,
+      newCredits: result.newCredits,
+      status: result.status,
+    });
+
     return res.status(200).json({ received: true, processed: true, ...result });
   } catch (error) {
+    await logErrorEvent('flutterwave-webhook.exception', error, {
+      method: req.method,
+      path: '/api/flutterwave-webhook',
+    });
     return res.status(500).json({ status: 'failed', message: 'Internal server error' });
   }
 }

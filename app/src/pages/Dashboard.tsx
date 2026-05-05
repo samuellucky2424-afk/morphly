@@ -134,7 +134,7 @@ const INITIAL_PROMPT_INJECTION_DELAY_MS = 500;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
-const DECART_REALTIME_MODEL = 'lucy-vton-latest';
+const DECART_REALTIME_MODEL = 'lucy-2.1';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
 const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;
@@ -1504,20 +1504,17 @@ function Dashboard() {
   }, []);
 
   const handleStop = useCallback(async (options?: { silent?: boolean }) => {
-    try {
-      if (sessionTokenRef.current) {
-        const response = await apiRequest<{ remainingCredits?: number }>('/end-session', {
-          method: 'POST',
-          body: JSON.stringify({ userId: user?.id }),
-        });
+    const activeUserId = user?.id;
+    const activeSessionId = sessionIdRef.current || undefined;
+    const shouldEndSession = Boolean(sessionTokenRef.current);
 
-        if (response.remainingCredits !== undefined) {
-          setCredits(response.remainingCredits);
-        }
-      }
-    } catch (error) {
-      console.error('Stop session error:', error);
-    }
+    const endSessionPromise = shouldEndSession
+      ? apiRequest<{ remainingCredits?: number }>('/end-session', {
+          method: 'POST',
+          keepalive: true,
+          body: JSON.stringify({ userId: activeUserId, sessionId: activeSessionId }),
+        })
+      : null;
 
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
@@ -1534,6 +1531,7 @@ function Dashboard() {
 
     sessionTokenRef.current = '';
     sessionIdRef.current = '';
+    isStreamingRef.current = false;
     restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
     restartFailureCountRef.current = 0;
     setRuntimeModeCap('hd');
@@ -1548,6 +1546,18 @@ function Dashboard() {
 
     if (!options?.silent) {
       toast.info('Session stopped');
+    }
+
+    if (endSessionPromise) {
+      void endSessionPromise
+        .then((response) => {
+          if (response.remainingCredits !== undefined) {
+            setCredits(response.remainingCredits);
+          }
+        })
+        .catch((error) => {
+          console.error('Stop session error:', error);
+        });
     }
   }, [
     clearFrameWatchdog,
@@ -1813,19 +1823,8 @@ function Dashboard() {
       : Promise.resolve(null);
 
     try {
-      const [virtualCameraStartResult, startResponse, stream] = await Promise.all([
+      const [virtualCameraStartResult, stream] = await Promise.all([
         virtualCameraStartPromise,
-        apiRequest<{
-          allowed: boolean;
-          token?: string;
-          error?: string;
-          credits?: number;
-          maxSeconds?: number;
-          sessionId?: string;
-        }>('/start-session', {
-          method: 'POST',
-          body: JSON.stringify({ userId: user?.id }),
-        }),
         startWebcam(activeMode, { forceNewStream: true }),
       ]);
 
@@ -1834,6 +1833,22 @@ function Dashboard() {
         console.warn('Morphly virtual camera is unavailable:', virtualCameraMessage);
         toast.error(virtualCameraMessage);
       }
+
+      if (!stream) {
+        throw new Error('Webcam start failed');
+      }
+
+      const startResponse = await apiRequest<{
+        allowed: boolean;
+        token?: string;
+        error?: string;
+        credits?: number;
+        maxSeconds?: number;
+        sessionId?: string;
+      }>('/start-session', {
+        method: 'POST',
+        body: JSON.stringify({ userId: user?.id }),
+      });
 
       if (!startResponse.allowed) {
         toast.error(startResponse.error || 'Insufficient credits');
@@ -1849,10 +1864,6 @@ function Dashboard() {
       }
 
       const sessionToken = startResponse.token || '';
-
-      if (!stream) {
-        throw new Error('Webcam start failed');
-      }
 
       if (!sessionToken) {
         throw new Error('Missing session token');
@@ -1889,7 +1900,7 @@ function Dashboard() {
       if (sessionTokenRef.current) {
         await apiRequest('/end-session', {
           method: 'POST',
-          body: JSON.stringify({ userId: user?.id }),
+          body: JSON.stringify({ userId: user?.id, sessionId: sessionIdRef.current || undefined }),
         }).catch((rollbackError) => {
           console.error('Failed to roll back session start:', rollbackError);
         });

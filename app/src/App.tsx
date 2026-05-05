@@ -3,19 +3,26 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from '@/context/AuthContext';
 import { UIProvider } from '@/context/UIContext';
 import { AppProvider } from '@/context/AppContext';
-import { ProtectedRoute, PublicRoute } from '@/components/ProtectedRoute';
+import { AdminRoute, ProtectedRoute, PublicRoute, UserRoute } from '@/components/ProtectedRoute';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { Toaster } from '@/components/ui/sonner';
 import Layout from '@/components/Layout';
 import LoadingScreen from '@/components/LoadingScreen';
 import { ROUTES } from '@/lib/routes';
+import { useAuth } from '@/context/AuthContext';
 
 const Login = lazy(() => import('@/pages/Login'));
+const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Wallet = lazy(() => import('@/pages/Wallet'));
 const Subscription = lazy(() => import('@/pages/Subscription'));
 const Settings = lazy(() => import('@/pages/Settings'));
 const NotFound = lazy(() => import('@/pages/NotFound'));
+
+function DefaultRouteRedirect() {
+  const { defaultRoute } = useAuth();
+  return <Navigate to={defaultRoute} replace />;
+}
 
 function App() {
   return (
@@ -47,6 +54,14 @@ function App() {
                     element={<Subscription />}
                   />
                   <Route
+                    path={ROUTES.PROTECTED.ADMIN}
+                    element={
+                      <AdminRoute>
+                        <AdminDashboard />
+                      </AdminRoute>
+                    }
+                  />
+                  <Route
                     path="/"
                     element={
                       <ProtectedRoute>
@@ -54,16 +69,30 @@ function App() {
                       </ProtectedRoute>
                     }
                   >
-                    <Route index element={<Navigate to={ROUTES.DEFAULT} replace />} />
-                    <Route path={ROUTES.PROTECTED.WALLET} element={<Wallet />} />
-                    <Route path={ROUTES.PROTECTED.SETTINGS} element={<Settings />} />
+                    <Route index element={<DefaultRouteRedirect />} />
+                    <Route
+                      path={ROUTES.PROTECTED.WALLET}
+                      element={
+                        <UserRoute>
+                          <Wallet />
+                        </UserRoute>
+                      }
+                    />
+                    <Route
+                      path={ROUTES.PROTECTED.SETTINGS}
+                      element={
+                        <UserRoute>
+                          <Settings />
+                        </UserRoute>
+                      }
+                    />
                   </Route>
                   <Route
                     path={ROUTES.PROTECTED.DASHBOARD}
                     element={
-                      <ProtectedRoute>
+                      <UserRoute>
                         <Dashboard />
-                      </ProtectedRoute>
+                      </UserRoute>
                     }
                   />
                   <Route path="*" element={<NotFound />} />

@@ -1,11 +1,12 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
+import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../shared/backend-logger.js';
 import {
   applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
   verifyFlutterwaveTransaction
-} from './flutterwave-payment.js';
+} from '../server/flutterwave-payment.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -17,6 +18,16 @@ export default async function handler(req, res) {
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
   const { reference, transactionId, userId, credits, priceUSD } = req.body;
+  await logRequestEvent('verify-payment.request', {
+    method: req.method,
+    path: '/api/verify-payment',
+    reference,
+    transactionId,
+    userId,
+    credits,
+    priceUSD,
+  });
+
   if (!reference || !transactionId || !userId) {
     return res.status(400).json({ status: 'failed', message: 'Missing reference, transactionId, or userId' });
   }
@@ -30,6 +41,12 @@ export default async function handler(req, res) {
     const verification = await verifyFlutterwaveTransaction(transactionId, flutterwaveSecretKey);
 
     if (!verification.isVerified) {
+      await logPaymentEvent('verify-payment.rejected', {
+        reference,
+        transactionId,
+        userId,
+        message: verification.data?.message || 'Payment verification failed',
+      });
       return res.status(400).json({ status: 'failed', message: verification.data?.message || 'Payment verification failed' });
     }
 
@@ -40,6 +57,12 @@ export default async function handler(req, res) {
 
     const validation = validateFlutterwaveTransaction(verification.transaction, paymentContext.reference);
     if (!validation.ok) {
+      await logPaymentEvent('verify-payment.invalid', {
+        reference,
+        transactionId,
+        userId: paymentContext.userId,
+        message: validation.message,
+      });
       return res.status(400).json({ status: 'failed', message: validation.message });
     }
 
@@ -50,8 +73,23 @@ export default async function handler(req, res) {
       amountPaidNGN: validation.amountPaidNGN
     });
 
+    await logPaymentEvent('verify-payment.processed', {
+      reference: validation.reference,
+      transactionId,
+      userId: paymentContext.userId,
+      creditsRequested: paymentContext.credits,
+      creditsAdded: result.creditsAdded,
+      newCredits: result.newCredits,
+      status: result.status,
+    });
+
     res.json({ ...result, data: verification.transaction });
   } catch (error) {
+    await logErrorEvent('verify-payment.exception', error, {
+      reference,
+      transactionId,
+      userId,
+    });
     res.status(500).json({ status: 'failed', message: 'Internal server error' });
   }
 }

@@ -15,6 +15,15 @@ declare global {
   }
 }
 
+interface CreditPlan {
+  id?: string;
+  name?: string;
+  credits: number;
+  priceNGN: number;
+  isActive?: boolean;
+  sortOrder?: number;
+}
+
 const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
 
 function resolveFlutterwavePublicKey(): string {
@@ -61,7 +70,7 @@ function loadFlutterwaveScript(): Promise<void> {
   });
 }
 
-const CREDIT_PLANS = [
+const DEFAULT_CREDIT_PLANS: CreditPlan[] = [
   { credits: 500, priceNGN: 11500 },
   { credits: 1000, priceNGN: 23000 },
   { credits: 2000, priceNGN: 46000 },
@@ -84,10 +93,12 @@ function Subscription() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { setBalance, setCredits } = useApp();
-  const [selectedPlan, setSelectedPlan] = useState<typeof CREDIT_PLANS[0] | null>(null);
+  const [creditPlans, setCreditPlans] = useState<CreditPlan[]>(DEFAULT_CREDIT_PLANS);
+  const [selectedPlan, setSelectedPlan] = useState<CreditPlan | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [ngnRate, setNgnRate] = useState<number>(1500);
   const [isLoadingRate, setIsLoadingRate] = useState(true);
+  const [isLoadingPlans, setIsLoadingPlans] = useState(true);
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
   const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
@@ -133,7 +144,43 @@ function Subscription() {
     fetchRate();
   }, []);
 
-  const handleSelectPlan = (plan: typeof CREDIT_PLANS[0]) => {
+  useEffect(() => {
+    const fetchCreditPackages = async () => {
+      try {
+        const res = await apiFetch('/credit-packages');
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const packages = Array.isArray(data?.packages)
+          ? data.packages
+              .map((pkg: any) => ({
+                id: pkg.id,
+                name: pkg.name,
+                credits: Number(pkg.credits || 0),
+                priceNGN: Number(pkg.priceNGN || pkg.price_ngn || 0),
+                isActive: pkg.isActive ?? pkg.is_active,
+                sortOrder: Number(pkg.sortOrder || pkg.sort_order || 0),
+              }))
+              .filter((pkg: CreditPlan) => pkg.credits > 0 && pkg.priceNGN >= 0)
+          : [];
+
+        if (packages.length > 0) {
+          setCreditPlans(packages);
+        }
+      } catch (error) {
+        console.warn('Failed to fetch credit packages:', error, 'using default plans');
+        setCreditPlans(DEFAULT_CREDIT_PLANS);
+      } finally {
+        setIsLoadingPlans(false);
+      }
+    };
+
+    void fetchCreditPackages();
+  }, []);
+
+  const handleSelectPlan = (plan: CreditPlan) => {
     setSelectedPlan(plan);
   };
 
@@ -196,6 +243,10 @@ function Subscription() {
           description: `Purchase ${selectedPlan.credits} credits`,
         },
         callback: function (response: any) {
+          if (paymentCompletedRef.current) {
+            return;
+          }
+
           if (!response?.transaction_id) {
             setIsProcessing(false);
             toast.error('Payment was not completed.');
@@ -295,13 +346,13 @@ function Subscription() {
         <div className="mb-8">
           <label className="block text-sm font-medium text-[#a1a1aa] mb-3">Select Credits</label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {CREDIT_PLANS.map((plan) => {
+            {creditPlans.map((plan) => {
               const isSelected = selectedPlan?.credits === plan.credits;
               const priceUSD = hasLiveRate ? getPriceUSD(plan.priceNGN) : null;
 
               return (
                 <button
-                  key={plan.credits}
+                  key={plan.id || plan.credits}
                   onClick={() => handleSelectPlan(plan)}
                   className={`p-5 rounded-xl border text-left transition-all duration-200 ${
                     isSelected
@@ -320,6 +371,9 @@ function Subscription() {
                     <div>
                       <span className="text-lg font-bold text-white">{plan.credits.toLocaleString()} Credits</span>
                       <span className="text-xs text-[#71717a] ml-2">{formatTime(plan.credits)}</span>
+                      {plan.name && (
+                        <p className="text-xs text-[#71717a] mt-1">{plan.name}</p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -354,6 +408,9 @@ function Subscription() {
             <p className="text-xs text-[#52525b]">
                 {isFlutterwaveReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
             </p>
+          )}
+          {isLoadingPlans && (
+            <p className="text-xs text-[#52525b] mt-2">Loading live credit packages...</p>
           )}
           {isFallbackRate && (
             <p className="text-xs text-amber-400 mt-2">
