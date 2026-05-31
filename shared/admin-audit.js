@@ -1,10 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const BACKEND_LOG_DIR = path.resolve(__dirname, '..', 'logs', 'backend');
+import { getBackendLogDir } from './backend-log-path.js';
 
 function parseLogLine(line) {
   if (!line || !line.trim()) {
@@ -20,9 +17,10 @@ function parseLogLine(line) {
 
 export async function readAdminAuditLog(options = {}) {
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(200, Number(options.limit))) : 50;
+  const backendLogDir = getBackendLogDir();
 
   try {
-    const files = (await fs.readdir(BACKEND_LOG_DIR))
+    const files = (await fs.readdir(backendLogDir))
       .filter((fileName) => fileName.endsWith('.log'))
       .sort()
       .reverse();
@@ -30,7 +28,7 @@ export async function readAdminAuditLog(options = {}) {
     const entries = [];
 
     for (const fileName of files) {
-      const filePath = path.join(BACKEND_LOG_DIR, fileName);
+      const filePath = path.join(backendLogDir, fileName);
       const fileContents = await fs.readFile(filePath, 'utf8');
       const lines = fileContents.split(/\r?\n/).reverse();
 

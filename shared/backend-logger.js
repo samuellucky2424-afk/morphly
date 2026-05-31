@@ -1,10 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const BACKEND_LOG_DIR = path.resolve(__dirname, '..', 'logs', 'backend');
+import { getBackendLogDir } from './backend-log-path.js';
+
 const MAX_STRING_LENGTH = 4000;
 const MAX_DEPTH = 5;
 const SENSITIVE_KEY_PARTS = [
@@ -142,12 +140,12 @@ function normalizePayload(details) {
 
 function getLogFilePath(channel) {
   const date = new Date().toISOString().slice(0, 10);
-  return path.join(BACKEND_LOG_DIR, `${channel}-${date}.log`);
+  return path.join(getBackendLogDir(), `${channel}-${date}.log`);
 }
 
 async function appendLog(channel, entry) {
   try {
-    await fs.mkdir(BACKEND_LOG_DIR, { recursive: true });
+    await fs.mkdir(getBackendLogDir(), { recursive: true });
     await fs.appendFile(getLogFilePath(channel), `${JSON.stringify(entry)}\n`, 'utf8');
   } catch (error) {
     const fallback = serializeError(error);

@@ -9,6 +9,7 @@ const __dirname = path.dirname(__filename);
 
 // Share the same handlers between local dev and the Vercel app-root deployment.
 import rateRouter from './api/rate.ts';
+import publicConfigRouter from './api/public-config.ts';
 import walletRouter from './api/wallet.ts';
 import creditPackagesRouter from './api/credit-packages.ts';
 import verifyPaymentRouter from './api/verify-payment.ts';
@@ -59,6 +60,7 @@ app.use((req, res, next) => {
 
 // API Routes
 app.use('/api/rate', rateRouter);
+app.use('/api/public-config', publicConfigRouter);
 app.use('/api/wallet', walletRouter);
 app.use('/api/credit-packages', creditPackagesRouter);
 app.use('/api/admin-me', adminMeRouter);

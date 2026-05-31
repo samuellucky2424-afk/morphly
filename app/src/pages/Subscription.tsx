@@ -26,22 +26,6 @@ interface CreditPlan {
 
 const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
 
-function resolveFlutterwavePublicKey(): string {
-  const candidateKeys = [
-    import.meta.env.VITE_FLUTTERWAVE_PUBLIC_KEY,
-    import.meta.env.VITE_FLW_PUBLIC_KEY,
-    import.meta.env.FLUTTERWAVE_PUBLIC_KEY,
-  ];
-
-  for (const key of candidateKeys) {
-    if (typeof key === 'string' && key.trim().length > 0) {
-      return key.trim();
-    }
-  }
-
-  return '';
-}
-
 function isValidFlutterwavePublicKey(key: string): boolean {
   return /^FLWPUBK(?:_TEST)?-[A-Za-z0-9_-]+-X$/.test(key);
 }
@@ -102,9 +86,38 @@ function Subscription() {
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
   const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
-  const flutterwavePublicKey = resolveFlutterwavePublicKey();
+  const [runtimeFlutterwavePublicKey, setRuntimeFlutterwavePublicKey] = useState('');
+  const flutterwavePublicKey = runtimeFlutterwavePublicKey;
   const hasValidFlutterwavePublicKey = isValidFlutterwavePublicKey(flutterwavePublicKey);
   const paymentCompletedRef = useRef(false);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const applyRuntimeFlutterwavePublicKey = (key: unknown) => {
+      const normalizedKey = typeof key === 'string' ? key.trim() : '';
+
+      if (!isCancelled && normalizedKey) {
+        setRuntimeFlutterwavePublicKey(normalizedKey);
+      }
+    };
+
+    void apiFetch('/public-config')
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const config = await res.json();
+        applyRuntimeFlutterwavePublicKey(config?.flutterwavePublicKey);
+      })
+      .catch((error) => {
+        console.warn('Failed to load runtime payment configuration:', error);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     void loadFlutterwaveScript()
