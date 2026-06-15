@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.wallets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   balance NUMERIC(12, 2) DEFAULT 0 CHECK (balance >= 0),
+  credits INTEGER DEFAULT 0 CHECK (credits >= 0),
   currency TEXT DEFAULT 'USD',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -204,16 +205,18 @@ CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO public.users (id, email)
-  VALUES (NEW.id, NEW.email)
-  ON CONFLICT (id) DO NOTHING;
+  VALUES (NEW.id, COALESCE(NEW.email, ''))
+  ON CONFLICT (id) DO UPDATE
+    SET email = EXCLUDED.email,
+        updated_at = NOW();
   
-  INSERT INTO public.wallets (user_id, balance)
-  VALUES (NEW.id, 0)
+  INSERT INTO public.wallets (user_id, balance, credits)
+  VALUES (NEW.id, 0, 0)
   ON CONFLICT (user_id) DO NOTHING;
   
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created

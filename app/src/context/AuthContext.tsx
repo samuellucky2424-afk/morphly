@@ -82,8 +82,47 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
+  const ensureUserWallet = useCallback(async (accessToken?: string | null, required = false) => {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      const response = await apiFetch('/ensure-user-wallet', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        let message = `Wallet setup failed (${response.status})`;
+
+        try {
+          const data = await response.json();
+          message = data?.error || message;
+        } catch {
+          // Keep the status-based fallback message.
+        }
+
+        if (required) {
+          throw new Error(message);
+        }
+
+        console.warn('Wallet setup check failed:', message);
+      }
+    } catch (walletError) {
+      if (required) {
+        throw walletError;
+      }
+
+      console.warn('Wallet setup check failed:', walletError);
+    }
+  }, []);
+
   const hydrateUserFromSession = useCallback(async (currentSession: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
     if (currentSession?.user) {
+      await ensureUserWallet(currentSession.access_token);
       const adminState = await getAdminState(currentSession.access_token);
       setUser(formatUser(currentSession.user, adminState));
     } else {
@@ -91,7 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     setLoading(false);
-  }, [getAdminState]);
+  }, [ensureUserWallet, getAdminState]);
 
   useEffect(() => {
     // Check active session
@@ -109,7 +148,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [hydrateUserFromSession]);
 
   const clearError = useCallback(() => {
     setError(null);
@@ -130,6 +169,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const { data: { session: signedInSession } } = await supabase.auth.getSession();
+      await ensureUserWallet(signedInSession?.access_token);
       const adminState = await getAdminState(signedInSession?.access_token);
 
       if (signedInSession?.user) {
@@ -170,6 +210,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       const { data: { session: registeredSession } } = await supabase.auth.getSession();
+      await ensureUserWallet(registeredSession?.access_token, true);
       const adminState = await getAdminState(registeredSession?.access_token);
 
       if (registeredSession?.user) {

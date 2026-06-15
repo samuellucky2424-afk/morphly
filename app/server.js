@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 import rateRouter from './api/rate.ts';
 import publicConfigRouter from './api/public-config.ts';
 import walletRouter from './api/wallet.ts';
+import ensureUserWalletRouter from './api/ensure-user-wallet.ts';
 import creditPackagesRouter from './api/credit-packages.ts';
 import verifyPaymentRouter from './api/verify-payment.ts';
 import startSessionRouter from './api/start-session.ts';
@@ -62,6 +63,7 @@ app.use((req, res, next) => {
 app.use('/api/rate', rateRouter);
 app.use('/api/public-config', publicConfigRouter);
 app.use('/api/wallet', walletRouter);
+app.use('/api/ensure-user-wallet', ensureUserWalletRouter);
 app.use('/api/credit-packages', creditPackagesRouter);
 app.use('/api/admin-me', adminMeRouter);
 app.use('/api/admin-overview', adminOverviewRouter);

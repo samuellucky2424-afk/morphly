@@ -9,9 +9,10 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- 1. USERS TABLE
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS public.users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email TEXT UNIQUE NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- =============================================================================
@@ -20,7 +21,10 @@ CREATE TABLE IF NOT EXISTS public.users (
 CREATE TABLE IF NOT EXISTS public.wallets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID UNIQUE NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    balance NUMERIC(12, 2) DEFAULT 0 CHECK (balance >= 0),
     credits INTEGER DEFAULT 0 CHECK (credits >= 0),
+    currency TEXT DEFAULT 'USD',
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -120,19 +124,32 @@ ON CONFLICT (from_currency, to_currency) DO UPDATE
 SET rate = EXCLUDED.rate, updated_at = NOW();
 
 -- =============================================================================
--- 8. AUTO-CREATE WALLET TRIGGER
+-- 8. AUTO-CREATE USER PROFILE AND WALLET TRIGGER
 -- =============================================================================
-CREATE OR REPLACE FUNCTION public.create_wallet_for_user()
+CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.wallets (user_id, credits) VALUES (NEW.id, 0);
+    INSERT INTO public.users (id, email)
+    VALUES (NEW.id, COALESCE(NEW.email, ''))
+    ON CONFLICT (id) DO UPDATE
+      SET email = EXCLUDED.email,
+          updated_at = NOW();
+
+    INSERT INTO public.wallets (user_id, balance, credits)
+    VALUES (NEW.id, 0, 0)
+    ON CONFLICT (user_id) DO NOTHING;
+
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS trg_create_wallet ON public.users;
-CREATE TRIGGER trg_create_wallet
-    AFTER INSERT ON public.users FOR EACH ROW EXECUTE FUNCTION public.create_wallet_for_user();
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW
+    EXECUTE FUNCTION public.handle_new_user();
 
 -- =============================================================================
 -- 9. HELPER FUNCTIONS
