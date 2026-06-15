@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
-import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
 const MAX_BILLABLE_SECONDS = 7200;

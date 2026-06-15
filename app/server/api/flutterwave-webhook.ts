@@ -1,14 +1,14 @@
 // @ts-nocheck
 import crypto from 'crypto';
 
-import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
-import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
   applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
   verifyFlutterwaveTransaction
-} from '../server/flutterwave-payment.js';
+} from '../flutterwave-payment.js';
 
 function shouldApplyCreditsFromWebhook() {
   const value = String(process.env.FLUTTERWAVE_WEBHOOK_APPLIES_CREDITS || '').trim().toLowerCase();

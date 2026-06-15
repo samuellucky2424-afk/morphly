@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
-import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,

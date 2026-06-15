@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from '../server/supabase-admin.js';
-import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
