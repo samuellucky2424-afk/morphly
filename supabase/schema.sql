@@ -57,10 +57,15 @@ CREATE TABLE IF NOT EXISTS public.sessions (
     start_time TIMESTAMPTZ DEFAULT NOW(),
     end_time TIMESTAMPTZ,
     credits_used INTEGER DEFAULT 0,
+    cost NUMERIC(12, 2) DEFAULT 0,
     seconds_used INTEGER DEFAULT 0,
     status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended')),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS credits_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS cost NUMERIC(12, 2) DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS seconds_used INTEGER DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON public.sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON public.sessions(status);

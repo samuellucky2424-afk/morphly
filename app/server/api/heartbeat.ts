@@ -3,7 +3,49 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 
 const HEARTBEAT_SECONDS = 30;
 const CREDITS_PER_SECOND = 2;
-const CREDITS_PER_HEARTBEAT = HEARTBEAT_SECONDS * CREDITS_PER_SECOND;
+const MAX_SECONDS_PER_HEARTBEAT = 60;
+
+function normalizeCredits(value) {
+  const credits = Number(value ?? 0);
+  return Number.isFinite(credits) ? credits : 0;
+}
+
+function normalizeSeconds(value) {
+  const seconds = Number(value ?? 0);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+}
+
+function normalizeHeartbeatSeconds(value) {
+  const seconds = Number(value ?? HEARTBEAT_SECONDS);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return 0;
+  }
+
+  return Math.min(Math.floor(seconds), MAX_SECONDS_PER_HEARTBEAT);
+}
+
+async function updateSessionUsage(sessionId, secondsUsed, creditsUsed) {
+  const updateWithCost = await supabaseAdmin
+    .from('sessions')
+    .update({ seconds_used: secondsUsed, cost: creditsUsed })
+    .eq('id', sessionId)
+    .eq('status', 'active');
+
+  if (!updateWithCost.error) {
+    return updateWithCost;
+  }
+
+  const message = String(updateWithCost.error?.message || updateWithCost.error?.details || '');
+  if (updateWithCost.error?.code !== 'PGRST204' && !/cost/i.test(message)) {
+    return updateWithCost;
+  }
+
+  return supabaseAdmin
+    .from('sessions')
+    .update({ seconds_used: secondsUsed, credits_used: creditsUsed })
+    .eq('id', sessionId)
+    .eq('status', 'active');
+}
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -19,46 +61,59 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'userId and sessionId are required' });
   }
 
+  const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
+  if (secondsDelta <= 0) {
+    return res.status(400).json({ error: 'secondsDelta must be greater than 0' });
+  }
+
   try {
-    const [{ data: walletData }, { data: sessionData }] = await Promise.all([
-      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).single(),
+    const [{ data: walletData, error: walletError }, { data: sessionData, error: sessionError }] = await Promise.all([
+      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       supabaseAdmin
         .from('sessions')
-        .select('id, seconds_used, credits_used, status')
+        .select('id, seconds_used, status')
         .eq('id', sessionId)
         .eq('user_id', userId)
         .eq('status', 'active')
-        .single(),
+        .maybeSingle(),
     ]);
+
+    if (walletError) {
+      return res.status(500).json({ error: 'Failed to load wallet' });
+    }
+
+    if (sessionError) {
+      return res.status(500).json({ error: 'Failed to load session' });
+    }
 
     if (!sessionData) {
       return res.json({ shouldStop: true, reason: 'session_not_found', remainingCredits: 0 });
     }
 
-    const currentCredits = walletData?.credits ?? 0;
+    const currentCredits = normalizeCredits(walletData?.credits);
+    const currentSecondsUsed = normalizeSeconds(sessionData.seconds_used);
+    const maxBillableSeconds = Math.ceil(currentCredits / CREDITS_PER_SECOND);
+    const secondsToRecord = Math.min(secondsDelta, Math.max(0, maxBillableSeconds - currentSecondsUsed));
 
-    if (currentCredits <= 0) {
+    if (currentCredits <= 0 || secondsToRecord <= 0) {
       return res.json({ shouldStop: true, reason: 'no_credits', remainingCredits: 0 });
     }
 
-    const creditsToDeduct = Math.min(currentCredits, CREDITS_PER_HEARTBEAT);
-    const newCredits = currentCredits - creditsToDeduct;
-    const newSecondsUsed = (sessionData.seconds_used ?? 0) + HEARTBEAT_SECONDS;
-    const newCreditsUsed = (sessionData.credits_used ?? 0) + creditsToDeduct;
+    const newSecondsUsed = currentSecondsUsed + secondsToRecord;
+    const recordedCreditsUsed = newSecondsUsed * CREDITS_PER_SECOND;
+    const remainingCredits = Math.max(0, currentCredits - recordedCreditsUsed);
 
-    await Promise.all([
-      supabaseAdmin
-        .from('wallets')
-        .update({ credits: newCredits })
-        .eq('user_id', userId),
-      supabaseAdmin
-        .from('sessions')
-        .update({ seconds_used: newSecondsUsed, credits_used: newCreditsUsed })
-        .eq('id', sessionId),
-    ]);
+    const updateResult = await updateSessionUsage(sessionId, newSecondsUsed, recordedCreditsUsed);
+    if (updateResult.error) {
+      throw updateResult.error;
+    }
 
-    const shouldStop = newCredits <= 0;
-    return res.json({ remainingCredits: newCredits, shouldStop });
+    return res.json({
+      recordedSeconds: secondsToRecord,
+      totalBillableSeconds: newSecondsUsed,
+      remainingCredits,
+      shouldStop: remainingCredits <= 0,
+    });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return res.status(500).json({ error: 'Internal server error' });

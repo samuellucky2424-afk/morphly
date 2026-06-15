@@ -36,10 +36,15 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   end_time TIMESTAMP WITH TIME ZONE,
   seconds_used INTEGER DEFAULT 0,
+  credits_used INTEGER DEFAULT 0,
   cost NUMERIC DEFAULT 0,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS seconds_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS credits_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS cost NUMERIC DEFAULT 0;
 
 -- 6. PLANS TABLE (Created before subscriptions to allow foreign key if preferred, but schema lists subscriptions first)
 CREATE TABLE IF NOT EXISTS public.plans (

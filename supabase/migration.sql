@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   end_time TIMESTAMP WITH TIME ZONE,
   seconds_used INTEGER DEFAULT 0,
+  credits_used INTEGER DEFAULT 0,
   cost_per_second NUMERIC(10, 6) DEFAULT 0.0001,
   cost NUMERIC(12, 2) DEFAULT 0,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended', 'interrupted')),
@@ -62,6 +63,10 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   metadata JSONB DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS seconds_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS credits_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS cost NUMERIC(12, 2) DEFAULT 0;
 
 -- ============================================
 -- SUBSCRIPTIONS TABLE
