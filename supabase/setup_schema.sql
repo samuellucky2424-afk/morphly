@@ -111,9 +111,13 @@ CREATE POLICY "Authenticated users can view plans"
 -- ============================================
 
 -- Function to handle new user account creation and automated wallet creation
-CREATE OR REPLACE FUNCTION public.handle_new_user()
+CREATE OR REPLACE FUNCTION public.morphly_handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
+  IF COALESCE(NEW.raw_user_meta_data->>'app', '') <> 'morphly' THEN
+    RETURN NEW;
+  END IF;
+
   INSERT INTO public.users (id, email)
   VALUES (NEW.id, COALESCE(NEW.email, ''))
   ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
@@ -127,7 +131,7 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Trigger to automatically wire up users/wallets on sign up
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
+DROP TRIGGER IF EXISTS morphly_on_auth_user_created ON auth.users;
+CREATE TRIGGER morphly_on_auth_user_created
   AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+  FOR EACH ROW EXECUTE FUNCTION public.morphly_handle_new_user();

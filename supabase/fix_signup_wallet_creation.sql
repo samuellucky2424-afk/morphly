@@ -1,6 +1,15 @@
 -- =============================================================================
 -- MORPHLY SIGNUP WALLET CREATION FIX
 -- Run this in the Supabase SQL Editor for the Morphly project.
+--
+-- This script only manages Morphly-owned objects:
+--   public.users
+--   public.wallets
+--   public.morphly_handle_new_user()
+--   morphly_on_auth_user_created
+--
+-- It does not copy from, drop, or modify other app tables such as public.wallet
+-- or public.walletw.
 -- =============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -63,32 +72,13 @@ BEGIN
   END IF;
 END $$;
 
--- Remove old auth signup triggers whose functions still reference a wallet table.
--- This is intentionally broader than only "walletw" because a stale trigger can
--- keep writing to public.wallet, public.walletw, or another previous wallet table
--- even after the app code has been fixed.
-DO $$
-DECLARE
-  trigger_record RECORD;
-BEGIN
-  FOR trigger_record IN
-    SELECT t.tgname
-    FROM pg_trigger t
-    JOIN pg_class c ON c.oid = t.tgrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    JOIN pg_proc p ON p.oid = t.tgfoid
-    WHERE n.nspname = 'auth'
-      AND c.relname = 'users'
-      AND NOT t.tgisinternal
-      AND pg_get_functiondef(p.oid) ILIKE '%wallet%'
-  LOOP
-    EXECUTE format('DROP TRIGGER IF EXISTS %I ON auth.users', trigger_record.tgname);
-  END LOOP;
-END $$;
-
-CREATE OR REPLACE FUNCTION public.handle_new_user()
+CREATE OR REPLACE FUNCTION public.morphly_handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
+  IF COALESCE(NEW.raw_user_meta_data->>'app', '') <> 'morphly' THEN
+    RETURN NEW;
+  END IF;
+
   INSERT INTO public.users (id, email)
   VALUES (NEW.id, COALESCE(NEW.email, ''))
   ON CONFLICT (id) DO UPDATE
@@ -103,18 +93,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
-DROP TRIGGER IF EXISTS trg_create_wallet ON public.users;
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP TRIGGER IF EXISTS morphly_on_auth_user_created ON auth.users;
 
-CREATE TRIGGER on_auth_user_created
+CREATE TRIGGER morphly_on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW
-  EXECUTE FUNCTION public.handle_new_user();
+  EXECUTE FUNCTION public.morphly_handle_new_user();
 
--- Repair existing Auth users that are missing app profiles or wallets.
+-- Repair existing Morphly Auth users that are missing app profiles or wallets.
+-- Users from other apps in the same Supabase project are intentionally ignored.
 INSERT INTO public.users (id, email)
 SELECT auth_users.id, COALESCE(auth_users.email, '')
 FROM auth.users AS auth_users
+WHERE COALESCE(auth_users.raw_user_meta_data->>'app', '') = 'morphly'
 ON CONFLICT (id) DO UPDATE
   SET email = EXCLUDED.email,
       updated_at = NOW();
@@ -124,70 +115,5 @@ SELECT auth_users.id, 0, 0
 FROM auth.users AS auth_users
 LEFT JOIN public.wallets ON public.wallets.user_id = auth_users.id
 WHERE public.wallets.user_id IS NULL
+  AND COALESCE(auth_users.raw_user_meta_data->>'app', '') = 'morphly'
 ON CONFLICT (user_id) DO NOTHING;
-
--- If a previous broken trigger created rows in common wrong tables, copy them
--- into public.wallets without deleting any existing data.
-DO $$
-DECLARE
-  wrong_table TEXT;
-  balance_expr TEXT;
-  credits_expr TEXT;
-BEGIN
-  FOREACH wrong_table IN ARRAY ARRAY['walletw', 'wallet']
-  LOOP
-    IF to_regclass(format('public.%I', wrong_table)) IS NULL THEN
-      CONTINUE;
-    END IF;
-
-    IF NOT EXISTS (
-      SELECT 1
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = wrong_table
-        AND column_name = 'user_id'
-    ) THEN
-      CONTINUE;
-    END IF;
-
-    balance_expr := CASE
-      WHEN EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = wrong_table
-          AND column_name = 'balance'
-      )
-        THEN 'COALESCE(wrong_wallet.balance, 0)'
-      ELSE '0'
-    END;
-
-    credits_expr := CASE
-      WHEN EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = wrong_table
-          AND column_name = 'credits'
-      )
-        THEN 'COALESCE(wrong_wallet.credits, 0)'
-      ELSE '0'
-    END;
-
-    EXECUTE format(
-      $copy_wrong_wallet$
-      INSERT INTO public.wallets (user_id, balance, credits)
-      SELECT
-        wrong_wallet.user_id,
-        %s,
-        %s
-      FROM public.%I AS wrong_wallet
-      WHERE wrong_wallet.user_id IS NOT NULL
-      ON CONFLICT (user_id) DO NOTHING
-      $copy_wrong_wallet$,
-      balance_expr,
-      credits_expr,
-      wrong_table
-    );
-  END LOOP;
-END $$;
