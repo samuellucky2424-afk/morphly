@@ -63,7 +63,10 @@ BEGIN
   END IF;
 END $$;
 
--- Remove any old auth trigger whose function still references the mistaken walletw table.
+-- Remove old auth signup triggers whose functions still reference a wallet table.
+-- This is intentionally broader than only "walletw" because a stale trigger can
+-- keep writing to public.wallet, public.walletw, or another previous wallet table
+-- even after the app code has been fixed.
 DO $$
 DECLARE
   trigger_record RECORD;
@@ -77,7 +80,7 @@ BEGIN
     WHERE n.nspname = 'auth'
       AND c.relname = 'users'
       AND NOT t.tgisinternal
-      AND pg_get_functiondef(p.oid) ILIKE '%walletw%'
+      AND pg_get_functiondef(p.oid) ILIKE '%wallet%'
   LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS %I ON auth.users', trigger_record.tgname);
   END LOOP;
@@ -122,3 +125,69 @@ FROM auth.users AS auth_users
 LEFT JOIN public.wallets ON public.wallets.user_id = auth_users.id
 WHERE public.wallets.user_id IS NULL
 ON CONFLICT (user_id) DO NOTHING;
+
+-- If a previous broken trigger created rows in common wrong tables, copy them
+-- into public.wallets without deleting any existing data.
+DO $$
+DECLARE
+  wrong_table TEXT;
+  balance_expr TEXT;
+  credits_expr TEXT;
+BEGIN
+  FOREACH wrong_table IN ARRAY ARRAY['walletw', 'wallet']
+  LOOP
+    IF to_regclass(format('public.%I', wrong_table)) IS NULL THEN
+      CONTINUE;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = wrong_table
+        AND column_name = 'user_id'
+    ) THEN
+      CONTINUE;
+    END IF;
+
+    balance_expr := CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = wrong_table
+          AND column_name = 'balance'
+      )
+        THEN 'COALESCE(wrong_wallet.balance, 0)'
+      ELSE '0'
+    END;
+
+    credits_expr := CASE
+      WHEN EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = wrong_table
+          AND column_name = 'credits'
+      )
+        THEN 'COALESCE(wrong_wallet.credits, 0)'
+      ELSE '0'
+    END;
+
+    EXECUTE format(
+      $copy_wrong_wallet$
+      INSERT INTO public.wallets (user_id, balance, credits)
+      SELECT
+        wrong_wallet.user_id,
+        %s,
+        %s
+      FROM public.%I AS wrong_wallet
+      WHERE wrong_wallet.user_id IS NOT NULL
+      ON CONFLICT (user_id) DO NOTHING
+      $copy_wrong_wallet$,
+      balance_expr,
+      credits_expr,
+      wrong_table
+    );
+  END LOOP;
+END $$;
