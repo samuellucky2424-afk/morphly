@@ -117,6 +117,8 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
 };
 
 const BASE_PROMPT = `Virtually try on the garment from the reference image on the person in the video.
+Use the reference image only for the garment design: shape, color, pattern, logos, fabric type, and fit.
+Do not copy the reference image's art style, rendering style, lighting, background, person, mannequin, pose, or camera angle.
 Keep the person's face, hair, skin tone, pose, and background exactly as seen in the live camera feed.
 The output should be photorealistic and indistinguishable from a real camera recording.
 Preserve natural lighting, realistic fabric texture, and accurate garment fit on the body.
