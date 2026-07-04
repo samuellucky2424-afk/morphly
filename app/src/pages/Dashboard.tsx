@@ -153,7 +153,7 @@ function createEmptyStreamMetrics(): StreamMetrics {
 function buildTransformSignature(transform: TransformState): string {
   return [
     transform.prompt,
-    transform.enhance ? 'enhance' : 'base',
+    DEFAULT_ENHANCE ? 'enhance' : 'base',
     transform.imageSignature ?? 'no-image',
   ].join('|');
 }
@@ -161,7 +161,7 @@ function buildTransformSignature(transform: TransformState): string {
 function buildRealtimeSessionState(transform: TransformState) {
   return {
     prompt: transform.prompt,
-    enhance: transform.enhance,
+    enhance: DEFAULT_ENHANCE,
     image: transform.image ?? null,
   };
 }
@@ -1352,7 +1352,7 @@ function Dashboard() {
         initialState: {
           prompt: {
             text: initialTransform.prompt,
-            enhance: initialTransform.enhance,
+            enhance: DEFAULT_ENHANCE,
           },
           image: initialTransform.image ?? undefined,
         },
