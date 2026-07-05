@@ -1,23 +1,17 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
-import { logErrorEvent, logRequestEvent } from '../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
-const MAX_BILLABLE_SECONDS = 7200;
 
 function normalizeCredits(value) {
   const credits = Number(value ?? 0);
   return Number.isFinite(credits) ? credits : 0;
 }
 
-function getBillableSeconds(startTime) {
-  const timestamp = new Date(startTime).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return 0;
-  }
-
-  const elapsedSeconds = Math.floor((Date.now() - timestamp) / 1000);
-  return Math.min(Math.max(elapsedSeconds, 0), MAX_BILLABLE_SECONDS);
+function normalizeSeconds(value) {
+  const seconds = Number(value ?? 0);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
 }
 
 export default async function handler(req, res) {
@@ -45,7 +39,7 @@ export default async function handler(req, res) {
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       supabaseAdmin
         .from('sessions')
-        .select('id, start_time')
+        .select('id, seconds_used')
         .eq('user_id', userId)
         .eq('status', 'active')
         .order('created_at', { ascending: false })
@@ -72,18 +66,17 @@ export default async function handler(req, res) {
       return res.json({ credits: walletCredits, remainingCredits: walletCredits, shouldStop: walletCredits <= 0 });
     }
 
-    // Compute live balance: wallet credits minus every second elapsed since start.
-    // This is purely a read — no DB writes. The actual deduction happens in
-    // end-session so the wallet value stays stable during streaming.
-    const billableElapsed = getBillableSeconds(activeSession.start_time);
-    const liveDeducted = Math.min(walletCredits, billableElapsed * CREDITS_PER_SECOND);
+    // Compute live balance from Decart generation seconds recorded by heartbeat.
+    // The wallet is still deducted only once in end-session.
+    const billableSeconds = normalizeSeconds(activeSession.seconds_used);
+    const liveDeducted = Math.min(walletCredits, billableSeconds * CREDITS_PER_SECOND);
     const remainingCredits = Math.max(0, walletCredits - liveDeducted);
     const shouldStop = remainingCredits <= 0;
 
     return res.json({
       credits: remainingCredits,
       remainingCredits,
-      elapsedSeconds: billableElapsed,
+      billableSeconds,
       shouldStop,
       forceEnd: shouldStop,
     });

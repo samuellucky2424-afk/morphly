@@ -1,10 +1,10 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
-import { logErrorEvent, logRequestEvent } from '../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,
-// protecting users whose app crashed and left an orphaned session.
+// protecting users from a bad client event stream.
 const MAX_BILLABLE_SECONDS = 7200;
 
 function normalizeCredits(value) {
@@ -17,23 +17,65 @@ function normalizeSecondsUsed(value) {
   return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
 }
 
+function normalizeFinalSecondsDelta(value) {
+  const seconds = normalizeSecondsUsed(value);
+  return Math.min(seconds, MAX_BILLABLE_SECONDS);
+}
+
 function normalizeRecordedCost(session) {
-  const cost = Number(session?.cost ?? 0);
+  const cost = Number(session?.cost ?? session?.credits_used ?? 0);
   return Number.isFinite(cost) && cost > 0 ? cost : 0;
 }
 
-function getBillableSeconds(startTime) {
-  const timestamp = new Date(startTime).getTime();
-  if (!Number.isFinite(timestamp)) {
-    return 0;
-  }
-
-  const elapsedSeconds = Math.floor((Date.now() - timestamp) / 1000);
-  return Math.min(Math.max(elapsedSeconds, 0), MAX_BILLABLE_SECONDS);
+function isMissingColumnError(error, columnName) {
+  const message = String(error?.message || error?.details || '');
+  return error?.code === 'PGRST204' || new RegExp(`\\b${columnName}\\b`, 'i').test(message);
 }
 
-// Bills the exact seconds streamed (start_time → now), capped at max_seconds.
-async function billAndCloseSession(session, userId) {
+async function selectActiveSessions(userId) {
+  const withCost = await supabaseAdmin
+    .from('sessions')
+    .select('id, seconds_used, cost')
+    .eq('user_id', userId).eq('status', 'active')
+    .order('created_at', { ascending: false });
+
+  if (!isMissingColumnError(withCost.error, 'cost')) {
+    return withCost;
+  }
+
+  return supabaseAdmin
+    .from('sessions')
+    .select('id, seconds_used, credits_used')
+    .eq('user_id', userId).eq('status', 'active')
+    .order('created_at', { ascending: false });
+}
+
+async function updateEndedSession(sessionId, secondsUsed, creditsUsed) {
+  const baseUpdate = {
+    end_time: new Date(),
+    status: 'ended',
+    seconds_used: secondsUsed,
+  };
+
+  const withCost = await supabaseAdmin
+    .from('sessions')
+    .update({ ...baseUpdate, cost: creditsUsed })
+    .eq('id', sessionId)
+    .eq('status', 'active');
+
+  if (!isMissingColumnError(withCost.error, 'cost')) {
+    return withCost;
+  }
+
+  return supabaseAdmin
+    .from('sessions')
+    .update({ ...baseUpdate, credits_used: creditsUsed })
+    .eq('id', sessionId)
+    .eq('status', 'active');
+}
+
+// Bills only seconds already recorded from Decart generation ticks.
+async function billAndCloseSession(session, userId, finalSecondsDelta = 0) {
   const { data: walletData, error: walletError } = await supabaseAdmin
     .from('wallets').select('credits').eq('user_id', userId).maybeSingle();
 
@@ -43,21 +85,15 @@ async function billAndCloseSession(session, userId) {
 
   const currentCredits = normalizeCredits(walletData?.credits);
 
-  const billableSeconds = getBillableSeconds(session.start_time);
+  const billableSeconds = Math.min(
+    normalizeSecondsUsed(session.seconds_used) + normalizeFinalSecondsDelta(finalSecondsDelta),
+    MAX_BILLABLE_SECONDS,
+  );
   const creditsToDeduct = Math.min(currentCredits, billableSeconds * CREDITS_PER_SECOND);
   const newCredits = currentCredits - creditsToDeduct;
 
   const updateResults = await Promise.all([
-    supabaseAdmin
-      .from('sessions')
-      .update({
-        end_time: new Date(),
-        status: 'ended',
-        seconds_used: billableSeconds,
-        cost: creditsToDeduct,
-      })
-      .eq('id', session.id)
-      .eq('status', 'active'),
+    updateEndedSession(session.id, billableSeconds, creditsToDeduct),
     creditsToDeduct > 0
       ? supabaseAdmin.from('wallets').update({ credits: newCredits }).eq('user_id', userId)
       : Promise.resolve(),
@@ -72,16 +108,11 @@ async function billAndCloseSession(session, userId) {
 }
 
 async function closeStaleSession(session) {
-  return supabaseAdmin
-    .from('sessions')
-    .update({
-      end_time: new Date(),
-      status: 'ended',
-      seconds_used: normalizeSecondsUsed(session.seconds_used),
-      cost: normalizeRecordedCost(session),
-    })
-    .eq('id', session.id)
-    .eq('status', 'active');
+  return updateEndedSession(
+    session.id,
+    normalizeSecondsUsed(session.seconds_used),
+    normalizeRecordedCost(session),
+  );
 }
 
 export default async function handler(req, res) {
@@ -97,7 +128,7 @@ export default async function handler(req, res) {
       return res.status(503).json({ success: false, message: supabaseAdminConfigError || 'Supabase admin is not configured' });
     }
 
-    const { userId, sessionId } = req.body;
+    const { userId, sessionId, secondsDelta } = req.body;
     if (!userId) return res.status(400).json({ success: false, message: 'User ID is required' });
 
     await logRequestEvent('end-session.request', {
@@ -107,11 +138,7 @@ export default async function handler(req, res) {
       sessionId,
     });
 
-    const { data: activeSessions, error: activeSessionError } = await supabaseAdmin
-      .from('sessions')
-      .select('id, start_time, seconds_used, cost')
-      .eq('user_id', userId).eq('status', 'active')
-      .order('created_at', { ascending: false });
+    const { data: activeSessions, error: activeSessionError } = await selectActiveSessions(userId);
 
     if (activeSessionError) {
       console.error('Failed to load active session:', activeSessionError);
@@ -146,7 +173,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const remainingCredits = await billAndCloseSession(targetSession, userId);
+    const remainingCredits = await billAndCloseSession(targetSession, userId, secondsDelta);
     await logRequestEvent('end-session.closed', {
       userId,
       sessionId: targetSession.id,

@@ -1,6 +1,6 @@
 // @ts-nocheck
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase.js';
-import { logErrorEvent, logRequestEvent } from '../shared/backend-logger.js';
+import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 
 const CREDITS_PER_SECOND = 2;
 
@@ -19,8 +19,79 @@ function normalizeSecondsUsed(value) {
 }
 
 function normalizeRecordedCost(session) {
-  const cost = Number(session?.cost ?? 0);
+  const cost = Number(session?.cost ?? session?.credits_used ?? 0);
   return Number.isFinite(cost) && cost > 0 ? cost : 0;
+}
+
+function isMissingColumnError(error, columnName) {
+  const message = String(error?.message || error?.details || '');
+  return error?.code === 'PGRST204' || new RegExp(`\\b${columnName}\\b`, 'i').test(message);
+}
+
+async function selectActiveSessions(userId) {
+  const withCost = await supabaseAdmin
+    .from('sessions')
+    .select('id, seconds_used, cost')
+    .eq('user_id', userId)
+    .eq('status', 'active');
+
+  if (!isMissingColumnError(withCost.error, 'cost')) {
+    return withCost;
+  }
+
+  return supabaseAdmin
+    .from('sessions')
+    .select('id, seconds_used, credits_used')
+    .eq('user_id', userId)
+    .eq('status', 'active');
+}
+
+async function closeExistingSession(session) {
+  const baseUpdate = {
+    end_time: new Date(),
+    status: 'ended',
+    seconds_used: normalizeSecondsUsed(session.seconds_used),
+  };
+  const recordedCost = normalizeRecordedCost(session);
+
+  const withCost = await supabaseAdmin.from('sessions')
+    .update({ ...baseUpdate, cost: recordedCost })
+    .eq('id', session.id)
+    .eq('status', 'active');
+
+  if (!isMissingColumnError(withCost.error, 'cost')) {
+    return withCost;
+  }
+
+  return supabaseAdmin.from('sessions')
+    .update({ ...baseUpdate, credits_used: recordedCost })
+    .eq('id', session.id)
+    .eq('status', 'active');
+}
+
+async function createActiveSession(userId) {
+  const baseInsert = {
+    user_id: userId,
+    status: 'active',
+    start_time: new Date(),
+    seconds_used: 0,
+  };
+
+  const withCost = await supabaseAdmin
+    .from('sessions')
+    .insert({ ...baseInsert, cost: 0 })
+    .select('id')
+    .single();
+
+  if (!isMissingColumnError(withCost.error, 'cost')) {
+    return withCost;
+  }
+
+  return supabaseAdmin
+    .from('sessions')
+    .insert({ ...baseInsert, credits_used: 0 })
+    .select('id')
+    .single();
 }
 
 export default async function handler(req, res) {
@@ -52,7 +123,7 @@ export default async function handler(req, res) {
 
     // Fetch orphaned sessions and wallet in parallel
     const [activeSessionsResult, walletResult] = await Promise.all([
-      supabaseAdmin.from('sessions').select('id, seconds_used, cost').eq('user_id', userId).eq('status', 'active'),
+      selectActiveSessions(userId),
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
     ]);
 
@@ -73,17 +144,7 @@ export default async function handler(req, res) {
     // If a session was already accruing tracked usage, preserve that recorded cost.
     if (existingActiveSessions && existingActiveSessions.length > 0) {
       const cleanupResults = await Promise.all(
-        existingActiveSessions.map(session =>
-          supabaseAdmin.from('sessions')
-            .update({
-              end_time: new Date(),
-              status: 'ended',
-              seconds_used: normalizeSecondsUsed(session.seconds_used),
-              cost: normalizeRecordedCost(session),
-            })
-            .eq('id', session.id)
-            .eq('status', 'active'),
-        ),
+        existingActiveSessions.map(closeExistingSession),
       );
 
       const cleanupError = cleanupResults.find(result => result?.error);
@@ -112,15 +173,7 @@ export default async function handler(req, res) {
     //  which made closeActiveSession fall back to wiping the entire balance.)
     const maxSeconds = Math.floor(userCredits / CREDITS_PER_SECOND);
 
-    const { data: newSession, error: sessionError } = await supabaseAdmin
-      .from('sessions')
-      .insert({
-        user_id: userId,
-        status: 'active',
-        start_time: new Date(),
-        cost: 0,
-        seconds_used: 0,
-      }).select('id').single();
+    const { data: newSession, error: sessionError } = await createActiveSession(userId);
 
     if (sessionError) {
       console.error('Failed to create session:', sessionError);

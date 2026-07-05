@@ -1,9 +1,10 @@
 {
   "name": "morphly-api",
-  "version": "1.2.33",
+  "version": "1.2.34",
   "private": true,
   "type": "module",
   "dependencies": {
+    "@decartai/sdk": "^0.1.12",
     "@supabase/supabase-js": "^2.100.1",
     "concurrently": "^9.2.1"
   },

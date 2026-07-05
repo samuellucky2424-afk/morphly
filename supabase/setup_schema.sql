@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS public.wallets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   balance NUMERIC DEFAULT 0 CHECK (balance >= 0),
+  credits INTEGER DEFAULT 0 CHECK (credits >= 0),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   UNIQUE(user_id)
 );
@@ -35,10 +36,15 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   end_time TIMESTAMP WITH TIME ZONE,
   seconds_used INTEGER DEFAULT 0,
+  credits_used INTEGER DEFAULT 0,
   cost NUMERIC DEFAULT 0,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS seconds_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS credits_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS cost NUMERIC DEFAULT 0;
 
 -- 6. PLANS TABLE (Created before subscriptions to allow foreign key if preferred, but schema lists subscriptions first)
 CREATE TABLE IF NOT EXISTS public.plans (
@@ -110,21 +116,27 @@ CREATE POLICY "Authenticated users can view plans"
 -- ============================================
 
 -- Function to handle new user account creation and automated wallet creation
-CREATE OR REPLACE FUNCTION public.handle_new_user()
+CREATE OR REPLACE FUNCTION public.morphly_handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO public.users (id, email)
-  VALUES (NEW.id, NEW.email);
+  IF COALESCE(NEW.raw_user_meta_data->>'app', '') <> 'morphly' THEN
+    RETURN NEW;
+  END IF;
 
-  INSERT INTO public.wallets (user_id, balance)
-  VALUES (NEW.id, 0);
+  INSERT INTO public.users (id, email)
+  VALUES (NEW.id, COALESCE(NEW.email, ''))
+  ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email;
+
+  INSERT INTO public.wallets (user_id, balance, credits)
+  VALUES (NEW.id, 0, 0)
+  ON CONFLICT (user_id) DO NOTHING;
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 -- Trigger to automatically wire up users/wallets on sign up
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
+DROP TRIGGER IF EXISTS morphly_on_auth_user_created ON auth.users;
+CREATE TRIGGER morphly_on_auth_user_created
   AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+  FOR EACH ROW EXECUTE FUNCTION public.morphly_handle_new_user();

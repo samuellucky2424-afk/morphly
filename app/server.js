@@ -7,25 +7,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Share the same handlers between local dev and the Vercel app-root deployment.
-import rateRouter from './api/rate.ts';
-import publicConfigRouter from './api/public-config.ts';
-import walletRouter from './api/wallet.ts';
-import creditPackagesRouter from './api/credit-packages.ts';
-import verifyPaymentRouter from './api/verify-payment.ts';
-import startSessionRouter from './api/start-session.ts';
-import sessionStatusRouter from './api/session-status.ts';
-import endSessionRouter from './api/end-session.ts';
-import versionRouter from './api/version.ts';
-import { createAdminHandler } from './server/admin-handler.js';
 import { supabaseAdminConfigError } from './server/supabase-admin.js';
 import { logRequestEvent } from '../shared/backend-logger.js';
-
-const adminMeRouter = createAdminHandler('me');
-const adminOverviewRouter = createAdminHandler('overview');
-const adminUsersRouter = createAdminHandler('users');
-const adminCreditPackagesRouter = createAdminHandler('credit-packages');
-const adminAuditLogRouter = createAdminHandler('audit-log');
+import { handleApiRoute } from './server/api-router.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,20 +43,7 @@ app.use((req, res, next) => {
 });
 
 // API Routes
-app.use('/api/rate', rateRouter);
-app.use('/api/public-config', publicConfigRouter);
-app.use('/api/wallet', walletRouter);
-app.use('/api/credit-packages', creditPackagesRouter);
-app.use('/api/admin-me', adminMeRouter);
-app.use('/api/admin-overview', adminOverviewRouter);
-app.use('/api/admin-users', adminUsersRouter);
-app.use('/api/admin-credit-packages', adminCreditPackagesRouter);
-app.use('/api/admin-audit-log', adminAuditLogRouter);
-app.use('/api/verify-payment', verifyPaymentRouter);
-app.use('/api/start-session', startSessionRouter);
-app.use('/api/session-status', sessionStatusRouter);
-app.use('/api/end-session', endSessionRouter);
-app.use('/api/version', versionRouter);
+app.use('/api', handleApiRoute);
 
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {

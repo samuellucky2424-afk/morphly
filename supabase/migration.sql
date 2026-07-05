@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS public.wallets (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
   balance NUMERIC(12, 2) DEFAULT 0 CHECK (balance >= 0),
+  credits INTEGER DEFAULT 0 CHECK (credits >= 0),
   currency TEXT DEFAULT 'USD',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -54,6 +55,7 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   start_time TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   end_time TIMESTAMP WITH TIME ZONE,
   seconds_used INTEGER DEFAULT 0,
+  credits_used INTEGER DEFAULT 0,
   cost_per_second NUMERIC(10, 6) DEFAULT 0.0001,
   cost NUMERIC(12, 2) DEFAULT 0,
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'ended', 'interrupted')),
@@ -61,6 +63,10 @@ CREATE TABLE IF NOT EXISTS public.sessions (
   metadata JSONB DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS seconds_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS credits_used INTEGER DEFAULT 0;
+ALTER TABLE public.sessions ADD COLUMN IF NOT EXISTS cost NUMERIC(12, 2) DEFAULT 0;
 
 -- ============================================
 -- SUBSCRIPTIONS TABLE
@@ -200,26 +206,32 @@ CREATE POLICY "Anyone can view active plans"
 -- ============================================
 
 -- Auto-create user profile on signup
-CREATE OR REPLACE FUNCTION public.handle_new_user()
+CREATE OR REPLACE FUNCTION public.morphly_handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
+  IF COALESCE(NEW.raw_user_meta_data->>'app', '') <> 'morphly' THEN
+    RETURN NEW;
+  END IF;
+
   INSERT INTO public.users (id, email)
-  VALUES (NEW.id, NEW.email)
-  ON CONFLICT (id) DO NOTHING;
+  VALUES (NEW.id, COALESCE(NEW.email, ''))
+  ON CONFLICT (id) DO UPDATE
+    SET email = EXCLUDED.email,
+        updated_at = NOW();
   
-  INSERT INTO public.wallets (user_id, balance)
-  VALUES (NEW.id, 0)
+  INSERT INTO public.wallets (user_id, balance, credits)
+  VALUES (NEW.id, 0, 0)
   ON CONFLICT (user_id) DO NOTHING;
   
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
+DROP TRIGGER IF EXISTS morphly_on_auth_user_created ON auth.users;
+CREATE TRIGGER morphly_on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW
-  EXECUTE FUNCTION public.handle_new_user();
+  EXECUTE FUNCTION public.morphly_handle_new_user();
 
 -- Auto-update updated_at timestamp
 CREATE OR REPLACE FUNCTION public.update_updated_at()

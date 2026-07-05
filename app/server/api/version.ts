@@ -1,6 +1,6 @@
 // @ts-nocheck
 
-import { resolveVersionManifest } from '../shared/version-manifest-handler.js';
+import { resolveVersionManifest } from '../../../shared/version-manifest-handler.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');

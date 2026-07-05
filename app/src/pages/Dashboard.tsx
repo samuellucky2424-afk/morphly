@@ -116,16 +116,8 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Virtually try on the garment from the reference image on the person in the video.
-Use the reference image only for the garment design: shape, color, pattern, logos, fabric type, and fit.
-Do not copy the reference image's art style, rendering style, lighting, background, person, mannequin, pose, or camera angle.
-Keep the person's face, hair, skin tone, pose, and background exactly as seen in the live camera feed.
-The output should be photorealistic and indistinguishable from a real camera recording.
-Preserve natural lighting, realistic fabric texture, and accurate garment fit on the body.
-Do not alter the person's face, body proportions, hair, or background in any way.
-Maintain true human anatomy and normal camera softness at all times.
-Never produce a cartoon, anime, illustration, painting, CGI, 3D render, or beautified filter look.`;
-const DEFAULT_ENHANCE = false;
+const BASE_PROMPT = `Substitute the character in the video with the person in the reference image.`;
+const DEFAULT_ENHANCE = true;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
@@ -155,7 +147,7 @@ function createEmptyStreamMetrics(): StreamMetrics {
 function buildTransformSignature(transform: TransformState): string {
   return [
     transform.prompt,
-    transform.enhance ? 'enhance' : 'base',
+    DEFAULT_ENHANCE ? 'enhance' : 'base',
     transform.imageSignature ?? 'no-image',
   ].join('|');
 }
@@ -163,7 +155,7 @@ function buildTransformSignature(transform: TransformState): string {
 function buildRealtimeSessionState(transform: TransformState) {
   return {
     prompt: transform.prompt,
-    enhance: transform.enhance,
+    enhance: DEFAULT_ENHANCE,
     image: transform.image ?? null,
   };
 }
@@ -333,6 +325,9 @@ function Dashboard() {
   const clientSubscriptionsCleanupRef = useRef<(() => void) | null>(null);
   const sessionTokenRef = useRef('');
   const sessionIdRef = useRef('');
+  const usageFlushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pendingBillableSecondsRef = useRef(0);
+  const lastBilledGenerationSecondsRef = useRef<number | null>(null);
   const frameCallbackHandleRef = useRef<number | null>(null);
   const lastRemoteFrameAtRef = useRef(0);
   const lastGenerationTickAtRef = useRef(Date.now());
@@ -398,6 +393,90 @@ function Dashboard() {
   useEffect(() => {
     preferredModeRef.current = preferredMode;
   }, [preferredMode]);
+
+  const clearUsageFlushInterval = useCallback(() => {
+    if (usageFlushIntervalRef.current) {
+      clearInterval(usageFlushIntervalRef.current);
+      usageFlushIntervalRef.current = null;
+    }
+  }, []);
+
+  const flushBillableUsage = useCallback(async (options?: { keepalive?: boolean; suppressAutoStop?: boolean }) => {
+    if (!user?.id || !sessionIdRef.current) {
+      return true;
+    }
+
+    const secondsDelta = Math.floor(pendingBillableSecondsRef.current);
+    if (secondsDelta <= 0) {
+      return true;
+    }
+
+    pendingBillableSecondsRef.current -= secondsDelta;
+
+    try {
+      const response = await apiRequest<{
+        remainingCredits?: number;
+        shouldStop?: boolean;
+      }>('/heartbeat', {
+        method: 'POST',
+        keepalive: options?.keepalive,
+        body: JSON.stringify({
+          userId: user.id,
+          sessionId: sessionIdRef.current,
+          secondsDelta,
+        }),
+      });
+
+      if (response.remainingCredits !== undefined) {
+        setCredits(response.remainingCredits);
+      }
+
+      if (response.shouldStop && !options?.suppressAutoStop) {
+        await handleStopRef.current?.({ silent: true });
+        toast.error('Session auto-ended - Insufficient credits');
+      }
+
+      return true;
+    } catch (error) {
+      pendingBillableSecondsRef.current += secondsDelta;
+      console.error('Failed to record billable usage:', error);
+      return false;
+    }
+  }, [setCredits, user?.id]);
+
+  const resetBillableUsageTracking = useCallback(() => {
+    clearUsageFlushInterval();
+    pendingBillableSecondsRef.current = 0;
+    lastBilledGenerationSecondsRef.current = null;
+  }, [clearUsageFlushInterval]);
+
+  const recordBillableGenerationTick = useCallback((tick?: { seconds?: number }) => {
+    if (!sessionTokenRef.current || !sessionIdRef.current) {
+      return;
+    }
+
+    const tickSeconds = Number(tick?.seconds);
+    let secondsDelta = 0;
+
+    if (Number.isFinite(tickSeconds) && tickSeconds >= 0) {
+      const normalizedTickSeconds = Math.floor(tickSeconds);
+      const previousTickSeconds = lastBilledGenerationSecondsRef.current;
+
+      if (previousTickSeconds === null || normalizedTickSeconds < previousTickSeconds) {
+        secondsDelta = normalizedTickSeconds > 0 ? normalizedTickSeconds : 0;
+      } else {
+        secondsDelta = normalizedTickSeconds - previousTickSeconds;
+      }
+
+      lastBilledGenerationSecondsRef.current = normalizedTickSeconds;
+    } else {
+      secondsDelta = 1;
+    }
+
+    if (secondsDelta > 0) {
+      pendingBillableSecondsRef.current += Math.min(secondsDelta, 10);
+    }
+  }, []);
 
   const resetMorphlyCamRefs = useCallback(() => {
     if (morphlyCamWindowRef.current && morphlyCamRenderHandleRef.current !== null) {
@@ -1267,7 +1346,7 @@ function Dashboard() {
         initialState: {
           prompt: {
             text: initialTransform.prompt,
-            enhance: initialTransform.enhance,
+            enhance: DEFAULT_ENHANCE,
           },
           image: initialTransform.image ?? undefined,
         },
@@ -1305,6 +1384,7 @@ function Dashboard() {
           // Only treat as a true mid-session reconnect if connected was seen through our handler.
           // This prevents the SDK's normal post-connect state cycle from triggering recovery .set().
           wasConnectedBeforeLastReconnect = hasSeenConnectedViaHandler;
+          void flushBillableUsage();
           setUiStatus('Reconnecting...');
         }
 
@@ -1335,6 +1415,7 @@ function Dashboard() {
 
         if (nextState === 'disconnected') {
           setUiStatus('Disconnected');
+          void flushBillableUsage();
           // Only stop if the session was actually established — not during initial WebSocket handshake.
           if (!restartInFlightRef.current && sessionEverConnectedRef.current) {
             void safelyStopSessionRef.current?.();
@@ -1371,8 +1452,9 @@ function Dashboard() {
         console.error('[Decart] realtime error:', error);
       };
 
-      const onGenerationTick = () => {
+      const onGenerationTick = (tick: { seconds?: number }) => {
         lastGenerationTickAtRef.current = Date.now();
+        recordBillableGenerationTick(tick);
         markRemoteFrameFresh();
       };
 
@@ -1421,9 +1503,11 @@ function Dashboard() {
   }, [
     cleanupClientSubscriptions,
     clearSoftReconnectTimer,
+    flushBillableUsage,
     getMorphlyCamGuideMessage,
     handleRealtimeStats,
     markRemoteFrameFresh,
+    recordBillableGenerationTick,
     resetHealthCounters,
     syncMorphlyCamStream,
     startRemoteFrameMonitor,
@@ -1510,11 +1594,19 @@ function Dashboard() {
     const activeSessionId = sessionIdRef.current || undefined;
     const shouldEndSession = Boolean(sessionTokenRef.current);
 
+    clearUsageFlushInterval();
+    const usageFlushed = await flushBillableUsage({ keepalive: true, suppressAutoStop: true });
+    const finalSecondsDelta = usageFlushed ? 0 : Math.floor(pendingBillableSecondsRef.current);
+
     const endSessionPromise = shouldEndSession
       ? apiRequest<{ remainingCredits?: number }>('/end-session', {
           method: 'POST',
           keepalive: true,
-          body: JSON.stringify({ userId: activeUserId, sessionId: activeSessionId }),
+          body: JSON.stringify({
+            userId: activeUserId,
+            sessionId: activeSessionId,
+            secondsDelta: finalSecondsDelta > 0 ? finalSecondsDelta : undefined,
+          }),
         })
       : null;
 
@@ -1533,6 +1625,7 @@ function Dashboard() {
 
     sessionTokenRef.current = '';
     sessionIdRef.current = '';
+    resetBillableUsageTracking();
     isStreamingRef.current = false;
     restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
     restartFailureCountRef.current = 0;
@@ -1564,7 +1657,10 @@ function Dashboard() {
   }, [
     clearFrameWatchdog,
     clearSoftReconnectTimer,
+    clearUsageFlushInterval,
     disconnectFromDecart,
+    flushBillableUsage,
+    resetBillableUsageTracking,
     resetHealthCounters,
     setCredits,
     setSessionStatus,
@@ -1581,8 +1677,8 @@ function Dashboard() {
   }, [safelyStopSession]);
 
   // Polls /api/session-status every 5 s while streaming.
-  // The server computes the live remaining balance from elapsed time — no
-  // frontend billing logic. Credits are deducted server-side by end-session.
+  // The server computes the live remaining balance from recorded generation time.
+  // Credits are deducted server-side by end-session.
   const pollSessionStatus = useCallback(async () => {
     if (!user?.id) return;
     try {
@@ -1631,6 +1727,8 @@ function Dashboard() {
       clearInterval(pollIntervalRef.current);
     }
 
+    clearUsageFlushInterval();
+
     if (transformSyncTimerRef.current) {
       clearTimeout(transformSyncTimerRef.current);
     }
@@ -1643,7 +1741,7 @@ function Dashboard() {
     realtimeClientRef.current?.disconnect();
     webcamStreamRef.current?.getTracks().forEach((track) => track.stop());
     webcamSourceStreamRef.current?.getTracks().forEach((track) => track.stop());
-  }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearFrameWatchdog, clearSoftReconnectTimer, closeMorphlyCamWindow]);
+  }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearFrameWatchdog, clearSoftReconnectTimer, clearUsageFlushInterval, closeMorphlyCamWindow]);
 
   useEffect(() => {
     enumerateCameras();
@@ -1725,12 +1823,13 @@ function Dashboard() {
 
       if (generationLag > FREEZE_RESTART_THRESHOLD_MS && frameLag > FREEZE_RESTART_THRESHOLD_MS) {
         console.warn('Stream frozen. Restarting realtime session...');
+        void flushBillableUsage();
         void restartRealtimeSession('generation-tick-watchdog');
       }
     }, RESTART_WATCHDOG_INTERVAL_MS);
 
     return clearFrameWatchdog;
-  }, [clearFrameWatchdog, isStreaming, restartRealtimeSession]);
+  }, [clearFrameWatchdog, flushBillableUsage, isStreaming, restartRealtimeSession]);
 
   useEffect(() => {
     if (!isStreaming) {
@@ -1810,6 +1909,7 @@ function Dashboard() {
     setUiStatus('Connecting...');
     setRuntimeModeCap('hd');
     resetHealthCounters();
+    resetBillableUsageTracking();
 
     // Arm the virtual camera publisher. The live frames come from the main
     // Morphly output stream; the popup, if opened, is only an optional mirror.
@@ -1889,6 +1989,9 @@ function Dashboard() {
       }
 
       pollIntervalRef.current = setInterval(pollSessionStatus, POLLING_INTERVAL);
+      usageFlushIntervalRef.current = setInterval(() => {
+        void flushBillableUsage();
+      }, POLLING_INTERVAL);
       setIsStreaming(true);
       setSessionStatus('LIVE');
       setUiStatus('Live');
