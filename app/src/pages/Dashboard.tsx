@@ -116,14 +116,8 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
-const BASE_PROMPT = `Virtually try on the garment from the reference image on the person in the video.
-Keep the person's face, hair, skin tone, pose, and background exactly as seen in the live camera feed.
-The output should be photorealistic and indistinguishable from a real camera recording.
-Preserve natural lighting, realistic fabric texture, and accurate garment fit on the body.
-Do not alter the person's face, body proportions, hair, or background in any way.
-Maintain true human anatomy and normal camera softness at all times.
-Never produce a cartoon, anime, illustration, painting, CGI, 3D render, or beautified filter look.`;
-const DEFAULT_ENHANCE = false;
+const BASE_PROMPT = `Substitute the character in the video with the person in the reference image.`;
+const DEFAULT_ENHANCE = true;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
 const AUTO_DOWNGRADE_SAMPLES = 3;
