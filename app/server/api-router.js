@@ -1,17 +1,17 @@
 // @ts-nocheck
 import { createAdminHandler } from './admin-handler.js';
-import creditPackagesHandler from './api/credit-packages.ts';
-import endSessionHandler from './api/end-session.ts';
-import ensureUserWalletHandler from './api/ensure-user-wallet.ts';
-import flutterwaveWebhookHandler from './api/flutterwave-webhook.ts';
-import heartbeatHandler from './api/heartbeat.ts';
-import publicConfigHandler from './api/public-config.ts';
-import rateHandler from './api/rate.ts';
-import sessionStatusHandler from './api/session-status.ts';
-import startSessionHandler from './api/start-session.ts';
-import verifyPaymentHandler from './api/verify-payment.ts';
-import versionHandler from './api/version.ts';
-import walletHandler from './api/wallet.ts';
+import creditPackagesHandler from './api/credit-packages.js';
+import endSessionHandler from './api/end-session.js';
+import ensureUserWalletHandler from './api/ensure-user-wallet.js';
+import flutterwaveWebhookHandler from './api/flutterwave-webhook.js';
+import heartbeatHandler from './api/heartbeat.js';
+import publicConfigHandler from './api/public-config.js';
+import rateHandler from './api/rate.js';
+import sessionStatusHandler from './api/session-status.js';
+import startSessionHandler from './api/start-session.js';
+import verifyPaymentHandler from './api/verify-payment.js';
+import versionHandler from './api/version.js';
+import walletHandler from './api/wallet.js';
 
 const routeHandlers = {
   'admin-audit-log': createAdminHandler('audit-log'),
