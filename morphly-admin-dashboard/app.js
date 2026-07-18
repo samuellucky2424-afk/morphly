@@ -622,6 +622,7 @@ async function loadLiveData() {
 async function startAuthenticatedApp() {
   await loadLiveData();
   $("#loginGate").hidden = true;
+  $("#loginGate").style.display = "none";
   $("#adminApp").hidden = false;
   bindEvents();
   renderAll();
