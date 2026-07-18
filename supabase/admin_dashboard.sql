@@ -90,12 +90,7 @@ VALUES
     ('Basic', 1000, 23000, TRUE, 2),
     ('Pro', 2000, 46000, TRUE, 3),
     ('Enterprise', 5000, 115000, TRUE, 4)
-ON CONFLICT (name) DO UPDATE
-SET credits = EXCLUDED.credits,
-    price_ngn = EXCLUDED.price_ngn,
-    is_active = EXCLUDED.is_active,
-    sort_order = EXCLUDED.sort_order,
-    updated_at = NOW();
+ON CONFLICT (name) DO NOTHING;
 
 -- =============================================================================
 -- 5. GRANT ADMIN ROLE TO THE REQUESTED EMAIL

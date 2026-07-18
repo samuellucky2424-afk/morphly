@@ -57,21 +57,10 @@ let systemLogs = [
 ];
 
 const baseMetrics = {
-  downloads: 684,
-  signups: 372,
-  activated: 213,
-  buyers: 67,
-  repeatBuyers: 24,
-  revenue: 2987000,
-  decartCost: 1075320,
-  fees: 119480,
-  refunds: 57000,
-  advertising: 185000,
-  sessions: 921,
-  failedSessions: 128,
-  crashes: 17,
-  apiRequests: 46210,
-  apiErrors: 1468
+  downloads: 0, signups: 0, activated: 0, buyers: 0, repeatBuyers: 0,
+  revenue: 0, decartCost: 0, fees: 0, refunds: 0, advertising: 0,
+  sessions: 0, failedSessions: 0, crashes: 0, apiRequests: 0, apiErrors: 0,
+  growthSeries: []
 };
 
 const state = {
@@ -85,9 +74,9 @@ const state = {
   packages: []
 };
 
-const periodFactor = { "7": 0.24, "30": 1, "90": 2.72 };
-const platformFactor = { all: 1, windows: 0.66, web: 0.23, android: 0.11 };
-const sourceFactor = { all: 1, whatsapp: 0.58, tiktok: 0.18, referral: 0.16, direct: 0.08 };
+const periodFactor = { "7": 1, "30": 1, "90": 1 };
+const platformFactor = { all: 1, windows: 1, web: 1, android: 1 };
+const sourceFactor = { all: 1, whatsapp: 1, tiktok: 1, referral: 1, direct: 1 };
 
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => Array.from(scope.querySelectorAll(selector));
@@ -214,10 +203,10 @@ function metricCard(label, value, context, trend = "", icon = "↗") {
 function renderOverview() {
   const data = filteredMetrics();
   $("#overviewMetrics").innerHTML = [
-    metricCard("Downloads", number(data.downloads), `${number(data.signups)} created accounts`, "+12.4%", "↓"),
-    metricCard("Activated users", number(data.activated), `${percentage(data.activated, data.signups)} of signups`, "+8.1%", "✓"),
-    metricCard("Revenue", money(data.revenue), `${number(data.buyers)} paying customers`, "+16.7%", "₦"),
-    metricCard("Real profit", money(data.grossProfit), "After API, fees, refunds and ads", data.grossProfit >= 0 ? "+9.3%" : "-9.3%", "↗")
+    metricCard("Downloads", number(data.downloads), `${number(data.signups)} created accounts`, "", "↓"),
+    metricCard("Activated users", number(data.activated), `${percentage(data.activated, data.signups)} of signups`, "", "✓"),
+    metricCard("Revenue", money(data.revenue), `${number(data.buyers)} paying customers`, "", "₦"),
+    metricCard("Recorded net", money(data.grossProfit), "Revenue minus recorded fees and refunds", "", "↗")
   ].join("");
   renderGrowthChart(data);
   renderFunnel(data);
@@ -238,10 +227,11 @@ function linePath(items) {
 }
 
 function renderGrowthChart(data) {
-  const scale = data.signups / baseMetrics.signups;
-  const signups = [41, 55, 49, 63, 58, 71, 35].map((value) => Math.max(1, Math.round(value * scale)));
-  const activated = [22, 31, 27, 39, 33, 42, 19].map((value) => Math.max(1, Math.round(value * scale)));
-  const buyers = [7, 9, 8, 13, 11, 14, 5].map((value) => Math.max(1, Math.round(value * scale)));
+  const seriesData = Array.isArray(baseMetrics.growthSeries) ? baseMetrics.growthSeries : [];
+  if (!seriesData.length) { $("#growthChart").innerHTML = '<p class="empty-cell">No analytics events have been recorded yet.</p>'; return; }
+  const signups = seriesData.map((item) => Number(item.signups || 0));
+  const activated = seriesData.map((item) => Number(item.activated || 0));
+  const buyers = seriesData.map((item) => Number(item.buyers || 0));
   const width = 760;
   const height = 240;
   const padding = { top: 15, right: 18, bottom: 30, left: 42 };
@@ -256,8 +246,8 @@ function renderGrowthChart(data) {
     const label = Math.round(maxValue * (1 - index / 3));
     return `<line class="chart-grid" x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}"></line><text class="chart-label" x="4" y="${y + 3}">${label}</text>`;
   }).join("");
-  const labels = ["1 Jul", "5 Jul", "10 Jul", "15 Jul", "20 Jul", "25 Jul", "30 Jul"].map((label, index, list) => {
-    const x = padding.left + ((width - padding.left - padding.right) * index) / (list.length - 1);
+  const labels = seriesData.map((item) => new Date(`${item.date}T00:00:00`).toLocaleDateString("en-NG", { day: "numeric", month: "short" })).map((label, index, list) => {
+    const x = padding.left + ((width - padding.left - padding.right) * index) / Math.max(1, list.length - 1);
     return `<text class="chart-label" text-anchor="middle" x="${x}" y="232">${label}</text>`;
   }).join("");
   const lines = series.map((item) => {
@@ -282,22 +272,16 @@ function renderFunnel(data) {
 }
 
 function renderMoney(data) {
-  const items = [
-    ["Customer revenue", data.revenue],
-    ["Decart usage", -data.decartCost],
-    ["Payment fees", -data.fees],
-    ["Refunds", -data.refunds],
-    ["Advertising", -data.advertising],
-    ["Real operating profit", data.grossProfit]
-  ];
+  const items = [["Customer revenue", data.revenue], ["Recorded payment fees", -data.fees], ["Recorded refunds", -data.refunds], ["Recorded net", data.grossProfit]];
   $("#moneyBreakdown").innerHTML = items.map(([label, value]) => `<div class="money-row"><span>${escapeHtml(label)}</span><strong>${value < 0 ? "−" : ""}${money(Math.abs(value))}</strong></div>`).join("");
 }
 
 function renderAlerts(data) {
+  const pendingPayments = transactions.filter((transaction) => transaction.status === "pending").length;
   const alerts = [
     { level: "critical", icon: "!", title: "Connection failures increased", detail: "Mostly Android WebSocket sessions", count: number(data.failedSessions) },
     { level: "warning", icon: "↻", title: "Signup-to-activation drop", detail: `${number(Math.max(0, data.signups - data.activated))} users never reached a first output`, count: percentage(data.activated, data.signups) },
-    { level: "warning", icon: "₦", title: "Pending payment webhooks", detail: "Verify delayed transactions before granting credit", count: "18" }
+    { level: "warning", icon: "₦", title: "Pending payment webhooks", detail: "Verified backend records awaiting completion", count: number(pendingPayments) }
   ];
   $("#alertList").innerHTML = alerts.map((alert) => `<div class="alert-item ${alert.level}"><span class="alert-icon">${alert.icon}</span><span><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.detail)}</small></span><span class="alert-count">${escapeHtml(alert.count)}</span></div>`).join("");
 }
@@ -616,7 +600,13 @@ async function loadLiveData() {
   transactions = txs.transactions || [];
   systemLogs = (logs.logs || []).map((log) => ({ event: log.error_code, platform: log.platform || "all", user: log.user_id || "Multiple users", count: log.occurrences, severity: log.severity, lastSeen: new Date(log.last_seen_at).toLocaleString("en-NG") }));
   state.audit = audit.entries || [];
-  Object.assign(baseMetrics, { revenue: overview.revenueNGN || 0, sessions: overview.activeSessions || 0 });
+  Object.assign(baseMetrics, {
+    downloads: overview.downloads || 0, signups: overview.signups || overview.totalUsers || 0,
+    activated: overview.activatedUsers || 0, buyers: overview.buyers || 0, repeatBuyers: overview.repeatBuyers || 0,
+    revenue: overview.revenueNGN || 0, fees: overview.gatewayFeesNGN || 0, refunds: overview.refundsNGN || 0,
+    sessions: overview.sessions || 0, failedSessions: overview.failedSessions || 0,
+    growthSeries: overview.growthSeries || []
+  });
 }
 
 async function startAuthenticatedApp() {

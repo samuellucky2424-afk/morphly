@@ -53,12 +53,13 @@ export async function getAdminOverview(supabaseAdmin) {
 
   const results = await Promise.allSettled([
     supabaseAdmin.from('wallets').select('credits').in('user_id', userIds),
-    supabaseAdmin.from('sessions').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+    supabaseAdmin.from('sessions').select('*').in('user_id', userIds),
     supabaseAdmin.from('transactions').select('*').in('user_id', userIds),
     supabaseAdmin.from('users').select('*').in('id', userIds),
+    supabaseAdmin.from('analytics_events').select('event_name, user_id, installation_id, created_at').order('created_at', { ascending: true }),
   ]);
   const result = (index) => results[index].status === 'fulfilled' && !results[index].value.error ? results[index].value : { data: [], count: 0 };
-  const walletsResult = result(0), activeSessionsResult = result(1), transactionsResult = result(2), profilesResult = result(3);
+  const walletsResult = result(0), sessionsResult = result(1), transactionsResult = result(2), profilesResult = result(3), analyticsResult = result(4);
 
   const totalCredits = (walletsResult.data || []).reduce(
     (sum, wallet) => sum + normalizeCredits(wallet.credits),
@@ -72,13 +73,46 @@ export async function getAdminOverview(supabaseAdmin) {
 
     return sum + normalizeAmount(transaction.amount_naira ?? transaction.amount);
   }, 0);
+  const successfulPurchases = (transactionsResult.data || []).filter((transaction) =>
+    ['credit', 'credit_purchase'].includes(transaction.type) && ['success', 'successful', undefined, null].includes(transaction.status));
+  const purchaseCounts = new Map();
+  for (const transaction of successfulPurchases) purchaseCounts.set(transaction.user_id, (purchaseCounts.get(transaction.user_id) || 0) + 1);
+  const events = analyticsResult.data || [];
+  const eventIdentities = (eventName) => new Set(events.filter((event) => event.event_name === eventName).map((event) => event.user_id || event.installation_id).filter(Boolean));
+  const downloads = eventIdentities('download_clicked').size;
+  const activatedUsers = eventIdentities('first_frame_received').size;
+  const gatewayFeesNGN = successfulPurchases.reduce((sum, transaction) => sum + normalizeAmount(transaction.gateway_fee_ngn), 0);
+  const refundsNGN = successfulPurchases.filter((transaction) => transaction.refund_status && transaction.refund_status !== 'none')
+    .reduce((sum, transaction) => sum + normalizeAmount(transaction.amount_naira ?? transaction.amount), 0);
+  const sessions = sessionsResult.data || [];
+  const failedSessions = sessions.filter((session) => ['failed', 'error'].includes(session.status)).length;
+  const growthByDay = new Map();
+  for (const event of events) {
+    if (!['signup_completed', 'first_frame_received', 'payment_succeeded'].includes(event.event_name)) continue;
+    const day = String(event.created_at || '').slice(0, 10); if (!day) continue;
+    const item = growthByDay.get(day) || { date: day, signups: 0, activated: 0, buyers: 0 };
+    if (event.event_name === 'signup_completed') item.signups += 1;
+    if (event.event_name === 'first_frame_received') item.activated += 1;
+    if (event.event_name === 'payment_succeeded') item.buyers += 1;
+    growthByDay.set(day, item);
+  }
 
   return {
     totalUsers: authUsers.length,
     blockedUsers: (profilesResult.data || []).filter((profile) => profile.account_status === 'suspended').length,
     totalCredits,
     revenueNGN,
-    activeSessions: activeSessionsResult.count || 0,
+    activeSessions: sessions.filter((session) => session.status === 'active').length,
+    downloads,
+    signups: authUsers.length,
+    activatedUsers,
+    buyers: purchaseCounts.size,
+    repeatBuyers: [...purchaseCounts.values()].filter((count) => count > 1).length,
+    sessions: sessions.length,
+    failedSessions,
+    gatewayFeesNGN,
+    refundsNGN,
+    growthSeries: [...growthByDay.values()].slice(-30),
   };
 }
 
