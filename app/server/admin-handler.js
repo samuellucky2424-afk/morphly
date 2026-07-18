@@ -65,10 +65,21 @@ function normalizeRouteName(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function getReportOptions(req) {
+  return {
+    days: req.query?.days,
+    platform: req.query?.platform,
+    source: req.query?.source,
+  };
+}
+
 function setResponseHeaders(res, methods) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', [...methods, 'OPTIONS'].join(', '));
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Vary', 'Authorization');
 }
 
 export function createAdminHandler(routeName) {
@@ -141,7 +152,7 @@ async function handleAdminOverview(req, res, routeConfig) {
       return;
     }
 
-    const overview = await getAdminOverview(supabaseAdmin);
+    const overview = await getAdminOverview(supabaseAdmin, getReportOptions(req));
     return res.json(overview);
   } catch (error) {
     await logErrorEvent(`${routeConfig.event}.exception`, error);
@@ -162,7 +173,7 @@ async function handleAdminUsers(req, res, routeConfig) {
     }
 
     if (req.method === 'GET') {
-      const users = await listAdminUsers(supabaseAdmin);
+      const users = await listAdminUsers(supabaseAdmin, getReportOptions(req));
       return res.json({ users });
     }
 
@@ -275,7 +286,12 @@ async function handleAdminAuditLog(req, res, routeConfig) {
 async function handleAdminTransactions(req, res) {
   try {
     const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return;
-    if (req.method === 'GET') return res.json({ transactions: await listAdminTransactions(supabaseAdmin) });
+    if (req.method === 'GET') {
+      return res.json({
+        transactions: await listAdminTransactions(supabaseAdmin, getReportOptions(req)),
+        asOf: new Date().toISOString(),
+      });
+    }
 
     const transactionId = String(req.body?.transactionId || '').trim();
     const userId = String(req.body?.userId || '').trim();
@@ -309,6 +325,12 @@ async function handleAdminTransactions(req, res) {
 }
 
 async function handleAdminLogs(req, res) {
-  try { const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return; return res.json({ logs: await listSystemLogs(supabaseAdmin) }); }
+  try {
+    const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return;
+    return res.json({
+      logs: await listSystemLogs(supabaseAdmin, getReportOptions(req)),
+      asOf: new Date().toISOString(),
+    });
+  }
   catch (error) { await logErrorEvent('admin-logs.exception', error); return res.status(500).json({ error: 'Failed to load logs' }); }
 }

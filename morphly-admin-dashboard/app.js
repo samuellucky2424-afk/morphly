@@ -1,9 +1,7 @@
 "use strict";
 
 const CONFIG = {
-  demoMode: false,
   apiBase: window.MORPHLY_API_BASE || window.location.origin,
-  storageKey: "morphly-admin-demo-v2",
   endpoints: {
     overview: "/api/admin-overview", users: "/api/admin-users", addCredit: () => "/api/admin-users",
     updateStatus: () => "/api/admin-users", packages: "/api/admin-credit-packages",
@@ -12,49 +10,8 @@ const CONFIG = {
   }
 };
 
-const initialUsers = [
-  { id: "usr_1042", name: "Chinedu Okafor", email: "chinedu@example.com", status: "active", credits: 1280, spent: 174000, purchases: 6, lastActive: "4 min ago", joined: "14 Jun 2026", plan: "Creator", platform: "windows", source: "whatsapp", sessions: 41, successRate: 94 },
-  { id: "usr_1038", name: "Amina Bello", email: "amina@example.com", status: "active", credits: 420, spent: 87000, purchases: 3, lastActive: "28 min ago", joined: "21 Jun 2026", plan: "Starter", platform: "windows", source: "referral", sessions: 19, successRate: 89 },
-  { id: "usr_1029", name: "David Mensah", email: "david@example.com", status: "suspended", credits: 0, spent: 29000, purchases: 1, lastActive: "2 days ago", joined: "29 Jun 2026", plan: "Starter", platform: "web", source: "tiktok", sessions: 7, successRate: 43 },
-  { id: "usr_1021", name: "Blessing Eze", email: "blessing@example.com", status: "active", credits: 3750, spent: 398800, purchases: 9, lastActive: "1 hr ago", joined: "4 Jul 2026", plan: "Pro", platform: "windows", source: "whatsapp", sessions: 73, successRate: 97 },
-  { id: "usr_1017", name: "Kwame Asante", email: "kwame@example.com", status: "active", credits: 90, spent: 58000, purchases: 2, lastActive: "5 hrs ago", joined: "7 Jul 2026", plan: "Starter", platform: "android", source: "direct", sessions: 12, successRate: 67 },
-  { id: "usr_1012", name: "Fatima Musa", email: "fatima@example.com", status: "active", credits: 860, spent: 116000, purchases: 4, lastActive: "Yesterday", joined: "9 Jul 2026", plan: "Creator", platform: "web", source: "referral", sessions: 28, successRate: 91 },
-  { id: "usr_1008", name: "Samuel Adeyemi", email: "samuel@example.com", status: "active", credits: 210, spent: 29000, purchases: 1, lastActive: "Yesterday", joined: "11 Jul 2026", plan: "Starter", platform: "windows", source: "whatsapp", sessions: 8, successRate: 88 },
-  { id: "usr_1003", name: "Grace Nwosu", email: "grace@example.com", status: "suspended", credits: 615, spent: 145000, purchases: 5, lastActive: "4 days ago", joined: "12 Jul 2026", plan: "Creator", platform: "windows", source: "tiktok", sessions: 32, successRate: 72 },
-  { id: "usr_0998", name: "Musa Ibrahim", email: "musa@example.com", status: "active", credits: 1560, spent: 232000, purchases: 7, lastActive: "5 days ago", joined: "2 Jun 2026", plan: "Creator", platform: "windows", source: "whatsapp", sessions: 55, successRate: 92 },
-  { id: "usr_0987", name: "Esther Udo", email: "esther@example.com", status: "active", credits: 75, spent: 29000, purchases: 1, lastActive: "6 days ago", joined: "27 May 2026", plan: "Starter", platform: "android", source: "direct", sessions: 6, successRate: 50 }
-];
-
-const initialAudit = [
-  { id: "aud_3", userId: "usr_1042", time: "18 Jul 2026, 10:42", admin: "Lucky Samuel", action: "Added 500 credits", detail: "Customer support adjustment" },
-  { id: "aud_2", userId: "usr_1029", time: "17 Jul 2026, 16:08", admin: "Lucky Samuel", action: "Suspended account", detail: "Payment dispute review" },
-  { id: "aud_1", userId: "usr_1021", time: "17 Jul 2026, 12:31", admin: "System", action: "Purchase credited", detail: "2,000 credits · Flutterwave verified" }
-];
-
-const initialPackages = [
-  { id: "pkg_starter", name: "Starter", description: "A low-cost first package", price: 9500, credits: 120, status: "active", featured: false, purchases: 31, createdAt: "10 Jun 2026" },
-  { id: "pkg_creator", name: "Creator", description: "For regular Morphly creators", price: 29000, credits: 500, status: "active", featured: true, purchases: 24, createdAt: "10 Jun 2026" },
-  { id: "pkg_pro", name: "Pro", description: "More credits for power users", price: 99700, credits: 2000, status: "active", featured: false, purchases: 9, createdAt: "12 Jun 2026" },
-  { id: "pkg_reseller", name: "Reseller", description: "High-volume reseller allocation", price: 366400, credits: 10000, status: "draft", featured: false, purchases: 3, createdAt: "18 Jun 2026" }
-];
-
-let transactions = [
-  { ref: "MOR-260718-0941", userId: "usr_1021", customer: "Blessing Eze", package: "Pro", amount: 99700, credits: 2000, status: "success", date: "18 Jul, 09:41" },
-  { ref: "MOR-260718-0835", userId: "usr_1042", customer: "Chinedu Okafor", package: "Creator", amount: 29000, credits: 500, status: "success", date: "18 Jul, 08:35" },
-  { ref: "MOR-260717-2212", userId: "usr_1012", customer: "Fatima Musa", package: "Creator", amount: 29000, credits: 500, status: "pending", date: "17 Jul, 22:12" },
-  { ref: "MOR-260717-1930", userId: "usr_1008", customer: "Samuel Adeyemi", package: "Starter", amount: 9500, credits: 120, status: "success", date: "17 Jul, 19:30" },
-  { ref: "MOR-260717-1622", userId: "usr_1029", customer: "David Mensah", package: "Starter", amount: 9500, credits: 120, status: "failed", date: "17 Jul, 16:22" },
-  { ref: "MOR-260717-1418", userId: "usr_1038", customer: "Amina Bello", package: "Creator", amount: 29000, credits: 500, status: "success", date: "17 Jul, 14:18" }
-];
-
-let systemLogs = [
-  { event: "WEBSOCKET_CONNECT_FAILED", platform: "android", user: "Multiple users", count: 64, severity: "critical", lastSeen: "3 min ago" },
-  { event: "CLIENT_TOKEN_ISSUE_FAILED", platform: "windows", user: "usr_1038", count: 27, severity: "critical", lastSeen: "18 min ago" },
-  { event: "PAYMENT_WEBHOOK_DELAYED", platform: "web", user: "usr_1012", count: 18, severity: "warning", lastSeen: "1 hr ago" },
-  { event: "FIRST_FRAME_TIMEOUT", platform: "windows", user: "Multiple users", count: 13, severity: "warning", lastSeen: "2 hrs ago" },
-  { event: "INSUFFICIENT_CREDIT", platform: "all", user: "Multiple users", count: 46, severity: "info", lastSeen: "4 hrs ago" },
-  { event: "SESSION_DISCONNECTED", platform: "web", user: "usr_1012", count: 8, severity: "info", lastSeen: "Yesterday" }
-];
+let transactions = [];
+let systemLogs = [];
 
 const baseMetrics = {
   downloads: 0, signups: 0, activated: 0, buyers: 0, repeatBuyers: 0,
@@ -68,16 +25,14 @@ const state = {
   period: "30",
   platform: "all",
   source: "all",
+  loadedAt: null,
+  loadErrors: {},
   selectedUserId: null,
   editingPackageId: null,
   users: [],
   audit: [],
   packages: []
 };
-
-const periodFactor = { "7": 1, "30": 1, "90": 1 };
-const platformFactor = { all: 1, windows: 1, web: 1, android: 1 };
-const sourceFactor = { all: 1, whatsapp: 1, tiktok: 1, referral: 1, direct: 1 };
 
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => Array.from(scope.querySelectorAll(selector));
@@ -87,29 +42,101 @@ const percentage = (part, whole) => whole ? `${((part / whole) * 100).toFixed(1)
 const initials = (name) => name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 const escapeHtml = (value) => String(value).replace(/[&<>'"]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" })[character]);
 
-function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+const safeNumber = (value) => {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+function parseTimestamp(value) {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function loadDemoState() {
-  if (!CONFIG.demoMode) return;
-  try {
-    const stored = JSON.parse(localStorage.getItem(CONFIG.storageKey));
-    state.users = Array.isArray(stored?.users) ? stored.users : clone(initialUsers);
-    state.audit = Array.isArray(stored?.audit) ? stored.audit : clone(initialAudit);
-    state.packages = Array.isArray(stored?.packages) ? stored.packages : clone(initialPackages);
-  } catch {
-    state.users = clone(initialUsers);
-    state.audit = clone(initialAudit);
-    state.packages = clone(initialPackages);
-  }
+function selectedCutoff() {
+  const days = Number(state.period);
+  return Date.now() - (Number.isFinite(days) ? days : 30) * 24 * 60 * 60 * 1000;
 }
 
-function persistDemoState() {
-  if (!CONFIG.demoMode) return;
-  localStorage.setItem(CONFIG.storageKey, JSON.stringify({ users: state.users, audit: state.audit, packages: state.packages }));
+function isWithinSelectedPeriod(value) {
+  const timestamp = parseTimestamp(value);
+  return timestamp === null || timestamp >= selectedCutoff();
 }
 
+function matchesDimension(record, key) {
+  const selected = state[key];
+  if (selected === "all") return true;
+  const directValue = String(record?.[key] || "").toLowerCase();
+  if (directValue) return directValue === selected;
+  const user = record?.userId ? state.users.find((item) => item.id === record.userId) : null;
+  return String(user?.[key] || "").toLowerCase() === selected;
+}
+
+function isSuccessfulTransaction(transaction) {
+  return ["success", "successful", "completed", "paid"].includes(String(transaction?.status || "").toLowerCase());
+}
+
+function isPurchaseTransaction(transaction) {
+  const type = String(transaction?.type || transaction?.transactionType || transaction?.transaction_type || "").toLowerCase();
+  if (type) return ["credit", "credit_purchase", "purchase", "package_purchase"].includes(type);
+  return safeNumber(transaction?.amount) > 0 && safeNumber(transaction?.credits) > 0;
+}
+
+function formatDateTime(value) {
+  const timestamp = parseTimestamp(value);
+  return timestamp === null ? "-" : new Date(timestamp).toLocaleString("en-NG");
+}
+
+function normalizeTransaction(transaction) {
+  const rawStatus = String(transaction.status || "pending").toLowerCase();
+  const status = isSuccessfulTransaction({ status: rawStatus }) ? "success" : rawStatus;
+  return {
+    ...transaction,
+    ref: transaction.ref || transaction.reference || transaction.transaction_reference || transaction.id || "-",
+    userId: transaction.userId || transaction.user_id || null,
+    type: transaction.type || transaction.transactionType || transaction.transaction_type || "",
+    customer: transaction.customer || transaction.customerEmail || transaction.customer_email || transaction.user_email || transaction.userId || transaction.user_id || "Unknown customer",
+    package: transaction.package || transaction.packageName || transaction.package_name_snapshot || transaction.description || "Credit purchase",
+    amount: safeNumber(transaction.amount ?? transaction.amountNGN ?? transaction.amount_naira),
+    credits: safeNumber(transaction.credits ?? transaction.creditsPurchased ?? transaction.package_credits_snapshot),
+    gateway: transaction.gateway || transaction.paymentGateway || transaction.payment_gateway || "manual",
+    gatewayFee: safeNumber(transaction.gatewayFee ?? transaction.gatewayFeeNGN ?? transaction.gateway_fee_ngn),
+    refundStatus: transaction.refundStatus || transaction.refund_status || "none",
+    platform: String(transaction.platform || "").toLowerCase(),
+    source: String(transaction.source || transaction.acquisitionSource || transaction.acquisition_source || "").toLowerCase(),
+    status,
+    date: transaction.date || transaction.verifiedAt || transaction.verified_at || transaction.paidAt || transaction.paid_at || transaction.createdAt || transaction.created_at || null
+  };
+}
+
+function normalizeSystemLog(log) {
+  const rawSeverity = String(log.severity || "info").toLowerCase();
+  const severity = ["fatal", "error", "critical"].includes(rawSeverity) ? "critical" : (["warn", "warning"].includes(rawSeverity) ? "warning" : "info");
+  return {
+    event: log.event || log.errorCode || log.error_code || log.event_name || "UNKNOWN_ERROR",
+    platform: String(log.platform || "all").toLowerCase(),
+    user: log.user || log.userId || log.user_id || "Multiple users",
+    count: Math.max(1, Math.round(safeNumber(log.count ?? log.occurrences ?? 1))),
+    severity,
+    timestamp: log.timestamp || log.lastSeenAt || log.last_seen_at || log.createdAt || log.created_at || null
+  };
+}
+function filteredTransactions() {
+  return transactions
+    .filter(isPurchaseTransaction)
+    .filter((transaction) => isWithinSelectedPeriod(transaction.date))
+    .filter((transaction) => matchesDimension(transaction, "platform") && matchesDimension(transaction, "source"))
+    .slice()
+    .sort((left, right) => (parseTimestamp(right.date) || 0) - (parseTimestamp(left.date) || 0));
+}
+
+function scopedEndpoint(path) {
+  const url = new URL(path, CONFIG.apiBase);
+  url.searchParams.set("days", state.period);
+  if (state.platform !== "all") url.searchParams.set("platform", state.platform);
+  if (state.source !== "all") url.searchParams.set("source", state.source);
+  return url.pathname + url.search;
+}
 const AdminAPI = {
   async request(path, options = {}) {
     let accessToken = window.morphlyAccessToken;
@@ -125,51 +152,19 @@ const AdminAPI = {
     return data;
   },
   async addCredit(userId, amount, reason) {
-    if (!CONFIG.demoMode) {
-      return AdminAPI.request(CONFIG.endpoints.addCredit(userId), {
-        method: "POST",
-        body: JSON.stringify({ userId, amount, reason, idempotencyKey: crypto.randomUUID() })
-      });
-    }
-    const user = state.users.find((item) => item.id === userId);
-    if (!user) throw new Error("User not found.");
-    user.credits += amount;
-    state.audit.unshift({ id: `aud_${Date.now()}`, userId, time: "Just now", admin: "Lucky Samuel", action: `Added ${number(amount)} credits`, detail: reason });
-    persistDemoState();
-    return user;
+    return AdminAPI.request(CONFIG.endpoints.addCredit(userId), {
+      method: "POST",
+      body: JSON.stringify({ userId, amount, reason, idempotencyKey: crypto.randomUUID() })
+    });
   },
-
   async updateStatus(userId, status, reason) {
-    if (!CONFIG.demoMode) {
-      return AdminAPI.request(CONFIG.endpoints.updateStatus(userId), {
-        method: "POST", body: JSON.stringify({ action: "status", userId, status, reason })
-      });
-    }
-    const user = state.users.find((item) => item.id === userId);
-    if (!user) throw new Error("User not found.");
-    user.status = status;
-    state.audit.unshift({ id: `aud_${Date.now()}`, userId, time: "Just now", admin: "Lucky Samuel", action: status === "suspended" ? "Suspended account" : "Restored account", detail: reason });
-    persistDemoState();
-    return user;
+    return AdminAPI.request(CONFIG.endpoints.updateStatus(userId), {
+      method: "POST", body: JSON.stringify({ action: "status", userId, status, reason })
+    });
   },
-
   async createPackage(packageInput) {
-    if (!CONFIG.demoMode) {
-      return AdminAPI.request(CONFIG.endpoints.packages, { method: "POST", body: JSON.stringify(packageInput) });
-    }
-    if (packageInput.featured) state.packages.forEach((item) => { item.featured = false; });
-    const packageRecord = {
-      id: `pkg_${Date.now()}`,
-      ...packageInput,
-      purchases: 0,
-      createdAt: new Date().toLocaleDateString("en-NG", { day: "numeric", month: "short", year: "numeric" })
-    };
-    state.packages.unshift(packageRecord);
-    state.audit.unshift({ id: `aud_${Date.now()}`, userId: null, time: "Just now", admin: "Lucky Samuel", action: `Created ${packageRecord.name} package`, detail: `${money(packageRecord.price)} · ${number(packageRecord.credits)} credits · ${packageRecord.status}` });
-    persistDemoState();
-    return packageRecord;
+    return AdminAPI.request(CONFIG.endpoints.packages, { method: "POST", body: JSON.stringify(packageInput) });
   },
-
   async updatePackage(packageId, packageInput) {
     const packages = state.packages.map((pkg) => ({
       id: pkg.id,
@@ -188,22 +183,23 @@ const AdminAPI = {
   },
 
   async updatePackageStatus(packageId, status) {
-    if (!CONFIG.demoMode) {
-      const packages = state.packages.map((pkg) => ({ id: pkg.id, name: pkg.name, description: pkg.description, credits: pkg.credits, priceNGN: pkg.price, status: pkg.id === packageId ? status : pkg.status, isActive: pkg.id === packageId ? status === "active" : pkg.status === "active", isRecommended: pkg.featured, sortOrder: pkg.sortOrder || 0 }));
-      const data = await AdminAPI.request(CONFIG.endpoints.packages, {
-        method: "PUT", body: JSON.stringify({ packages })
-      });
-      const updated = data.packages.find((pkg) => pkg.id === packageId);
-      return { ...updated, price: updated.priceNGN, status: updated.isActive ? "active" : "paused" };
-    }
-    const packageRecord = state.packages.find((item) => item.id === packageId);
-    if (!packageRecord) throw new Error("Package not found.");
-    packageRecord.status = status;
-    state.audit.unshift({ id: `aud_${Date.now()}`, userId: null, time: "Just now", admin: "Lucky Samuel", action: `${status === "active" ? "Activated" : "Paused"} ${packageRecord.name} package`, detail: `${money(packageRecord.price)} · ${number(packageRecord.credits)} credits` });
-    persistDemoState();
-    return packageRecord;
+    const packages = state.packages.map((pkg) => ({
+      id: pkg.id,
+      name: pkg.name,
+      description: pkg.description,
+      credits: pkg.credits,
+      priceNGN: pkg.price,
+      status: pkg.id === packageId ? status : pkg.status,
+      isActive: pkg.id === packageId ? status === "active" : pkg.status === "active",
+      isRecommended: pkg.featured,
+      sortOrder: pkg.sortOrder || 0
+    }));
+    const data = await AdminAPI.request(CONFIG.endpoints.packages, {
+      method: "PUT", body: JSON.stringify({ packages })
+    });
+    const updated = data.packages.find((pkg) => pkg.id === packageId);
+    return { ...updated, price: updated.priceNGN, status: updated.isActive ? "active" : "paused" };
   },
-
   async reconcilePayment(transactionId, userId, packageId, reference) {
     return AdminAPI.request(CONFIG.endpoints.transactions, {
       method: "POST",
@@ -213,14 +209,35 @@ const AdminAPI = {
 };
 
 function filteredMetrics() {
-  const factor = periodFactor[state.period] * platformFactor[state.platform] * sourceFactor[state.source];
-  const data = {};
-  Object.entries(baseMetrics).forEach(([key, value]) => { data[key] = Math.max(0, Math.round(value * factor)); });
+  const data = { ...baseMetrics };
+  const selectedTransactions = filteredTransactions();
+  const successful = selectedTransactions.filter(isSuccessfulTransaction);
+  const purchaseCountByUser = new Map();
+  successful.forEach((transaction) => {
+    if (!transaction.userId) return;
+    purchaseCountByUser.set(transaction.userId, (purchaseCountByUser.get(transaction.userId) || 0) + 1);
+  });
+
+  data.revenue = successful.reduce((sum, transaction) => sum + safeNumber(transaction.amount), 0);
+  data.fees = successful.reduce((sum, transaction) => sum + safeNumber(transaction.gatewayFee), 0);
+  data.refunds = successful
+    .filter((transaction) => !["", "none", "not_refunded"].includes(String(transaction.refundStatus || "").toLowerCase()))
+    .reduce((sum, transaction) => sum + safeNumber(transaction.amount), 0);
+  data.buyers = purchaseCountByUser.size;
+  data.repeatBuyers = [...purchaseCountByUser.values()].filter((count) => count > 1).length;
+
+  const dimensionUsers = filteredUsers();
+  const periodUsers = dimensionUsers.filter((user) => isWithinSelectedPeriod(user.createdAt));
+  if (state.platform !== "all" || state.source !== "all" || periodUsers.length || state.period !== "30") {
+    data.signups = periodUsers.length;
+  }
+
+  data.growthSeries = (Array.isArray(baseMetrics.growthSeries) ? baseMetrics.growthSeries : [])
+    .filter((item) => isWithinSelectedPeriod(item.date));
   data.grossProfit = data.revenue - data.decartCost - data.fees - data.refunds - data.advertising;
   data.successfulSessions = Math.max(0, data.sessions - data.failedSessions);
   return data;
 }
-
 function filteredUsers() {
   return state.users.filter((user) => state.platform === "all" || user.platform === state.platform).filter((user) => state.source === "all" || user.source === state.source);
 }
@@ -257,7 +274,7 @@ function linePath(items) {
 }
 
 function renderGrowthChart(data) {
-  const seriesData = Array.isArray(baseMetrics.growthSeries) ? baseMetrics.growthSeries : [];
+  const seriesData = Array.isArray(data.growthSeries) ? data.growthSeries : [];
   if (!seriesData.length) { $("#growthChart").innerHTML = '<p class="empty-cell">No analytics events have been recorded yet.</p>'; return; }
   const signups = seriesData.map((item) => Number(item.signups || 0));
   const activated = seriesData.map((item) => Number(item.activated || 0));
@@ -265,7 +282,7 @@ function renderGrowthChart(data) {
   const width = 760;
   const height = 240;
   const padding = { top: 15, right: 18, bottom: 30, left: 42 };
-  const maxValue = Math.max(...signups, ...activated, ...buyers) * 1.16;
+  const maxValue = Math.max(1, ...signups, ...activated, ...buyers) * 1.16;
   const series = [
     { values: signups, color: "#e31b3d", fill: "#e31b3d" },
     { values: activated, color: "#3568d4", fill: "#3568d4" },
@@ -307,15 +324,31 @@ function renderMoney(data) {
 }
 
 function renderAlerts(data) {
-  const pendingPayments = transactions.filter((transaction) => transaction.status === "pending").length;
-  const alerts = [
-    { level: "critical", icon: "!", title: "Connection failures increased", detail: "Mostly Android WebSocket sessions", count: number(data.failedSessions) },
-    { level: "warning", icon: "↻", title: "Signup-to-activation drop", detail: `${number(Math.max(0, data.signups - data.activated))} users never reached a first output`, count: percentage(data.activated, data.signups) },
-    { level: "warning", icon: "₦", title: "Pending payment webhooks", detail: "Verified backend records awaiting completion", count: number(pendingPayments) }
-  ];
-  $("#alertList").innerHTML = alerts.map((alert) => `<div class="alert-item ${alert.level}"><span class="alert-icon">${alert.icon}</span><span><strong>${escapeHtml(alert.title)}</strong><small>${escapeHtml(alert.detail)}</small></span><span class="alert-count">${escapeHtml(alert.count)}</span></div>`).join("");
+  const pendingPayments = filteredTransactions().filter((transaction) => transaction.status === "pending").length;
+  const criticalErrors = systemLogs
+    .filter((log) => log.severity === "critical" && isWithinSelectedPeriod(log.timestamp))
+    .reduce((sum, log) => sum + safeNumber(log.count), 0);
+  const alerts = [];
+  if (data.failedSessions > 0) {
+    alerts.push({ level: "critical", icon: "!", title: "Connection failures recorded", detail: "Failed sessions in the selected period", count: number(data.failedSessions) });
+  }
+  if (criticalErrors > 0) {
+    alerts.push({ level: "critical", icon: "!", title: "Critical application errors", detail: "Grouped occurrences in the system log", count: number(criticalErrors) });
+  }
+  if (data.signups > data.activated) {
+    alerts.push({ level: "warning", icon: "↻", title: "Users awaiting first output", detail: number(data.signups - data.activated) + " signups have not reached a first output", count: percentage(data.activated, data.signups) });
+  }
+  if (pendingPayments > 0) {
+    alerts.push({ level: "warning", icon: "₦", title: "Pending payment records", detail: "Backend transactions still awaiting completion", count: number(pendingPayments) });
+  }
+  $("#alertList").innerHTML = alerts.length
+    ? alerts.map((alert) => [
+      '<div class="alert-item ', alert.level, '"><span class="alert-icon">', escapeHtml(alert.icon),
+      "</span><span><strong>", escapeHtml(alert.title), "</strong><small>", escapeHtml(alert.detail),
+      '</small></span><span class="alert-count">', escapeHtml(alert.count), "</span></div>"
+    ].join("")).join("")
+    : '<p class="empty-cell">No operational alerts were found in the loaded records.</p>';
 }
-
 function renderUsers() {
   const platformUsers = filteredUsers();
   const status = $("#userStatusFilter").value;
@@ -337,30 +370,39 @@ function renderUsers() {
 }
 
 function renderTransactions() {
-  const successful = transactions.filter((item) => item.status === "success");
-  const revenue = successful.reduce((sum, item) => sum + item.amount, 0);
-  const credits = successful.reduce((sum, item) => sum + item.credits, 0);
+  const visibleTransactions = filteredTransactions();
+  const successful = visibleTransactions.filter(isSuccessfulTransaction);
+  const revenue = successful.reduce((sum, item) => sum + safeNumber(item.amount), 0);
+  const credits = successful.reduce((sum, item) => sum + safeNumber(item.credits), 0);
   $("#transactionMetrics").innerHTML = [
-    metricCard("Successful payments", number(successful.length), `${transactions.length} total attempts`, "", "✓"),
-    metricCard("Collected", money(revenue), "Verified customer revenue", "", "₦"),
-    metricCard("Credits granted", number(credits), "From verified purchases", "", "+"),
-    metricCard("Failed or pending", number(transactions.length - successful.length), "Requires payment review", "", "!")
+    metricCard("Successful payments", number(successful.length), visibleTransactions.length + " total attempts", "", "✓"),
+    metricCard("Collected", money(revenue), "Verified customer revenue in selected period", "", "₦"),
+    metricCard("Credits granted", number(credits), "From verified purchases in selected period", "", "+"),
+    metricCard("Failed or pending", number(visibleTransactions.length - successful.length), "Requires payment review", "", "!")
   ].join("");
-  $("#transactionTableBody").innerHTML = transactions.map((transaction) => `<tr><td><code>${escapeHtml(transaction.ref)}</code></td><td>${escapeHtml(transaction.customer)}</td><td>${escapeHtml(transaction.package)}</td><td><strong>${money(transaction.amount)}</strong></td><td>${number(transaction.credits)}</td><td>${escapeHtml(transaction.gateway || "-")}</td><td><span class="status-pill ${transaction.status}">${escapeHtml(transaction.status)}</span></td><td>${money(transaction.gatewayFee || 0)}</td><td>${escapeHtml(transaction.refundStatus || "none")}</td><td>${escapeHtml(transaction.date ? new Date(transaction.date).toLocaleString("en-NG") : "-")}</td></tr>`).join("");
+  $("#transactionTableBody").innerHTML = visibleTransactions.length
+    ? visibleTransactions.map((transaction) => [
+      "<tr><td><code>", escapeHtml(transaction.ref), "</code></td><td>", escapeHtml(transaction.customer),
+      "</td><td>", escapeHtml(transaction.package), "</td><td><strong>", money(transaction.amount),
+      "</strong></td><td>", number(transaction.credits), "</td><td>", escapeHtml(transaction.gateway || "-"),
+      "</td><td><span class=\"status-pill ", escapeHtml(transaction.status), "\">", escapeHtml(transaction.status),
+      "</span></td><td>", money(transaction.gatewayFee || 0), "</td><td>", escapeHtml(transaction.refundStatus || "none"),
+      "</td><td>", escapeHtml(formatDateTime(transaction.date)), "</td></tr>"
+    ].join("")).join("")
+    : '<tr><td class="empty-cell" colspan="10">No transactions were recorded for the selected period and filters.</td></tr>';
 }
-
 function renderPackages() {
   const statusFilter = $("#packageStatusFilter").value;
   const packages = state.packages.filter((item) => statusFilter === "all" || item.status === statusFilter);
   const activePackages = state.packages.filter((item) => item.status === "active");
-  const purchases = state.packages.reduce((sum, item) => sum + item.purchases, 0);
-  const revenue = state.packages.reduce((sum, item) => sum + item.price * item.purchases, 0);
+  const purchases = state.packages.reduce((sum, item) => sum + safeNumber(item.purchases), 0);
+  const revenue = state.packages.reduce((sum, item) => sum + safeNumber(item.revenueNGN), 0);
   const averagePerHundred = activePackages.length ? activePackages.reduce((sum, item) => sum + (item.price / item.credits) * 100, 0) / activePackages.length : 0;
   $("#sidebarPackageCount").textContent = number(activePackages.length);
   $("#packageMetrics").innerHTML = [
     metricCard("Active packages", number(activePackages.length), `${state.packages.length} packages created`, "", "▣"),
     metricCard("Package purchases", number(purchases), "Across current offers", "", "✓"),
-    metricCard("Package revenue", money(revenue), "Lifetime sample revenue", "", "₦"),
+    metricCard("Package revenue", money(revenue), "Verified completed transactions", "", "₦"),
     metricCard("Average price / 100", money(averagePerHundred), "Across active packages", "", "↗")
   ].join("");
   $("#packageTableBody").innerHTML = packages.length ? packages.map((item) => `<tr><td><div class="package-cell"><strong>${escapeHtml(item.name)}${item.featured ? '<span class="featured-badge">Recommended</span>' : ""}</strong><small>${escapeHtml(item.description || "No description")}</small></div></td><td><span class="status-pill ${item.status === "active" ? "success" : "pending"}">${escapeHtml(item.status)}</span></td><td><strong>${money(item.price)}</strong></td><td>${number(item.credits)}</td><td>${money((item.price / item.credits) * 100)}</td><td>${number(item.purchases)}</td><td><div class="row-actions"><button class="manage-button" type="button" data-edit-package="${escapeHtml(item.id)}">Edit</button><button class="manage-button" type="button" data-toggle-package="${escapeHtml(item.id)}">${item.status === "active" ? "Pause" : "Activate"}</button></div></td></tr>`).join("") : `<tr><td class="empty-cell" colspan="7">No packages match this status.</td></tr>`;
@@ -494,19 +536,30 @@ async function handleCreatePackage(event) {
 
 function renderLogs() {
   const severity = $("#logSeverityFilter").value;
-  const logs = systemLogs.filter((log) => severity === "all" || log.severity === severity).filter((log) => state.platform === "all" || log.platform === "all" || log.platform === state.platform);
-  const total = logs.reduce((sum, log) => sum + log.count, 0);
-  const critical = logs.filter((log) => log.severity === "critical").reduce((sum, log) => sum + log.count, 0);
+  const logs = systemLogs
+    .filter((log) => severity === "all" || log.severity === severity)
+    .filter((log) => state.platform === "all" || log.platform === "all" || log.platform === state.platform)
+    .filter((log) => isWithinSelectedPeriod(log.timestamp))
+    .slice()
+    .sort((left, right) => (parseTimestamp(right.timestamp) || 0) - (parseTimestamp(left.timestamp) || 0));
+  const total = logs.reduce((sum, log) => sum + safeNumber(log.count), 0);
+  const critical = logs.filter((log) => log.severity === "critical").reduce((sum, log) => sum + safeNumber(log.count), 0);
   const data = filteredMetrics();
   $("#logMetrics").innerHTML = [
-    metricCard("Logged events", number(total), "Grouped occurrences", "", "≡"),
+    metricCard("Logged events", number(total), "Grouped occurrences in selected period", "", "≡"),
     metricCard("Critical events", number(critical), "Requires investigation", "", "!"),
-    metricCard("Session success", percentage(data.successfulSessions, data.sessions), `${number(data.sessions)} sessions`, "", "✓"),
-    metricCard("API error rate", percentage(data.apiErrors, data.apiRequests), `${number(data.apiErrors)} errors`, "", "↯")
+    metricCard("Session success", percentage(data.successfulSessions, data.sessions), number(data.sessions) + " sessions", "", "✓"),
+    metricCard("API error rate", percentage(data.apiErrors, data.apiRequests), number(data.apiErrors) + " errors", "", "↯")
   ].join("");
-  $("#logTableBody").innerHTML = logs.length ? logs.map((log) => `<tr><td><code>${escapeHtml(log.event)}</code></td><td>${escapeHtml(log.platform)}</td><td>${escapeHtml(log.user)}</td><td>${number(log.count)}</td><td><span class="status-pill ${log.severity}">${escapeHtml(log.severity)}</span></td><td>${escapeHtml(log.lastSeen)}</td></tr>`).join("") : `<tr><td class="empty-cell" colspan="6">No logs match this filter.</td></tr>`;
+  $("#logTableBody").innerHTML = logs.length
+    ? logs.map((log) => [
+      "<tr><td><code>", escapeHtml(log.event), "</code></td><td>", escapeHtml(log.platform),
+      "</td><td>", escapeHtml(log.user), "</td><td>", number(log.count),
+      "</td><td><span class=\"status-pill ", escapeHtml(log.severity), "\">", escapeHtml(log.severity),
+      "</span></td><td>", escapeHtml(formatDateTime(log.timestamp)), "</td></tr>"
+    ].join("")).join("")
+    : '<tr><td class="empty-cell" colspan="6">No system errors were recorded for the selected period and filters.</td></tr>';
 }
-
 function renderDeveloper() {
   const requirements = [
     ["Decart written authorization", "Required before third-party integrations", "pending"],
@@ -527,7 +580,7 @@ function renderAll() {
   renderLogs();
   renderDeveloper();
   populateReconciliationOptions();
-  $("#lastUpdated").textContent = "just now";
+  $("#lastUpdated").textContent = state.loadedAt ? state.loadedAt.toLocaleTimeString("en-NG", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "not loaded";
 }
 
 function setView(view) {
@@ -664,13 +717,22 @@ function exportReport() {
 function bindEvents() {
   $$("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   $$("[data-go-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.goView)));
-  $$("[data-period]").forEach((button) => button.addEventListener("click", () => {
+  $$("[data-period]").forEach((button) => button.addEventListener("click", async () => {
     state.period = button.dataset.period;
     $$("[data-period]").forEach((item) => item.classList.toggle("active", item === button));
+    await loadLiveData();
     renderAll();
   }));
-  $("#platformFilter").addEventListener("change", (event) => { state.platform = event.target.value; renderAll(); });
-  $("#sourceFilter").addEventListener("change", (event) => { state.source = event.target.value; renderAll(); });
+  $("#platformFilter").addEventListener("change", async (event) => {
+    state.platform = event.target.value;
+    await loadLiveData();
+    renderAll();
+  });
+  $("#sourceFilter").addEventListener("change", async (event) => {
+    state.source = event.target.value;
+    await loadLiveData();
+    renderAll();
+  });
   $("#userSearch").addEventListener("input", renderUsers);
   $("#userStatusFilter").addEventListener("change", renderUsers);
   $("#packageStatusFilter").addEventListener("change", renderPackages);
@@ -685,38 +747,128 @@ function bindEvents() {
   $("#exportButton").addEventListener("click", exportReport);
   $("#reconcilePaymentForm").addEventListener("submit", handleReconcilePayment);
   $("#refreshDataButton").addEventListener("click", async () => {
-    try { await loadLiveData(); renderAll(); showToast("Live data refreshed."); }
-    catch (error) { showToast(error.message); }
+    try {
+      const result = await loadLiveData();
+      renderAll();
+      showToast(result.failures ? "Refresh completed, but some sections could not be loaded." : "Live data refreshed.");
+    } catch (error) {
+      showToast(error.message);
+    }
   });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeUserDrawer(); });
 }
 
 async function loadLiveData() {
-  const requests = await Promise.allSettled([
-    AdminAPI.request(CONFIG.endpoints.overview), AdminAPI.request(CONFIG.endpoints.users), AdminAPI.request(CONFIG.endpoints.packages),
-    AdminAPI.request(CONFIG.endpoints.transactions), AdminAPI.request(CONFIG.endpoints.logs), AdminAPI.request(CONFIG.endpoints.audit)
-  ]);
-  const failures = requests.filter((result) => result.status === "rejected");
-  const warning = $("#liveDataWarning");
-  warning.hidden = failures.length === 0;
-  $("#liveDataWarningText").textContent = failures.length ? failures.map((failure) => failure.reason?.message || "Unknown API error").join(" · ") : "";
-  const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
-  const overview = value(0, {}), users = value(1, { users: [] }), packages = value(2, { packages: [] });
-  const txs = value(3, { transactions: [] }), logs = value(4, { logs: [] }), audit = value(5, { entries: [] });
-  state.users = (users.users || []).map((u) => ({ ...u, lastActive: u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleString("en-NG") : "Never", joined: u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-NG") : "", plan: "Credits", platform: "windows", source: "direct", sessions: 0, successRate: 0 }));
-  state.packages = (packages.packages || []).map((p) => ({ ...p, price: p.priceNGN, status: p.status || (p.isActive ? "active" : "paused"), featured: p.isRecommended || false, purchases: p.purchases || 0, createdAt: p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-NG") : "" }));
-  transactions = txs.transactions || [];
-  systemLogs = (logs.logs || []).map((log) => ({ event: log.error_code, platform: log.platform || "all", user: log.user_id || "Multiple users", count: log.occurrences, severity: log.severity, lastSeen: new Date(log.last_seen_at).toLocaleString("en-NG") }));
-  state.audit = audit.entries || [];
-  Object.assign(baseMetrics, {
-    downloads: overview.downloads || 0, signups: overview.signups || overview.totalUsers || 0,
-    activated: overview.activatedUsers || 0, buyers: overview.buyers || 0, repeatBuyers: overview.repeatBuyers || 0,
-    revenue: overview.revenueNGN || 0, fees: overview.gatewayFeesNGN || 0, refunds: overview.refundsNGN || 0,
-    sessions: overview.sessions || 0, failedSessions: overview.failedSessions || 0,
-    growthSeries: overview.growthSeries || []
-  });
-}
+  const definitions = [
+    { key: "overview", path: scopedEndpoint(CONFIG.endpoints.overview) },
+    { key: "users", path: scopedEndpoint(CONFIG.endpoints.users) },
+    { key: "packages", path: CONFIG.endpoints.packages },
+    { key: "transactions", path: scopedEndpoint(CONFIG.endpoints.transactions) },
+    { key: "logs", path: scopedEndpoint(CONFIG.endpoints.logs) },
+    { key: "audit", path: CONFIG.endpoints.audit }
+  ];
+  const requests = await Promise.allSettled(definitions.map((definition) => AdminAPI.request(definition.path)));
+  const results = Object.fromEntries(definitions.map((definition, index) => [definition.key, requests[index]]));
+  state.loadErrors = Object.fromEntries(
+    definitions
+      .filter((definition) => results[definition.key].status === "rejected")
+      .map((definition) => [definition.key, results[definition.key].reason?.message || "Unknown API error"])
+  );
 
+  const warning = $("#liveDataWarning");
+  const failures = Object.entries(state.loadErrors);
+  warning.hidden = failures.length === 0;
+  $("#liveDataWarningText").textContent = failures.map(([key, message]) => key + ": " + message).join(" | ");
+
+  if (results.users.status === "fulfilled") {
+    const records = Array.isArray(results.users.value?.users) ? results.users.value.users : [];
+    state.users = records.map((user) => {
+      const createdAt = user.createdAt || user.created_at || null;
+      const lastSignInAt = user.lastSignInAt || user.last_sign_in_at || null;
+      return {
+        ...user,
+        id: user.id || user.userId || user.user_id,
+        name: user.name || user.email?.split("@")[0] || "User",
+        email: user.email || "",
+        credits: safeNumber(user.credits),
+        purchases: safeNumber(user.purchases),
+        spent: safeNumber(user.spent ?? user.revenueNGN ?? user.revenue_ngn),
+        status: user.status || user.accountStatus || user.account_status || "active",
+        createdAt,
+        lastActive: lastSignInAt ? formatDateTime(lastSignInAt) : "Never",
+        joined: createdAt ? new Date(createdAt).toLocaleDateString("en-NG") : "",
+        plan: user.plan || "Credits",
+        platform: String(user.platform || user.lastPlatform || user.last_platform || "unknown").toLowerCase(),
+        source: String(user.source || user.acquisitionSource || user.acquisition_source || "unknown").toLowerCase(),
+        sessions: safeNumber(user.sessions),
+        successRate: safeNumber(user.successRate ?? user.success_rate)
+      };
+    });
+  }
+
+  if (results.packages.status === "fulfilled") {
+    const records = Array.isArray(results.packages.value?.packages) ? results.packages.value.packages : [];
+    state.packages = records.map((pkg) => ({
+      ...pkg,
+      price: safeNumber(pkg.priceNGN ?? pkg.price_ngn ?? pkg.price),
+      credits: safeNumber(pkg.credits),
+      status: pkg.status || (pkg.isActive || pkg.is_active ? "active" : "paused"),
+      featured: Boolean(pkg.isRecommended ?? pkg.is_recommended ?? pkg.featured),
+      purchases: safeNumber(pkg.purchases),
+      revenueNGN: safeNumber(pkg.revenueNGN ?? pkg.revenue_ngn),
+      createdAt: pkg.createdAt || pkg.created_at ? new Date(pkg.createdAt || pkg.created_at).toLocaleDateString("en-NG") : ""
+    }));
+  }
+
+  if (results.transactions.status === "fulfilled") {
+    const records = Array.isArray(results.transactions.value?.transactions) ? results.transactions.value.transactions : [];
+    transactions = records.map(normalizeTransaction)
+      .sort((left, right) => (parseTimestamp(right.date) || 0) - (parseTimestamp(left.date) || 0));
+  }
+
+  if (results.logs.status === "fulfilled") {
+    const records = Array.isArray(results.logs.value?.logs) ? results.logs.value.logs : [];
+    systemLogs = records.map(normalizeSystemLog)
+      .sort((left, right) => (parseTimestamp(right.timestamp) || 0) - (parseTimestamp(left.timestamp) || 0));
+  }
+
+  if (results.audit.status === "fulfilled") {
+    const records = Array.isArray(results.audit.value?.entries) ? results.audit.value.entries : [];
+    state.audit = records.map((entry) => ({
+      ...entry,
+      userId: entry.userId || entry.user_id || (entry.target_type === "user" ? entry.target_id : null),
+      time: formatDateTime(entry.time || entry.timestamp || entry.createdAt || entry.created_at),
+      admin: entry.admin || entry.adminEmail || entry.admin_email || entry.admin_user_id || "Administrator",
+      action: entry.action || "admin.action",
+      detail: entry.detail || entry.reason || entry.target_type || ""
+    }));
+  }
+
+  if (results.overview.status === "fulfilled") {
+    const overview = results.overview.value || {};
+    Object.assign(baseMetrics, {
+      downloads: safeNumber(overview.downloads),
+      signups: safeNumber(overview.signups ?? overview.totalUsers),
+      activated: safeNumber(overview.activated ?? overview.activatedUsers),
+      buyers: safeNumber(overview.buyers),
+      repeatBuyers: safeNumber(overview.repeatBuyers),
+      revenue: safeNumber(overview.revenue ?? overview.revenueNGN),
+      decartCost: safeNumber(overview.decartCost ?? overview.decartCostNGN),
+      fees: safeNumber(overview.fees ?? overview.gatewayFeesNGN),
+      refunds: safeNumber(overview.refunds ?? overview.refundsNGN),
+      advertising: safeNumber(overview.advertising ?? overview.advertisingNGN),
+      sessions: safeNumber(overview.sessions),
+      failedSessions: safeNumber(overview.failedSessions),
+      crashes: safeNumber(overview.crashes),
+      apiRequests: safeNumber(overview.apiRequests),
+      apiErrors: safeNumber(overview.apiErrors),
+      growthSeries: Array.isArray(overview.growthSeries) ? overview.growthSeries : []
+    });
+  }
+
+  if (requests.some((result) => result.status === "fulfilled")) state.loadedAt = new Date();
+  return { failures: failures.length };
+}
 async function startAuthenticatedApp() {
   $("#loginGate").hidden = true;
   $("#loginGate").style.display = "none";
