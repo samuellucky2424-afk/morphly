@@ -15,8 +15,13 @@ function parseLogLine(line) {
   }
 }
 
-export async function readAdminAuditLog(options = {}) {
+export async function readAdminAuditLog(options = {}, supabaseAdmin = null) {
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(200, Number(options.limit))) : 50;
+  if (supabaseAdmin) {
+    const { data, error } = await supabaseAdmin.from('admin_audit_logs').select('*').order('created_at', { ascending: false }).limit(limit);
+    if (error) throw error;
+    return data || [];
+  }
   const backendLogDir = getBackendLogDir();
 
   try {

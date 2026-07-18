@@ -10,11 +10,6 @@ import {
   verifyFlutterwaveTransaction
 } from '../flutterwave-payment.js';
 
-function shouldApplyCreditsFromWebhook() {
-  const value = String(process.env.FLUTTERWAVE_WEBHOOK_APPLIES_CREDITS || '').trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-}
-
 function getHeader(req, name) {
   const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
   return Array.isArray(value) ? value[0] : value;
@@ -82,6 +77,7 @@ export default async function handler(req, res) {
     }
 
     const webhookTransaction = payload?.data || {};
+    const transactionId = webhookTransaction?.id || webhookTransaction?.transaction_id;
     const webhookStatus = String(webhookTransaction?.status || '').toLowerCase();
     if (webhookStatus && webhookStatus !== 'successful' && webhookStatus !== 'succeeded') {
       await logPaymentEvent('flutterwave-webhook.ignored_status', {
@@ -91,7 +87,6 @@ export default async function handler(req, res) {
       return res.status(200).json({ received: true, ignored: true });
     }
 
-    const transactionId = webhookTransaction?.id || webhookTransaction?.transaction_id;
     if (!transactionId) {
       return res.status(400).json({ status: 'failed', message: 'Missing webhook transaction ID' });
     }
@@ -105,7 +100,8 @@ export default async function handler(req, res) {
     const paymentContext = extractFlutterwavePaymentContext(verification.transaction, {
       reference: fallbackReference,
       userId: webhookTransaction?.meta?.userId || webhookTransaction?.meta?.user_id,
-      credits: webhookTransaction?.meta?.credits
+      credits: webhookTransaction?.meta?.credits,
+      packageId: webhookTransaction?.meta?.packageId || webhookTransaction?.meta?.package_id,
     });
 
     if (!paymentContext.userId) {
@@ -122,25 +118,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: validation.message });
     }
 
-    if (!shouldApplyCreditsFromWebhook()) {
-      await logPaymentEvent('flutterwave-webhook.observed_only', {
-        reference: validation.reference,
-        transactionId,
-        userId: paymentContext.userId,
-      });
-      return res.status(200).json({
-        received: true,
-        processed: false,
-        ignored: true,
-        reason: 'webhook_credit_application_disabled',
-      });
-    }
-
     const result = await applyVerifiedFlutterwavePayment({
       reference: validation.reference,
       userId: paymentContext.userId,
-      credits: paymentContext.credits,
-      amountPaidNGN: validation.amountPaidNGN
+      packageId: paymentContext.packageId,
+      transactionId,
+      amountPaidNGN: validation.amountPaidNGN,
+      gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
     });
 
     await logPaymentEvent('flutterwave-webhook.processed', {

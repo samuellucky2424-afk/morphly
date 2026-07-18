@@ -6,9 +6,13 @@ import {
   deleteUserAccount,
   getAdminOverview,
   listAdminUsers,
+  listAdminTransactions,
+  listSystemLogs,
+  setUserStatus,
   listCreditPackages,
   updateCreditPackages,
 } from '../../shared/admin-service.js';
+import { createCreditPackage } from '../../shared/credit-packages.js';
 import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase-admin.js';
 
@@ -31,9 +35,11 @@ const ADMIN_ROUTE_CONFIG = {
     event: 'admin-users',
     handler: handleAdminUsers,
   },
+  transactions: { path: '/api/admin-transactions', methods: ['GET'], event: 'admin-transactions', handler: handleAdminTransactions },
+  logs: { path: '/api/admin-logs', methods: ['GET'], event: 'admin-logs', handler: handleAdminLogs },
   'credit-packages': {
     path: '/api/admin-credit-packages',
-    methods: ['GET', 'PUT'],
+    methods: ['GET', 'POST', 'PUT'],
     event: 'admin-credit-packages',
     handler: handleAdminCreditPackages,
   },
@@ -155,9 +161,15 @@ async function handleAdminUsers(req, res, routeConfig) {
     }
 
     if (req.method === 'POST') {
+      if (req.body?.action === 'status') {
+        const result = await setUserStatus(supabaseAdmin, { ...req.body, adminUserId: adminContext.user.id });
+        return res.json(result);
+      }
       const result = await addCreditsToUser(supabaseAdmin, {
         userId: req.body?.userId,
-        creditsToAdd: req.body?.creditsToAdd,
+        creditsToAdd: req.body?.creditsToAdd ?? req.body?.amount,
+        reason: req.body?.reason,
+        idempotencyKey: req.body?.idempotencyKey,
         adminUserId: adminContext.user.id,
       });
 
@@ -210,7 +222,15 @@ async function handleAdminCreditPackages(req, res, routeConfig) {
       return res.json({ packages });
     }
 
+    if (req.method === 'POST') {
+      const packageRecord = await createCreditPackage(supabaseAdmin, req.body);
+      await supabaseAdmin.from('admin_audit_logs').insert({ admin_user_id: adminContext.user.id, action: 'package.created', target_type: 'credit_package', target_id: packageRecord.id, after_data: packageRecord });
+      return res.status(201).json(packageRecord);
+    }
+
     const packages = await updateCreditPackages(supabaseAdmin, req.body?.packages);
+
+    await supabaseAdmin.from('admin_audit_logs').insert({ admin_user_id: adminContext.user.id, action: 'packages.updated', target_type: 'credit_package', after_data: { count: packages.length } });
 
     await logRequestEvent('admin-credit-packages.updated', {
       adminUserId: adminContext.user.id,
@@ -238,10 +258,20 @@ async function handleAdminAuditLog(req, res, routeConfig) {
       return;
     }
 
-    const entries = await readAdminAuditLog({ limit: req.query?.limit || 50 });
+    const entries = await readAdminAuditLog({ limit: req.query?.limit || 50 }, supabaseAdmin);
     return res.json({ entries });
   } catch (error) {
     await logErrorEvent(`${routeConfig.event}.exception`, error);
     return res.status(500).json({ error: 'Failed to load admin audit log' });
   }
+}
+
+async function handleAdminTransactions(req, res) {
+  try { const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return; return res.json({ transactions: await listAdminTransactions(supabaseAdmin) }); }
+  catch (error) { await logErrorEvent('admin-transactions.exception', error); return res.status(500).json({ error: 'Failed to load transactions' }); }
+}
+
+async function handleAdminLogs(req, res) {
+  try { const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return; return res.json({ logs: await listSystemLogs(supabaseAdmin) }); }
+  catch (error) { await logErrorEvent('admin-logs.exception', error); return res.status(500).json({ error: 'Failed to load logs' }); }
 }

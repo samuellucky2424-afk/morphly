@@ -1,11 +1,50 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
+import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
+const DECART_API_BASE_URL = 'https://api.decart.ai';
+const DECART_REALTIME_MODEL = 'lucy-2.1';
+const CLIENT_TOKEN_TTL_SECONDS = 300;
 
 function getDecartApiKey() {
   return process.env.DECART_API_KEY?.trim() || null;
+}
+
+function getRealtimeBaseUrl() {
+  return process.env.DECART_REALTIME_BASE_URL?.trim() || 'wss://api3.decart.ai';
+}
+
+async function createDecartClientToken(apiKey, userId, maxSeconds) {
+  const providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+    body: JSON.stringify({
+      expiresIn: CLIENT_TOKEN_TTL_SECONDS,
+      allowedModels: [DECART_REALTIME_MODEL],
+      constraints: { realtime: { maxSessionDuration: Math.min(maxSeconds, 7200) } },
+      metadata: { userId },
+    }),
+  });
+  const providerData = await providerResponse.json().catch(() => ({}));
+
+  console.log('[AI_SESSION]', {
+    providerStatus: providerResponse.status,
+    hasToken: Boolean(providerData.apiKey),
+    expiresAt: providerData.expiresAt ?? null,
+    providerError: providerData.error ?? null,
+  });
+
+  if (!providerResponse.ok || !providerData.apiKey) {
+    return { error: {
+      error: 'AI_SESSION_CREATION_FAILED',
+      providerStatus: providerResponse.status,
+      details: providerData?.error || providerData?.message || 'Unknown provider error',
+    } };
+  }
+
+  return { token: providerData.apiKey, expiresAt: providerData.expiresAt ?? null };
 }
 
 function normalizeCredits(value) {
@@ -112,8 +151,17 @@ export default async function handler(req, res) {
       return res.status(503).json({ allowed: false, error: 'Missing DECART_API_KEY in server environment' });
     }
 
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ allowed: false, error: 'User ID is required' });
+    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    if (authResult.error) return res.status(authResult.status).json({ allowed: false, error: authResult.error });
+    const userId = authResult.user.id;
+    if (req.body?.userId && req.body.userId !== userId) return res.status(403).json({ allowed: false, error: 'User mismatch' });
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('users').select('account_status').eq('id', userId).maybeSingle();
+    if (profileError) throw profileError;
+    if (profile?.account_status === 'suspended') {
+      return res.status(403).json({ allowed: false, error: 'Account suspended' });
+    }
 
     await logRequestEvent('start-session.request', {
       method: req.method,
@@ -160,7 +208,7 @@ export default async function handler(req, res) {
     }
 
     const userCredits = normalizeCredits(walletNow?.credits);
-    if (userCredits <= 0) {
+    if (userCredits < CREDITS_PER_SECOND) {
       await logRequestEvent('start-session.insufficient_credits', {
         userId,
         credits: userCredits,
@@ -172,6 +220,12 @@ export default async function handler(req, res) {
     // (Previously it was declared after the insert, causing max_seconds = NULL
     //  which made closeActiveSession fall back to wiping the entire balance.)
     const maxSeconds = Math.floor(userCredits / CREDITS_PER_SECOND);
+
+    // Mint a short-lived client token. Never expose or log the account API key.
+    const providerSession = await createDecartClientToken(decartApiKey, userId, maxSeconds);
+    if (providerSession.error) {
+      return res.status(502).json({ allowed: false, ...providerSession.error });
+    }
 
     const { data: newSession, error: sessionError } = await createActiveSession(userId);
 
@@ -187,7 +241,16 @@ export default async function handler(req, res) {
       maxSeconds,
     });
 
-    res.json({ allowed: true, sessionId: newSession.id, credits: userCredits, maxSeconds, token: decartApiKey });
+    res.json({
+      allowed: true,
+      sessionId: newSession.id,
+      credits: userCredits,
+      maxSeconds,
+      token: providerSession.token,
+      expiresAt: providerSession.expiresAt,
+      websocketUrl: getRealtimeBaseUrl(),
+      model: DECART_REALTIME_MODEL,
+    });
   } catch (error) {
     console.error('start-session unexpected error:', error);
     await logErrorEvent('start-session.exception', error);

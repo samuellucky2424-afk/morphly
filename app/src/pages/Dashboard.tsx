@@ -14,7 +14,7 @@ import {
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import {
@@ -82,6 +82,20 @@ interface RealtimeClient {
   ) => void;
 }
 
+type AiSessionResponse = {
+  allowed: boolean;
+  token?: string;
+  error?: string;
+  details?: string;
+  providerStatus?: number;
+  credits?: number;
+  maxSeconds?: number;
+  sessionId?: string;
+  expiresAt?: string | null;
+  websocketUrl?: string;
+  model?: string;
+};
+
 type ReferenceImage = {
   file: File;
   name: string;
@@ -128,6 +142,8 @@ const INITIAL_PROMPT_INJECTION_DELAY_MS = 500;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
+const AI_CONNECT_TIMEOUT_MS = 45000;
+const AI_CONNECT_MAX_ATTEMPTS = 3;
 const DECART_REALTIME_MODEL = 'lucy-2.1';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
@@ -168,6 +184,19 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 function drawVideoFrameCover(
@@ -273,7 +302,7 @@ function getNavigatorConnection(): NetworkInformationLike | null {
 }
 
 async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await apiFetch(endpoint, {
+  const response = await apiFetchWithAuth(endpoint, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
@@ -283,7 +312,7 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || errorData.message || `API Error: ${response.statusText}`);
+    throw new Error(errorData.details || errorData.error || errorData.message || `API Error: ${response.statusText}`);
   }
 
   return response.json();
@@ -1299,7 +1328,7 @@ function Dashboard() {
     stream: MediaStream,
     apiToken: string,
     initialTransform: TransformState,
-    options?: { isRecovery?: boolean },
+    options?: { isRecovery?: boolean; websocketUrl?: string },
   ): Promise<RealtimeClient | null> => {
     try {
       if (morphlyCamWindowEnabledRef.current && morphlyCamWindowRef.current && !morphlyCamWindowRef.current.closed) {
@@ -1308,7 +1337,10 @@ function Dashboard() {
       }
 
       const { createDecartClient, models } = await import('@decartai/sdk');
-      const client = createDecartClient({ apiKey: apiToken });
+      const client = createDecartClient({
+        apiKey: apiToken,
+        ...(options?.websocketUrl ? { realtimeBaseUrl: options.websocketUrl } : {}),
+      });
       const model = models.realtime(DECART_REALTIME_MODEL);
 
       const realtimeClient = await client.realtime.connect(stream, {
@@ -1458,16 +1490,22 @@ function Dashboard() {
         markRemoteFrameFresh();
       };
 
+      const onDiagnostic = (diagnostic: unknown) => {
+        console.log('[AI_WS_DIAGNOSTIC]', diagnostic);
+      };
+
       realtimeClient.on('connectionChange', onConnectionChange);
       realtimeClient.on('stats', onStats);
       realtimeClient.on('error', onError);
       realtimeClient.on('generationTick', onGenerationTick);
+      realtimeClient.on('diagnostic', onDiagnostic);
 
       clientSubscriptionsCleanupRef.current = () => {
         realtimeClient.off('connectionChange', onConnectionChange);
         realtimeClient.off('stats', onStats);
         realtimeClient.off('error', onError);
         realtimeClient.off('generationTick', onGenerationTick);
+        realtimeClient.off('diagnostic', onDiagnostic);
       };
 
       realtimeClientRef.current = realtimeClient as RealtimeClient;
@@ -1940,49 +1978,68 @@ function Dashboard() {
         throw new Error('Webcam start failed');
       }
 
-      const startResponse = await apiRequest<{
-        allowed: boolean;
-        token?: string;
-        error?: string;
-        credits?: number;
-        maxSeconds?: number;
-        sessionId?: string;
-      }>('/start-session', {
-        method: 'POST',
-        body: JSON.stringify({ userId: user?.id }),
-      });
+      let realtimeClient: RealtimeClient | null = null;
+      let lastConnectError: unknown;
 
-      if (!startResponse.allowed) {
-        toast.error(startResponse.error || 'Insufficient credits');
-        stopWebcam();
-        closeMorphlyCamWindow({ clearStream: true });
-        morphlyCamWindowEnabledRef.current = false;
-        setIsLoading(false);
-        return;
+      for (let attempt = 1; attempt <= AI_CONNECT_MAX_ATTEMPTS; attempt += 1) {
+        console.log(`[AI_WS] Connection attempt ${attempt}`);
+        const startResponse = await apiRequest<AiSessionResponse>('/start-session', {
+          method: 'POST',
+          body: JSON.stringify({ userId: user?.id }),
+        });
+
+        if (!startResponse.allowed) {
+          throw new Error(startResponse.details || startResponse.error || 'Failed to create AI session');
+        }
+
+        const sessionToken = startResponse.token || '';
+        if (!sessionToken) throw new Error('Missing session token');
+
+        sessionTokenRef.current = sessionToken;
+        sessionIdRef.current = startResponse.sessionId || '';
+
+        const websocketUrl = startResponse.websocketUrl || 'wss://api3.decart.ai';
+        const parsedWebsocketUrl = new URL(websocketUrl);
+        console.log('[AI_DIAGNOSTICS]', {
+          platform: navigator.platform,
+          userAgent: navigator.userAgent,
+          online: navigator.onLine,
+          pageProtocol: location.protocol,
+          pageHost: location.host,
+          websocketProtocol: parsedWebsocketUrl.protocol,
+          websocketHost: parsedWebsocketUrl.host,
+          model: startResponse.model || DECART_REALTIME_MODEL,
+          hasToken: Boolean(sessionToken),
+          expiresAt: startResponse.expiresAt ?? null,
+        });
+
+        if (parsedWebsocketUrl.protocol !== 'wss:') {
+          throw new Error(`Unsafe AI WebSocket protocol: ${parsedWebsocketUrl.protocol}`);
+        }
+
+        try {
+          realtimeClient = await withTimeout(
+            connectToDecart(stream, sessionToken, getDesiredTransformState(), { websocketUrl }),
+            AI_CONNECT_TIMEOUT_MS,
+            `AI connection timed out after ${AI_CONNECT_TIMEOUT_MS / 1000}s`,
+          );
+          if (!realtimeClient) throw new Error('Decart connection was not established');
+          if (startResponse.credits !== undefined) setCredits(startResponse.credits);
+          break;
+        } catch (error) {
+          lastConnectError = error;
+          await apiRequest('/end-session', {
+            method: 'POST',
+            body: JSON.stringify({ userId: user?.id, sessionId: sessionIdRef.current || undefined }),
+          }).catch((endError) => console.error('Failed to end unsuccessful AI session:', endError));
+          sessionTokenRef.current = '';
+          sessionIdRef.current = '';
+          disconnectFromDecart({ skipStateUpdate: true });
+          if (attempt < AI_CONNECT_MAX_ATTEMPTS) await sleep(attempt * 2000);
+        }
       }
 
-      if (startResponse.credits !== undefined) {
-        setCredits(startResponse.credits);
-      }
-
-      const sessionToken = startResponse.token || '';
-
-      if (!sessionToken) {
-        throw new Error('Missing session token');
-      }
-
-      sessionTokenRef.current = sessionToken;
-      sessionIdRef.current = startResponse.sessionId || '';
-
-      const realtimeClient = await connectToDecart(
-        stream,
-        sessionToken,
-        getDesiredTransformState(),
-      );
-
-      if (!realtimeClient) {
-        throw new Error('Decart connection was not established');
-      }
+      if (!realtimeClient) throw lastConnectError || new Error('Decart connection was not established');
 
       if (pollIntervalRef.current) {
         clearInterval(pollIntervalRef.current);

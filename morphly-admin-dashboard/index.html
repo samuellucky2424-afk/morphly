@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Morphly Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/private/morphly/login/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <section id="loginGate" style="min-height:100vh;display:grid;place-items:center;background:#f7f8fa;padding:24px">
+    <form id="adminLoginForm" class="panel" style="width:min(420px,100%);padding:32px">
+      <p class="eyebrow">Secure access</p><h1>Morphly Admin</h1><p style="color:#667085;margin:8px 0 24px">Sign in with an authorized administrator account.</p>
+      <label class="form-field"><span>Email</span><input id="adminEmail" type="email" autocomplete="username" required></label>
+      <label class="form-field"><span>Password</span><input id="adminPassword" type="password" autocomplete="current-password" required></label>
+      <p id="loginError" role="alert" style="color:#b42318;min-height:20px"></p><button class="primary-button" style="width:100%" type="submit">Sign in</button>
+    </form>
+  </section>
+  <div class="app-shell" id="adminApp" hidden>
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="#" aria-label="Morphly admin home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span><strong>Morphly</strong><small>Control center</small></span>
+      </a>
+
+      <nav class="nav" aria-label="Admin navigation">
+        <button class="nav-item active" type="button" data-view="overview">
+          <span class="nav-icon">⌂</span><span>Overview</span>
+        </button>
+        <button class="nav-item" type="button" data-view="users">
+          <span class="nav-icon">◎</span><span>Users</span><span class="nav-count" id="sidebarUserCount">0</span>
+        </button>
+        <button class="nav-item" type="button" data-view="transactions">
+          <span class="nav-icon">₦</span><span>Transactions</span>
+        </button>
+        <button class="nav-item" type="button" data-view="packages">
+          <span class="nav-icon">▣</span><span>Credit packages</span><span class="nav-count" id="sidebarPackageCount">0</span>
+        </button>
+        <button class="nav-item" type="button" data-view="logs">
+          <span class="nav-icon">!</span><span>System logs</span><span class="nav-dot" aria-label="New alerts"></span>
+        </button>
+        <button class="nav-item" type="button" data-view="developer">
+          <span class="nav-icon">&lt;/&gt;</span><span>Developer API</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="api-health"><span class="health-dot"></span><span><strong>Services operational</strong><small>Last check 1 min ago</small></span></div>
+        <button class="admin-profile" type="button">
+          <span class="avatar">LS</span>
+          <span><strong>Lucky Samuel</strong><small>Owner</small></span>
+          <span aria-hidden="true">⋮</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="icon-button menu-button" id="menuButton" type="button" aria-label="Open navigation">☰</button>
+          <div><p class="eyebrow">Operations</p><h1 id="pageTitle">Business overview</h1></div>
+        </div>
+        <div class="topbar-actions">
+          <span class="demo-chip">Live data</span>
+          <button class="icon-button" type="button" aria-label="Notifications">♢<span class="notification-dot"></span></button>
+          <button class="primary-button" id="exportButton" type="button">Export report</button>
+        </div>
+      </header>
+
+      <section class="content">
+        <div class="toolbar" id="globalToolbar">
+          <div class="segmented" role="group" aria-label="Date range">
+            <button type="button" data-period="7">7D</button>
+            <button class="active" type="button" data-period="30">30D</button>
+            <button type="button" data-period="90">90D</button>
+          </div>
+          <label class="select-field"><span>Platform</span><select id="platformFilter"><option value="all">All platforms</option><option value="windows">Windows</option><option value="web">Web</option><option value="android">Android</option></select></label>
+          <label class="select-field"><span>Source</span><select id="sourceFilter"><option value="all">All sources</option><option value="whatsapp">WhatsApp</option><option value="tiktok">TikTok</option><option value="referral">Referral</option><option value="direct">Direct</option></select></label>
+          <p class="last-updated">Updated <strong id="lastUpdated">just now</strong></p>
+        </div>
+
+        <section class="view active" id="overviewView" data-view-panel="overview">
+          <div class="metric-grid" id="overviewMetrics"></div>
+          <div class="dashboard-grid">
+            <article class="panel chart-panel">
+              <div class="panel-head"><div><p class="eyebrow">Customer journey</p><h2>Growth and activation</h2></div><div class="legend"><span><i class="legend-dot signups"></i>Signups</span><span><i class="legend-dot activated"></i>Activated</span><span><i class="legend-dot buyers"></i>Buyers</span></div></div>
+              <div class="chart" id="growthChart" role="img" aria-label="Growth and activation trend"></div>
+            </article>
+            <article class="panel funnel-panel">
+              <div class="panel-head"><div><p class="eyebrow">Conversion</p><h2>Live funnel</h2></div><button class="text-button" type="button" data-go-view="users">Inspect users</button></div>
+              <div class="funnel" id="funnelChart"></div>
+            </article>
+          </div>
+          <div class="dashboard-grid lower-grid">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">Financial health</p><h2>Revenue and real cost</h2></div></div><div class="money-breakdown" id="moneyBreakdown"></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">Needs attention</p><h2>Operational alerts</h2></div><button class="text-button" type="button" data-go-view="logs">Open logs</button></div><div class="alert-list" id="alertList"></div></article>
+          </div>
+        </section>
+
+        <section class="view" id="usersView" data-view-panel="users">
+          <div class="metric-grid compact" id="userMetrics"></div>
+          <article class="panel user-panel">
+            <div class="panel-head user-panel-head">
+              <div><p class="eyebrow">Account management</p><h2>All users</h2></div>
+              <div class="table-tools">
+                <label class="search-field"><span aria-hidden="true">⌕</span><input id="userSearch" type="search" placeholder="Search name, email or user ID" autocomplete="off"></label>
+                <select id="userStatusFilter" aria-label="Filter by account status"><option value="all">All statuses</option><option value="active">Active</option><option value="suspended">Suspended</option></select>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>User</th><th>Status</th><th>Credits</th><th>Purchases</th><th>Lifetime spent</th><th>Last active</th><th><span class="sr-only">Actions</span></th></tr></thead>
+                <tbody id="userTableBody"></tbody>
+              </table>
+            </div>
+            <div class="table-footer"><span id="userTableSummary">Showing 0 users</span><div class="pagination"><button type="button" disabled>Previous</button><button class="active" type="button">1</button><button type="button" disabled>Next</button></div></div>
+          </article>
+        </section>
+
+        <section class="view" id="transactionsView" data-view-panel="transactions">
+          <div class="metric-grid compact" id="transactionMetrics"></div>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Verified payments</p><h2>Recent transactions</h2></div></div><div class="table-wrap"><table><thead><tr><th>Reference</th><th>Customer</th><th>Package</th><th>Amount</th><th>Credits</th><th>Gateway</th><th>Status</th><th>Gateway fee</th><th>Refund</th><th>Date</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></article>
+        </section>
+
+        <section class="view" id="packagesView" data-view-panel="packages">
+          <div class="metric-grid compact" id="packageMetrics"></div>
+          <div class="package-layout">
+            <article class="panel package-form-panel">
+              <div class="panel-head"><div><p class="eyebrow">Pricing</p><h2>Create credit package</h2></div><span class="status-pill info">Admin only</span></div>
+              <form id="packageForm" class="package-form">
+                <label><span>Package name</span><input id="packageName" name="name" type="text" maxlength="40" placeholder="Creator Plus" required></label>
+                <div class="form-row">
+                  <label><span>Price in naira</span><input id="packagePrice" name="price" type="number" min="100" max="100000000" step="100" placeholder="29000" required></label>
+                  <label><span>Credits included</span><input id="packageCredits" name="credits" type="number" min="1" max="10000000" step="1" placeholder="500" required></label>
+                </div>
+                <label><span>Short description</span><input id="packageDescription" name="description" type="text" maxlength="100" placeholder="For regular Morphly creators"></label>
+                <label><span>Visibility</span><select id="packageStatus" name="status"><option value="active">Active — customers can purchase</option><option value="draft">Draft — hidden from customers</option></select></label>
+                <label class="confirmation"><input id="packageFeatured" name="featured" type="checkbox"><span>Highlight as the recommended package</span></label>
+                <div class="package-preview" id="packagePreview"><span>Price per 100 credits</span><strong>₦0</strong></div>
+                <p class="form-error" id="packageFormError"></p>
+                <button class="primary-button full-width" type="submit">Create package</button>
+              </form>
+            </article>
+            <article class="panel package-list-panel">
+              <div class="panel-head"><div><p class="eyebrow">Customer offers</p><h2>Available packages</h2></div><select id="packageStatusFilter" aria-label="Filter packages"><option value="all">All packages</option><option value="active">Active</option><option value="draft">Draft</option><option value="paused">Paused</option></select></div>
+              <div class="table-wrap">
+                <table><thead><tr><th>Package</th><th>Status</th><th>Price</th><th>Credits</th><th>Price / 100</th><th>Purchases</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody id="packageTableBody"></tbody></table>
+              </div>
+              <p class="package-note">Package changes affect future purchases only. Existing customer balances and completed transactions remain unchanged.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="logsView" data-view-panel="logs">
+          <div class="metric-grid compact" id="logMetrics"></div>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Reliability</p><h2>System event logs</h2></div><select id="logSeverityFilter" aria-label="Filter log severity"><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Information</option></select></div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Platform</th><th>User</th><th>Count</th><th>Severity</th><th>Last seen</th></tr></thead><tbody id="logTableBody"></tbody></table></div></article>
+        </section>
+
+        <section class="view" id="developerView" data-view-panel="developer">
+          <div class="permission-banner"><span class="permission-icon">!</span><div><strong>Developer API is locked</strong><p>Do not expose the permanent Decart key or let third parties integrate Decart models until you have Decart's written authorization.</p></div><span class="status-pill warning">Approval required</span></div>
+          <div class="dashboard-grid">
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">Future architecture</p><h2>Developer access controls</h2></div></div><div class="requirements" id="developerRequirements"></div></article>
+            <article class="panel"><div class="panel-head"><div><p class="eyebrow">Planned package</p><h2>Wholesale developer tier</h2></div></div><div class="locked-plan"><span class="lock-icon">⌁</span><strong>Not available</strong><p>Pricing should only be activated after authorization, credit metering, rate limiting and abuse controls are complete.</p><button type="button" disabled>Configure package</button></div></article>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="user-drawer" id="userDrawer" aria-labelledby="drawerTitle" aria-hidden="true">
+    <div class="drawer-head"><div><p class="eyebrow">User account</p><h2 id="drawerTitle">Manage user</h2></div><button class="icon-button" id="closeDrawerButton" type="button" aria-label="Close user details">×</button></div>
+    <div class="drawer-content" id="drawerContent"></div>
+  </aside>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <template id="userDrawerTemplate">
+    <div class="identity-card">
+      <span class="large-avatar" data-user-initials></span>
+      <div><h3 data-user-name></h3><p data-user-email></p><span data-user-status></span></div>
+    </div>
+    <div class="detail-grid" data-user-details></div>
+    <section class="drawer-section">
+      <div class="section-title"><div><p class="eyebrow">Wallet</p><h3>Add credits</h3></div><strong class="credit-balance" data-user-balance></strong></div>
+      <form id="creditForm">
+        <div class="form-row"><label><span>Credit amount</span><input id="creditAmount" name="amount" type="number" min="1" max="1000000" step="1" placeholder="500" required></label><label><span>Reason</span><input id="creditReason" name="reason" type="text" maxlength="120" placeholder="Payment correction" required></label></div>
+        <p class="form-error" id="creditFormError"></p>
+        <button class="primary-button full-width" type="submit">Add credits</button>
+      </form>
+    </section>
+    <section class="drawer-section danger-section">
+      <div class="section-title"><div><p class="eyebrow">Account access</p><h3 data-status-action-title></h3></div></div>
+      <form id="statusForm">
+        <label><span>Admin reason</span><textarea id="statusReason" name="reason" rows="3" maxlength="160" placeholder="Required for the audit log" required></textarea></label>
+        <label class="confirmation"><input id="statusConfirmation" type="checkbox" required><span>I confirm this account-access change.</span></label>
+        <p class="form-error" id="statusFormError"></p>
+        <button class="secondary-button full-width" type="submit" data-status-action-button></button>
+      </form>
+    </section>
+    <section class="drawer-section"><div class="section-title"><div><p class="eyebrow">Account history</p><h3>Audit trail</h3></div></div><div class="timeline" data-user-audit></div></section>
+  </template>
+
+  <script src="/private/morphly/login/app.js"></script>
+</body>
+</html>

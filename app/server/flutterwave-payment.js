@@ -51,7 +51,8 @@ export function extractFlutterwavePaymentContext(transaction, fallback = {}) {
     ? metaCredits
     : (Number.isFinite(fallbackCredits) && fallbackCredits > 0 ? fallbackCredits : null);
 
-  return { reference, userId, credits };
+  const packageId = meta.packageId || meta.package_id || fallback.packageId || null;
+  return { reference, userId, credits, packageId };
 }
 
 export function validateFlutterwaveTransaction(transaction, expectedReference) {
@@ -72,87 +73,32 @@ export function validateFlutterwaveTransaction(transaction, expectedReference) {
   return { ok: true, reference: reference || expectedReference, amountPaidNGN };
 }
 
-export async function applyVerifiedFlutterwavePayment({ reference, userId, credits, amountPaidNGN }) {
-  if (!reference || !userId) {
-    throw new Error('Missing payment reference or userId');
+export async function applyVerifiedFlutterwavePayment({ reference, userId, packageId, transactionId, amountPaidNGN, gatewayFeeNGN = 0 }) {
+  if (!reference || !userId || !packageId || !transactionId) {
+    throw new Error('Missing verified payment context');
   }
+  const { data: profile, error: profileError } = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
+  if (profileError) throw profileError;
+  if (profile?.account_status === 'suspended') throw new Error('Account suspended');
 
-  const { data: existingTransaction } = await supabaseAdmin
-    .from('transactions')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('reference', reference)
-    .eq('status', 'success')
-    .maybeSingle();
-
-  if (existingTransaction) {
-    const { data: walletData } = await supabaseAdmin
-      .from('wallets')
-      .select('credits')
-      .eq('user_id', userId)
-      .single();
-
-    await logPaymentEvent('payment.duplicate_ignored', {
-      reference,
-      userId,
-      newCredits: walletData?.credits || 0,
-    });
-
-    return {
-      status: 'success',
-      message: 'Payment already verified',
-      creditsAdded: 0,
-      newCredits: walletData?.credits || 0
-    };
-  }
-
-  const creditsToAdd = credits || Math.round(amountPaidNGN / 30);
-
-  const { data: walletData } = await supabaseAdmin
-    .from('wallets')
-    .select('balance, credits')
-    .eq('user_id', userId)
-    .single();
-
-  const currentCredits = walletData?.credits || 0;
-  const newCredits = currentCredits + creditsToAdd;
-
-  await supabaseAdmin.from('wallets').update({ credits: newCredits }).eq('user_id', userId);
-
-  await supabaseAdmin.from('transactions').insert({
-    user_id: userId,
-    type: 'credit',
-    amount: amountPaidNGN,
-    credits: creditsToAdd,
-    reference,
-    status: 'success',
-    created_at: new Date()
+  const { data, error } = await supabaseAdmin.rpc('apply_verified_package_payment', {
+    p_user: userId, p_package: packageId, p_reference: reference,
+    p_gateway_id: String(transactionId), p_amount: amountPaidNGN, p_fee: gatewayFeeNGN,
   });
-
-  const planName = credits ? `${credits} Credits` : 'Credit Purchase';
-
-  await supabaseAdmin.from('subscriptions').insert({
-    user_id: userId,
-    plan_name: planName,
-    amount_paid: amountPaidNGN,
-    credits: creditsToAdd,
-    status: 'active',
-    created_at: new Date()
-  });
+  if (error) throw error;
 
   await logPaymentEvent('payment.credits_applied', {
     reference,
     userId,
     amountPaidNGN,
-    creditsAdded: creditsToAdd,
-    newCredits,
-    planName,
+    creditsAdded: data?.creditsAdded || 0,
+    newCredits: data?.newCredits,
+    duplicate: Boolean(data?.duplicate),
   });
 
   return {
     status: 'success',
-    message: 'Payment verification successful',
-    creditsAdded: creditsToAdd,
-    newCredits
+    message: data?.duplicate ? 'Payment already processed' : 'Payment verified by webhook',
+    ...data,
   };
 }
