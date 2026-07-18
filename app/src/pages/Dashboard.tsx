@@ -322,7 +322,7 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
 void import('@decartai/sdk');
 
 function Dashboard() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
 
@@ -2056,7 +2056,11 @@ function Dashboard() {
       setUiStatus('Live');
     } catch (error) {
       console.error('Start session error:', error);
-      const toastMessage = getStartSessionErrorToast(error);
+      const sessionExpired = error instanceof Error && (
+        error.message === 'AUTH_SESSION_REQUIRED' ||
+        /missing authorization|invalid or expired access token/i.test(error.message)
+      );
+      const toastMessage = sessionExpired ? 'Your session expired. Please sign in again.' : getStartSessionErrorToast(error);
       if (toastMessage) {
         toast.error(toastMessage);
       }
@@ -2078,6 +2082,9 @@ function Dashboard() {
       setIsStreaming(false);
       setSessionStatus('IDLE');
       setUiStatus('Disconnected');
+      if (sessionExpired) {
+        await logout();
+      }
     } finally {
       setIsLoading(false);
     }

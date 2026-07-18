@@ -232,13 +232,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     setLoading(true);
     try {
-      await supabase.auth.signOut();
-      setUser(null);
-      setError(null);
-      navigate(ROUTES.PUBLIC.LOGIN, { replace: true });
+      await supabase.auth.signOut({ scope: 'local' });
     } catch (err) {
       console.error('Logout error:', err);
     } finally {
+      setUser(null);
+      setError(null);
+      navigate(ROUTES.PUBLIC.LOGIN, { replace: true });
       setLoading(false);
     }
   }, [navigate]);
