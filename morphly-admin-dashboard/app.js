@@ -632,6 +632,18 @@ async function init() {
   const response = await fetch(`${CONFIG.apiBase}${CONFIG.endpoints.config}`);
   const config = await response.json();
   if (!config.supabaseUrl || !config.supabaseAnonKey) throw new Error("Supabase public configuration is missing.");
+  try {
+    const projectRef = new URL(config.supabaseUrl).hostname.split(".")[0];
+    const storageKey = `sb-${projectRef}-auth-token`;
+    const storedSession = JSON.parse(localStorage.getItem(storageKey) || "null");
+    const expiresAt = Number(storedSession?.expires_at || storedSession?.currentSession?.expires_at || 0);
+    const refreshToken = storedSession?.refresh_token || storedSession?.currentSession?.refresh_token;
+    if (storedSession && (!refreshToken || !expiresAt || expiresAt * 1000 <= Date.now() + 30000)) {
+      localStorage.removeItem(storageKey);
+    }
+  } catch (storageError) {
+    console.warn("Unable to inspect the saved admin session", storageError);
+  }
   window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
   const session = (await window.morphlySupabase.auth.getSession()).data.session;
   if (session) {
