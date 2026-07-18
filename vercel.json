@@ -11,6 +11,13 @@
   },
   "rewrites": [
     { "source": "/private/morphly/login", "destination": "/private/morphly/login/index.html" },
+    { "source": "/api/admin-me", "destination": "/api/admin?name=me" },
+    { "source": "/api/admin-overview", "destination": "/api/admin?name=overview" },
+    { "source": "/api/admin-users", "destination": "/api/admin?name=users" },
+    { "source": "/api/admin-credit-packages", "destination": "/api/admin?name=credit-packages" },
+    { "source": "/api/admin-audit-log", "destination": "/api/admin?name=audit-log" },
+    { "source": "/api/admin-transactions", "destination": "/api/admin?name=transactions" },
+    { "source": "/api/admin-logs", "destination": "/api/admin?name=logs" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],
   "headers": [

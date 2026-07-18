@@ -18,6 +18,10 @@ export default defineConfig(({ mode }) => {
       for (const fileName of ['index.html', 'styles.css', 'app.js']) {
         fs.copyFileSync(path.join(source, fileName), path.join(destination, fileName));
       }
+      fs.copyFileSync(
+        path.resolve(__dirname, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js'),
+        path.join(destination, 'supabase.js'),
+      );
     },
   };
 
