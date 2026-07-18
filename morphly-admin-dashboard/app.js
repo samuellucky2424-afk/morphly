@@ -702,6 +702,13 @@ async function init() {
     try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); await startAuthenticatedApp(); }
     catch (appError) { $("#loginError").textContent = appError.message; }
   });
+  $("#adminForgotPassword").addEventListener("click", async () => {
+    const email = $("#adminEmail").value.trim().toLowerCase();
+    if (!email) { $("#loginError").textContent = "Enter your email address first."; return; }
+    $("#loginError").textContent = "Sending reset email…";
+    const { error } = await window.morphlySupabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` });
+    $("#loginError").textContent = error ? error.message : "Password reset email sent. Check your inbox and spam folder.";
+  });
 }
 
 init().catch((error) => { $("#loginError").textContent = error.message; });

@@ -11,6 +11,7 @@
   },
   "rewrites": [
     { "source": "/private/morphly/login", "destination": "/private/morphly/login/index.html" },
+    { "source": "/reset-password", "destination": "/reset-password/index.html" },
     { "source": "/api/admin-me", "destination": "/api/admin?name=me" },
     { "source": "/api/admin-overview", "destination": "/api/admin?name=overview" },
     { "source": "/api/admin-users", "destination": "/api/admin?name=users" },

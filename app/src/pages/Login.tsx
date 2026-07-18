@@ -6,6 +6,9 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
+import { supabase } from '@/lib/supabase';
+
+const PASSWORD_RESET_URL = 'https://morphly-alpha.vercel.app/reset-password';
 
 function Login() {
   const { login, register, loading, error, clearError } = useAuth();
@@ -14,6 +17,25 @@ function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+
+  const handleForgotPassword = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      toast.error('Enter your email address first.');
+      return;
+    }
+    setResetLoading(true);
+    try {
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo: PASSWORD_RESET_URL });
+      if (resetError) throw resetError;
+      toast.success('Password reset email sent. Check your inbox and spam folder.');
+    } catch (resetError) {
+      toast.error(resetError instanceof Error ? resetError.message : 'Unable to send password reset email.');
+    } finally {
+      setResetLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (error) {
@@ -94,9 +116,10 @@ function Login() {
                     <button 
                       type="button" 
                       className="text-sm text-[#2563eb] hover:text-[#3b82f6]"
-                      onClick={() => toast.info('Password reset coming soon')}
+                      onClick={handleForgotPassword}
+                      disabled={loading || resetLoading}
                     >
-                      Forgot password?
+                      {resetLoading ? 'Sending…' : 'Forgot password?'}
                     </button>
                   )}
                 </div>

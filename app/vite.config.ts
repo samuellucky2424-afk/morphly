@@ -22,6 +22,9 @@ export default defineConfig(({ mode }) => {
         path.resolve(__dirname, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js'),
         path.join(destination, 'supabase.js'),
       );
+      const resetDestination = path.resolve(__dirname, 'dist/reset-password');
+      fs.mkdirSync(resetDestination, { recursive: true });
+      fs.copyFileSync(path.join(source, 'reset-password.html'), path.join(resetDestination, 'index.html'));
     },
   };
 
