@@ -197,6 +197,13 @@ const AdminAPI = {
     state.audit.unshift({ id: `aud_${Date.now()}`, userId: null, time: "Just now", admin: "Lucky Samuel", action: `${status === "active" ? "Activated" : "Paused"} ${packageRecord.name} package`, detail: `${money(packageRecord.price)} · ${number(packageRecord.credits)} credits` });
     persistDemoState();
     return packageRecord;
+  },
+
+  async reconcilePayment(transactionId, userId, packageId, reference) {
+    return AdminAPI.request(CONFIG.endpoints.transactions, {
+      method: "POST",
+      body: JSON.stringify({ transactionId, userId, packageId, reference: reference || undefined })
+    });
   }
 };
 
@@ -367,6 +374,38 @@ function renderPackages() {
   }));
 }
 
+function populateReconciliationOptions() {
+  const userSelect = $("#reconcileUserId");
+  const packageSelect = $("#reconcilePackageId");
+  userSelect.innerHTML = `<option value="">Select customer</option>${state.users.map((user) => `<option value="${escapeHtml(user.id)}">${escapeHtml(user.email)} · ${number(user.credits)} credits</option>`).join("")}`;
+  packageSelect.innerHTML = `<option value="">Select package purchased</option>${state.packages.filter((pkg) => pkg.status === "active").map((pkg) => `<option value="${escapeHtml(pkg.id)}">${escapeHtml(pkg.name)} · ${money(pkg.price)} · ${number(pkg.credits)} credits</option>`).join("")}`;
+}
+
+async function handleReconcilePayment(event) {
+  event.preventDefault();
+  const error = $("#reconcilePaymentError");
+  const button = event.submitter;
+  error.textContent = "";
+  button.disabled = true;
+  button.textContent = "Verifying with Flutterwave…";
+  try {
+    const result = await AdminAPI.reconcilePayment(
+      $("#reconcileTransactionId").value.trim(), $("#reconcileUserId").value,
+      $("#reconcilePackageId").value, $("#reconcileReference").value.trim()
+    );
+    await loadLiveData();
+    renderAll();
+    event.target.reset();
+    populateReconciliationOptions();
+    showToast(result.duplicate ? "This payment was already credited." : `Payment verified. ${number(result.creditsAdded)} credits added.`);
+  } catch (failure) {
+    error.textContent = failure.message || "Payment could not be reconciled.";
+  } finally {
+    button.disabled = false;
+    button.textContent = "Verify and credit wallet";
+  }
+}
+
 function beginPackageEdit(packageId) {
   const item = state.packages.find((pkg) => pkg.id === packageId);
   if (!item) return;
@@ -482,6 +521,7 @@ function renderAll() {
   renderPackages();
   renderLogs();
   renderDeveloper();
+  populateReconciliationOptions();
   $("#lastUpdated").textContent = "just now";
 }
 
@@ -638,6 +678,11 @@ function bindEvents() {
   $("#drawerBackdrop").addEventListener("click", closeUserDrawer);
   $("#menuButton").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
   $("#exportButton").addEventListener("click", exportReport);
+  $("#reconcilePaymentForm").addEventListener("submit", handleReconcilePayment);
+  $("#refreshDataButton").addEventListener("click", async () => {
+    try { await loadLiveData(); renderAll(); showToast("Live data refreshed."); }
+    catch (error) { showToast(error.message); }
+  });
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeUserDrawer(); });
 }
 
@@ -646,11 +691,11 @@ async function loadLiveData() {
     AdminAPI.request(CONFIG.endpoints.overview), AdminAPI.request(CONFIG.endpoints.users), AdminAPI.request(CONFIG.endpoints.packages),
     AdminAPI.request(CONFIG.endpoints.transactions), AdminAPI.request(CONFIG.endpoints.logs), AdminAPI.request(CONFIG.endpoints.audit)
   ]);
-  const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
-  const overview = value(0, {}), users = value(1, { users: [] }), packages = value(2, { packages: [] });
-  const txs = value(3, { transactions: [] }), logs = value(4, { logs: [] }), audit = value(5, { entries: [] });
   const failures = requests.filter((result) => result.status === "rejected");
-  if (failures.length) console.warn("Some admin sections could not be loaded", failures.map((failure) => failure.reason?.message));
+  if (failures.length) throw new Error(`Live dashboard data failed to load: ${failures.map((failure) => failure.reason?.message || "unknown error").join("; ")}`);
+  const value = (index) => requests[index].value;
+  const overview = value(0), users = value(1), packages = value(2);
+  const txs = value(3), logs = value(4), audit = value(5);
   state.users = (users.users || []).map((u) => ({ ...u, lastActive: u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleString("en-NG") : "Never", joined: u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-NG") : "", plan: "Credits", platform: "windows", source: "direct", sessions: 0, successRate: 0 }));
   state.packages = (packages.packages || []).map((p) => ({ ...p, price: p.priceNGN, status: p.status || (p.isActive ? "active" : "paused"), featured: p.isRecommended || false, purchases: p.purchases || 0, createdAt: p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-NG") : "" }));
   transactions = txs.transactions || [];
@@ -672,6 +717,11 @@ async function startAuthenticatedApp() {
   $("#adminApp").hidden = false;
   bindEvents();
   renderAll();
+  window.clearInterval(startAuthenticatedApp.refreshTimer);
+  startAuthenticatedApp.refreshTimer = window.setInterval(async () => {
+    try { await loadLiveData(); renderAll(); }
+    catch (error) { console.error("Automatic live-data refresh failed", error); }
+  }, 30000);
 }
 
 async function init() {

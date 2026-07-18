@@ -15,6 +15,12 @@ import {
 import { createCreditPackage } from '../../shared/credit-packages.js';
 import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase-admin.js';
+import {
+  applyVerifiedFlutterwavePayment,
+  extractFlutterwavePaymentContext,
+  validateFlutterwaveTransaction,
+  verifyFlutterwaveTransaction,
+} from './flutterwave-payment.js';
 
 const ADMIN_ROUTE_CONFIG = {
   me: {
@@ -35,7 +41,7 @@ const ADMIN_ROUTE_CONFIG = {
     event: 'admin-users',
     handler: handleAdminUsers,
   },
-  transactions: { path: '/api/admin-transactions', methods: ['GET'], event: 'admin-transactions', handler: handleAdminTransactions },
+  transactions: { path: '/api/admin-transactions', methods: ['GET', 'POST'], event: 'admin-transactions', handler: handleAdminTransactions },
   logs: { path: '/api/admin-logs', methods: ['GET'], event: 'admin-logs', handler: handleAdminLogs },
   'credit-packages': {
     path: '/api/admin-credit-packages',
@@ -267,8 +273,39 @@ async function handleAdminAuditLog(req, res, routeConfig) {
 }
 
 async function handleAdminTransactions(req, res) {
-  try { const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return; return res.json({ transactions: await listAdminTransactions(supabaseAdmin) }); }
-  catch (error) { await logErrorEvent('admin-transactions.exception', error); return res.status(500).json({ error: 'Failed to load transactions' }); }
+  try {
+    const admin = await requireAdminContext(req, res, supabaseAdmin); if (!admin) return;
+    if (req.method === 'GET') return res.json({ transactions: await listAdminTransactions(supabaseAdmin) });
+
+    const transactionId = String(req.body?.transactionId || '').trim();
+    const userId = String(req.body?.userId || '').trim();
+    const packageId = String(req.body?.packageId || '').trim();
+    const expectedReference = String(req.body?.reference || '').trim() || null;
+    if (!transactionId || !userId || !packageId) return res.status(400).json({ error: 'Transaction ID, user and package are required' });
+    const secretKey = process.env.FLUTTERWAVE_SECRET_KEY;
+    if (!secretKey) return res.status(500).json({ error: 'Flutterwave verification is not configured' });
+
+    const verification = await verifyFlutterwaveTransaction(transactionId, secretKey);
+    if (!verification.isVerified) return res.status(400).json({ error: verification.data?.message || 'Flutterwave could not verify this payment' });
+    const context = extractFlutterwavePaymentContext(verification.transaction, { reference: expectedReference, userId, packageId });
+    const gatewayPackageId = verification.transaction?.meta?.packageId || verification.transaction?.meta?.package_id;
+    if (gatewayPackageId && gatewayPackageId !== packageId) return res.status(400).json({ error: 'Payment package mismatch' });
+    const validation = validateFlutterwaveTransaction(verification.transaction, context.reference);
+    if (!validation.ok) return res.status(400).json({ error: validation.message });
+
+    const result = await applyVerifiedFlutterwavePayment({
+      reference: validation.reference, userId, packageId, transactionId,
+      amountPaidNGN: validation.amountPaidNGN,
+      gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
+    });
+    await supabaseAdmin.from('admin_audit_logs').insert({
+      admin_user_id: admin.user.id, action: 'payment.reconciled', target_type: 'transaction',
+      target_id: String(transactionId), reason: 'Admin verified against Flutterwave',
+      after_data: { userId, packageId, reference: validation.reference, amountPaidNGN: validation.amountPaidNGN, ...result },
+    });
+    return res.json(result);
+  }
+  catch (error) { await logErrorEvent('admin-transactions.exception', error); return res.status(500).json({ error: error instanceof Error ? error.message : 'Transaction operation failed' }); }
 }
 
 async function handleAdminLogs(req, res) {

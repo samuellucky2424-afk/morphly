@@ -125,7 +125,10 @@
 
         <section class="view" id="transactionsView" data-view-panel="transactions">
           <div class="metric-grid compact" id="transactionMetrics"></div>
-          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Verified payments</p><h2>Recent transactions</h2></div></div><div class="table-wrap"><table><thead><tr><th>Reference</th><th>Customer</th><th>Package</th><th>Amount</th><th>Credits</th><th>Gateway</th><th>Status</th><th>Gateway fee</th><th>Refund</th><th>Date</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></article>
+          <article class="panel package-form-panel"><div class="panel-head"><div><p class="eyebrow">Payment recovery</p><h2>Reconcile a Flutterwave payment</h2></div><span class="status-pill info">Server verified</span></div>
+            <form id="reconcilePaymentForm" class="package-form"><div class="form-row"><label><span>Flutterwave transaction ID</span><input id="reconcileTransactionId" required></label><label><span>Reference (optional)</span><input id="reconcileReference"></label></div><div class="form-row"><label><span>Customer</span><select id="reconcileUserId" required></select></label><label><span>Credit package</span><select id="reconcilePackageId" required></select></label></div><p class="form-error" id="reconcilePaymentError"></p><button class="primary-button" type="submit">Verify and credit wallet</button></form>
+          </article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Verified payments</p><h2>Recent transactions</h2></div><button class="manage-button" id="refreshDataButton" type="button">Refresh live data</button></div><div class="table-wrap"><table><thead><tr><th>Reference</th><th>Customer</th><th>Package</th><th>Amount</th><th>Credits</th><th>Gateway</th><th>Status</th><th>Gateway fee</th><th>Refund</th><th>Date</th></tr></thead><tbody id="transactionTableBody"></tbody></table></div></article>
         </section>
 
         <section class="view" id="packagesView" data-view-panel="packages">

@@ -1,4 +1,4 @@
-import { listCreditPackages, updateCreditPackages } from './credit-packages.js';
+import { listCreditPackages as listCreditPackageRecords, updateCreditPackages } from './credit-packages.js';
 
 function normalizeCredits(value) {
   const credits = Number(value ?? 0);
@@ -217,6 +217,24 @@ export async function listSystemLogs(supabaseAdmin) {
   return data || [];
 }
 
+export async function listCreditPackages(supabaseAdmin, options = {}) {
+  const packages = await listCreditPackageRecords(supabaseAdmin, options);
+  if (packages.length === 0) return packages;
+  const { data, error } = await supabaseAdmin.from('transactions')
+    .select('package_id, amount_naira, amount, status')
+    .in('package_id', packages.map((pkg) => pkg.id));
+  if (error && !['PGRST204', '42703'].includes(error.code)) throw error;
+  const stats = new Map();
+  for (const transaction of data || []) {
+    if (!['success', 'successful'].includes(transaction.status || 'success')) continue;
+    const item = stats.get(transaction.package_id) || { purchases: 0, revenueNGN: 0 };
+    item.purchases += 1;
+    item.revenueNGN += normalizeAmount(transaction.amount_naira ?? transaction.amount);
+    stats.set(transaction.package_id, item);
+  }
+  return packages.map((pkg) => ({ ...pkg, purchases: stats.get(pkg.id)?.purchases || 0, revenueNGN: stats.get(pkg.id)?.revenueNGN || 0 }));
+}
+
 export async function deleteUserAccount(supabaseAdmin, payload) {
   const userId = String(payload.userId || '').trim();
   if (!userId) {
@@ -240,4 +258,4 @@ export async function deleteUserAccount(supabaseAdmin, payload) {
   return { userId, deleted: true };
 }
 
-export { listCreditPackages, updateCreditPackages };
+export { updateCreditPackages };
