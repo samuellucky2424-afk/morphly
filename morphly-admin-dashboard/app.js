@@ -602,10 +602,15 @@ function bindEvents() {
 }
 
 async function loadLiveData() {
-  const [overview, users, packages, txs, logs, audit] = await Promise.all([
+  const requests = await Promise.allSettled([
     AdminAPI.request(CONFIG.endpoints.overview), AdminAPI.request(CONFIG.endpoints.users), AdminAPI.request(CONFIG.endpoints.packages),
     AdminAPI.request(CONFIG.endpoints.transactions), AdminAPI.request(CONFIG.endpoints.logs), AdminAPI.request(CONFIG.endpoints.audit)
   ]);
+  const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
+  const overview = value(0, {}), users = value(1, { users: [] }), packages = value(2, { packages: [] });
+  const txs = value(3, { transactions: [] }), logs = value(4, { logs: [] }), audit = value(5, { entries: [] });
+  const failures = requests.filter((result) => result.status === "rejected");
+  if (failures.length) console.warn("Some admin sections could not be loaded", failures.map((failure) => failure.reason?.message));
   state.users = (users.users || []).map((u) => ({ ...u, lastActive: u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleString("en-NG") : "Never", joined: u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-NG") : "", plan: "Credits", platform: "windows", source: "direct", sessions: 0, successRate: 0 }));
   state.packages = (packages.packages || []).map((p) => ({ ...p, price: p.priceNGN, status: p.status || (p.isActive ? "active" : "paused"), featured: p.isRecommended || false, purchases: p.purchases || 0, createdAt: p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-NG") : "" }));
   transactions = txs.transactions || [];
@@ -629,14 +634,14 @@ async function init() {
   window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
   const session = (await window.morphlySupabase.auth.getSession()).data.session;
   if (session) {
-    try { await startAuthenticatedApp(); return; } catch { await window.morphlySupabase.auth.signOut(); }
+    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (me.isAdmin) { await startAuthenticatedApp(); return; } } catch (error) { $("#loginError").textContent = error.message; }
   }
   $("#adminLoginForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("#loginError").textContent = "";
     const { error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value, password: $("#adminPassword").value });
     if (error) { $("#loginError").textContent = error.message; return; }
     try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); await startAuthenticatedApp(); }
-    catch (appError) { await window.morphlySupabase.auth.signOut(); $("#loginError").textContent = appError.message; }
+    catch (appError) { $("#loginError").textContent = appError.message; }
   });
 }
 

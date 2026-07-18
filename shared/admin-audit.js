@@ -19,6 +19,7 @@ export async function readAdminAuditLog(options = {}, supabaseAdmin = null) {
   const limit = Number.isFinite(Number(options.limit)) ? Math.max(1, Math.min(200, Number(options.limit))) : 50;
   if (supabaseAdmin) {
     const { data, error } = await supabaseAdmin.from('admin_audit_logs').select('*').order('created_at', { ascending: false }).limit(limit);
+    if (error && ['42P01', 'PGRST205'].includes(error.code)) return [];
     if (error) throw error;
     return data || [];
   }

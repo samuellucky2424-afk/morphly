@@ -51,24 +51,14 @@ export async function getAdminOverview(supabaseAdmin) {
     };
   }
 
-  const [walletsResult, activeSessionsResult, transactionsResult, profilesResult] = await Promise.all([
+  const results = await Promise.allSettled([
     supabaseAdmin.from('wallets').select('credits').in('user_id', userIds),
     supabaseAdmin.from('sessions').select('id', { count: 'exact', head: true }).eq('status', 'active'),
-    supabaseAdmin.from('transactions').select('amount_naira, type, status').in('user_id', userIds),
-    supabaseAdmin.from('users').select('id, account_status').in('id', userIds),
+    supabaseAdmin.from('transactions').select('*').in('user_id', userIds),
+    supabaseAdmin.from('users').select('*').in('id', userIds),
   ]);
-
-  if (walletsResult.error) {
-    throw walletsResult.error;
-  }
-
-  if (activeSessionsResult.error) {
-    throw activeSessionsResult.error;
-  }
-
-  if (transactionsResult.error) {
-    throw transactionsResult.error;
-  }
+  const result = (index) => results[index].status === 'fulfilled' && !results[index].value.error ? results[index].value : { data: [], count: 0 };
+  const walletsResult = result(0), activeSessionsResult = result(1), transactionsResult = result(2), profilesResult = result(3);
 
   const totalCredits = (walletsResult.data || []).reduce(
     (sum, wallet) => sum + normalizeCredits(wallet.credits),
@@ -76,11 +66,11 @@ export async function getAdminOverview(supabaseAdmin) {
   );
 
   const revenueNGN = (transactionsResult.data || []).reduce((sum, transaction) => {
-    if (!['credit', 'credit_purchase'].includes(transaction.type) || transaction.status !== 'success') {
+    if (!['credit', 'credit_purchase'].includes(transaction.type) || !['success', 'successful', undefined, null].includes(transaction.status)) {
       return sum;
     }
 
-    return sum + normalizeAmount(transaction.amount_naira);
+    return sum + normalizeAmount(transaction.amount_naira ?? transaction.amount);
   }, 0);
 
   return {
@@ -100,28 +90,23 @@ export async function listAdminUsers(supabaseAdmin) {
     return [];
   }
 
-  const [walletsResult, adminsResult, profilesResult, transactionsResult] = await Promise.all([
+  const queryResults = await Promise.allSettled([
     supabaseAdmin.from('wallets').select('user_id, credits').in('user_id', userIds),
     supabaseAdmin.from('admin_users').select('user_id, role').eq('is_active', true).in('user_id', userIds),
-    supabaseAdmin.from('users').select('id, account_status').in('id', userIds),
-    supabaseAdmin.from('transactions').select('user_id, amount_naira, status').eq('status', 'success').in('user_id', userIds),
+    supabaseAdmin.from('users').select('*').in('id', userIds),
+    supabaseAdmin.from('transactions').select('*').in('user_id', userIds),
   ]);
-
-  if (walletsResult.error) {
-    throw walletsResult.error;
-  }
-
-  if (adminsResult.error) {
-    throw adminsResult.error;
-  }
+  const result = (index) => queryResults[index].status === 'fulfilled' && !queryResults[index].value.error ? queryResults[index].value : { data: [] };
+  const walletsResult = result(0), adminsResult = result(1), profilesResult = result(2), transactionsResult = result(3);
 
   const walletByUserId = new Map((walletsResult.data || []).map((wallet) => [wallet.user_id, normalizeCredits(wallet.credits)]));
   const adminByUserId = new Map((adminsResult.data || []).map((admin) => [admin.user_id, admin.role]));
   const statusByUserId = new Map((profilesResult.data || []).map((profile) => [profile.id, profile.account_status || 'active']));
   const purchaseByUserId = new Map();
   for (const transaction of transactionsResult.data || []) {
+    if (transaction.status && !['success', 'successful'].includes(transaction.status)) continue;
     const current = purchaseByUserId.get(transaction.user_id) || { purchases: 0, spent: 0 };
-    current.purchases += 1; current.spent += normalizeAmount(transaction.amount_naira);
+    current.purchases += 1; current.spent += normalizeAmount(transaction.amount_naira ?? transaction.amount);
     purchaseByUserId.set(transaction.user_id, current);
   }
 
@@ -193,6 +178,7 @@ export async function listAdminTransactions(supabaseAdmin) {
 
 export async function listSystemLogs(supabaseAdmin) {
   const { data, error } = await supabaseAdmin.from('error_logs').select('*').order('last_seen_at', { ascending: false }).limit(500);
+  if (error && ['42P01', 'PGRST205'].includes(error.code)) return [];
   if (error) throw error;
   return data || [];
 }

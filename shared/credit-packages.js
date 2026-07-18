@@ -33,10 +33,13 @@ export async function listCreditPackages(supabaseAdmin, options = {}) {
     query = query.eq('is_active', true).eq('status', 'active');
   }
 
-  const { data, error } = await query;
-  if (error) {
-    throw error;
+  let { data, error } = await query;
+  if (error && ['PGRST204', '42703'].includes(error.code)) {
+    let legacyQuery = supabaseAdmin.from('credit_packages').select('id, name, credits, price_ngn, is_active, sort_order, created_at, updated_at').order('sort_order', { ascending: true });
+    if (!includeInactive) legacyQuery = legacyQuery.eq('is_active', true);
+    ({ data, error } = await legacyQuery);
   }
+  if (error) throw error;
 
   return (data || []).map(normalizeCreditPackage);
 }
