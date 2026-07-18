@@ -131,7 +131,7 @@
           <div class="metric-grid compact" id="packageMetrics"></div>
           <div class="package-layout">
             <article class="panel package-form-panel">
-              <div class="panel-head"><div><p class="eyebrow">Pricing</p><h2>Create credit package</h2></div><span class="status-pill info">Admin only</span></div>
+              <div class="panel-head"><div><p class="eyebrow">Pricing</p><h2 id="packageFormTitle">Create credit package</h2></div><span class="status-pill info">Admin only</span></div>
               <form id="packageForm" class="package-form">
                 <label><span>Package name</span><input id="packageName" name="name" type="text" maxlength="40" placeholder="Creator Plus" required></label>
                 <div class="form-row">
@@ -139,11 +139,12 @@
                   <label><span>Credits included</span><input id="packageCredits" name="credits" type="number" min="1" max="10000000" step="1" placeholder="500" required></label>
                 </div>
                 <label><span>Short description</span><input id="packageDescription" name="description" type="text" maxlength="100" placeholder="For regular Morphly creators"></label>
-                <label><span>Visibility</span><select id="packageStatus" name="status"><option value="active">Active — customers can purchase</option><option value="draft">Draft — hidden from customers</option></select></label>
+                <label><span>Visibility</span><select id="packageStatus" name="status"><option value="active">Active — customers can purchase</option><option value="draft">Draft — hidden from customers</option><option value="paused">Paused — temporarily unavailable</option></select></label>
                 <label class="confirmation"><input id="packageFeatured" name="featured" type="checkbox"><span>Highlight as the recommended package</span></label>
                 <div class="package-preview" id="packagePreview"><span>Price per 100 credits</span><strong>₦0</strong></div>
                 <p class="form-error" id="packageFormError"></p>
-                <button class="primary-button full-width" type="submit">Create package</button>
+                <button class="primary-button full-width" id="packageSubmitButton" type="submit">Create package</button>
+                <button class="manage-button full-width" id="packageCancelButton" type="button" hidden>Cancel editing</button>
               </form>
             </article>
             <article class="panel package-list-panel">

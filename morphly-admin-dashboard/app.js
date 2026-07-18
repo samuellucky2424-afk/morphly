@@ -69,6 +69,7 @@ const state = {
   platform: "all",
   source: "all",
   selectedUserId: null,
+  editingPackageId: null,
   users: [],
   audit: [],
   packages: []
@@ -162,6 +163,23 @@ const AdminAPI = {
     state.audit.unshift({ id: `aud_${Date.now()}`, userId: null, time: "Just now", admin: "Lucky Samuel", action: `Created ${packageRecord.name} package`, detail: `${money(packageRecord.price)} · ${number(packageRecord.credits)} credits · ${packageRecord.status}` });
     persistDemoState();
     return packageRecord;
+  },
+
+  async updatePackage(packageId, packageInput) {
+    const packages = state.packages.map((pkg) => ({
+      id: pkg.id,
+      name: pkg.id === packageId ? packageInput.name : pkg.name,
+      description: pkg.id === packageId ? packageInput.description : pkg.description,
+      credits: pkg.id === packageId ? packageInput.credits : pkg.credits,
+      priceNGN: pkg.id === packageId ? packageInput.price : pkg.price,
+      status: pkg.id === packageId ? packageInput.status : pkg.status,
+      isActive: (pkg.id === packageId ? packageInput.status : pkg.status) === "active",
+      isRecommended: pkg.id === packageId ? packageInput.featured : (packageInput.featured ? false : pkg.featured),
+      sortOrder: pkg.sortOrder || 0
+    }));
+    const data = await AdminAPI.request(CONFIG.endpoints.packages, { method: "PUT", body: JSON.stringify({ packages }) });
+    const updated = data.packages.find((pkg) => pkg.id === packageId);
+    return { ...updated, price: updated.priceNGN, featured: updated.isRecommended };
   },
 
   async updatePackageStatus(packageId, status) {
@@ -333,7 +351,8 @@ function renderPackages() {
     metricCard("Package revenue", money(revenue), "Lifetime sample revenue", "", "₦"),
     metricCard("Average price / 100", money(averagePerHundred), "Across active packages", "", "↗")
   ].join("");
-  $("#packageTableBody").innerHTML = packages.length ? packages.map((item) => `<tr><td><div class="package-cell"><strong>${escapeHtml(item.name)}${item.featured ? '<span class="featured-badge">Recommended</span>' : ""}</strong><small>${escapeHtml(item.description || "No description")}</small></div></td><td><span class="status-pill ${item.status === "active" ? "success" : "pending"}">${escapeHtml(item.status)}</span></td><td><strong>${money(item.price)}</strong></td><td>${number(item.credits)}</td><td>${money((item.price / item.credits) * 100)}</td><td>${number(item.purchases)}</td><td><div class="row-actions"><button class="manage-button" type="button" data-toggle-package="${escapeHtml(item.id)}">${item.status === "active" ? "Pause" : "Activate"}</button></div></td></tr>`).join("") : `<tr><td class="empty-cell" colspan="7">No packages match this status.</td></tr>`;
+  $("#packageTableBody").innerHTML = packages.length ? packages.map((item) => `<tr><td><div class="package-cell"><strong>${escapeHtml(item.name)}${item.featured ? '<span class="featured-badge">Recommended</span>' : ""}</strong><small>${escapeHtml(item.description || "No description")}</small></div></td><td><span class="status-pill ${item.status === "active" ? "success" : "pending"}">${escapeHtml(item.status)}</span></td><td><strong>${money(item.price)}</strong></td><td>${number(item.credits)}</td><td>${money((item.price / item.credits) * 100)}</td><td>${number(item.purchases)}</td><td><div class="row-actions"><button class="manage-button" type="button" data-edit-package="${escapeHtml(item.id)}">Edit</button><button class="manage-button" type="button" data-toggle-package="${escapeHtml(item.id)}">${item.status === "active" ? "Pause" : "Activate"}</button></div></td></tr>`).join("") : `<tr><td class="empty-cell" colspan="7">No packages match this status.</td></tr>`;
+  $$('[data-edit-package]').forEach((button) => button.addEventListener("click", () => beginPackageEdit(button.dataset.editPackage)));
   $$('[data-toggle-package]').forEach((button) => button.addEventListener("click", async () => {
     const item = state.packages.find((packageRecord) => packageRecord.id === button.dataset.togglePackage);
     if (!item) return;
@@ -346,6 +365,33 @@ function renderPackages() {
       showToast(failure.message || "Unable to update package.");
     }
   }));
+}
+
+function beginPackageEdit(packageId) {
+  const item = state.packages.find((pkg) => pkg.id === packageId);
+  if (!item) return;
+  state.editingPackageId = item.id;
+  $("#packageName").value = item.name;
+  $("#packagePrice").value = item.price;
+  $("#packageCredits").value = item.credits;
+  $("#packageDescription").value = item.description || "";
+  $("#packageStatus").value = item.status;
+  $("#packageFeatured").checked = Boolean(item.featured);
+  $("#packageFormTitle").textContent = `Edit ${item.name}`;
+  $("#packageSubmitButton").textContent = "Save changes";
+  $("#packageCancelButton").hidden = false;
+  updatePackagePreview();
+  $("#packageForm").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function cancelPackageEdit() {
+  state.editingPackageId = null;
+  $("#packageForm").reset();
+  $("#packageFormTitle").textContent = "Create credit package";
+  $("#packageSubmitButton").textContent = "Create package";
+  $("#packageCancelButton").hidden = true;
+  $("#packageFormError").textContent = "";
+  updatePackagePreview();
 }
 
 function updatePackagePreview() {
@@ -376,11 +422,20 @@ async function handleCreatePackage(event) {
     error.textContent = "Enter between 1 and 10,000,000 credits.";
     return;
   }
-  if (state.packages.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+  if (state.packages.some((item) => item.id !== state.editingPackageId && item.name.toLowerCase() === name.toLowerCase())) {
     error.textContent = "A package with this name already exists.";
     return;
   }
   try {
+    if (state.editingPackageId) {
+      const item = state.packages.find((pkg) => pkg.id === state.editingPackageId);
+      const updated = await AdminAPI.updatePackage(state.editingPackageId, { name, description, price, credits, status, featured });
+      Object.assign(item, updated);
+      showToast(`${updated.name} was updated.`);
+      cancelPackageEdit();
+      renderPackages();
+      return;
+    }
     const rawCreated = await AdminAPI.createPackage({ name, description, price, credits, status, featured });
     const created = { ...rawCreated, price: rawCreated.priceNGN, featured: rawCreated.isRecommended, purchases: 0, createdAt: rawCreated.createdAt ? new Date(rawCreated.createdAt).toLocaleDateString("en-NG") : "" };
     state.packages.unshift(created);
@@ -575,6 +630,7 @@ function bindEvents() {
   $("#userStatusFilter").addEventListener("change", renderUsers);
   $("#packageStatusFilter").addEventListener("change", renderPackages);
   $("#packageForm").addEventListener("submit", handleCreatePackage);
+  $("#packageCancelButton").addEventListener("click", cancelPackageEdit);
   $("#packagePrice").addEventListener("input", updatePackagePreview);
   $("#packageCredits").addEventListener("input", updatePackagePreview);
   $("#logSeverityFilter").addEventListener("change", renderLogs);

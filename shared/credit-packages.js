@@ -80,9 +80,14 @@ export async function updateCreditPackages(supabaseAdmin, packages) {
     };
   });
 
-  const results = await Promise.all(
-    updates.map((update) =>
-      supabaseAdmin
+  if (updates.some((update) => update.is_recommended)) {
+    const { error } = await supabaseAdmin.from('credit_packages').update({ is_recommended: false }).eq('is_recommended', true);
+    if (error) throw error;
+  }
+
+  const results = [];
+  for (const update of updates) {
+    results.push(await supabaseAdmin
         .from('credit_packages')
         .update({
           name: update.name,
@@ -95,9 +100,8 @@ export async function updateCreditPackages(supabaseAdmin, packages) {
           sort_order: update.sort_order,
           updated_at: update.updated_at,
         })
-        .eq('id', update.id),
-    ),
-  );
+        .eq('id', update.id));
+  }
 
   const failedResult = results.find((result) => result?.error);
   if (failedResult?.error) {
