@@ -51,10 +51,11 @@ export async function getAdminOverview(supabaseAdmin) {
     };
   }
 
-  const [walletsResult, activeSessionsResult, transactionsResult] = await Promise.all([
+  const [walletsResult, activeSessionsResult, transactionsResult, profilesResult] = await Promise.all([
     supabaseAdmin.from('wallets').select('credits').in('user_id', userIds),
     supabaseAdmin.from('sessions').select('id', { count: 'exact', head: true }).eq('status', 'active'),
-    supabaseAdmin.from('transactions').select('amount, type, status').in('user_id', userIds),
+    supabaseAdmin.from('transactions').select('amount_naira, type, status').in('user_id', userIds),
+    supabaseAdmin.from('users').select('id, account_status').in('id', userIds),
   ]);
 
   if (walletsResult.error) {
@@ -75,16 +76,16 @@ export async function getAdminOverview(supabaseAdmin) {
   );
 
   const revenueNGN = (transactionsResult.data || []).reduce((sum, transaction) => {
-    if (transaction.type !== 'credit' || transaction.status !== 'success') {
+    if (!['credit', 'credit_purchase'].includes(transaction.type) || transaction.status !== 'success') {
       return sum;
     }
 
-    return sum + normalizeAmount(transaction.amount);
+    return sum + normalizeAmount(transaction.amount_naira);
   }, 0);
 
   return {
     totalUsers: authUsers.length,
-    blockedUsers: 0,
+    blockedUsers: (profilesResult.data || []).filter((profile) => profile.account_status === 'suspended').length,
     totalCredits,
     revenueNGN,
     activeSessions: activeSessionsResult.count || 0,
@@ -99,9 +100,11 @@ export async function listAdminUsers(supabaseAdmin) {
     return [];
   }
 
-  const [walletsResult, adminsResult] = await Promise.all([
+  const [walletsResult, adminsResult, profilesResult, transactionsResult] = await Promise.all([
     supabaseAdmin.from('wallets').select('user_id, credits').in('user_id', userIds),
     supabaseAdmin.from('admin_users').select('user_id, role').eq('is_active', true).in('user_id', userIds),
+    supabaseAdmin.from('users').select('id, account_status').in('id', userIds),
+    supabaseAdmin.from('transactions').select('user_id, amount_naira, status').eq('status', 'success').in('user_id', userIds),
   ]);
 
   if (walletsResult.error) {
@@ -114,6 +117,13 @@ export async function listAdminUsers(supabaseAdmin) {
 
   const walletByUserId = new Map((walletsResult.data || []).map((wallet) => [wallet.user_id, normalizeCredits(wallet.credits)]));
   const adminByUserId = new Map((adminsResult.data || []).map((admin) => [admin.user_id, admin.role]));
+  const statusByUserId = new Map((profilesResult.data || []).map((profile) => [profile.id, profile.account_status || 'active']));
+  const purchaseByUserId = new Map();
+  for (const transaction of transactionsResult.data || []) {
+    const current = purchaseByUserId.get(transaction.user_id) || { purchases: 0, spent: 0 };
+    current.purchases += 1; current.spent += normalizeAmount(transaction.amount_naira);
+    purchaseByUserId.set(transaction.user_id, current);
+  }
 
   return authUsers
     .map((authUser) => ({
@@ -125,6 +135,9 @@ export async function listAdminUsers(supabaseAdmin) {
       credits: walletByUserId.get(authUser.id) || 0,
       isAdmin: adminByUserId.has(authUser.id),
       adminRole: adminByUserId.get(authUser.id) || null,
+      status: statusByUserId.get(authUser.id) || 'active',
+      purchases: purchaseByUserId.get(authUser.id)?.purchases || 0,
+      spent: purchaseByUserId.get(authUser.id)?.spent || 0,
     }))
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
 }
@@ -142,48 +155,46 @@ export async function addCreditsToUser(supabaseAdmin, payload) {
     throw new Error('creditsToAdd must be a positive integer');
   }
 
-  const { data: walletData, error: walletError } = await supabaseAdmin
-    .from('wallets')
-    .select('credits')
-    .eq('user_id', userId)
-    .maybeSingle();
+  const reason = String(payload.reason || '').trim();
+  if (reason.length < 3) throw new Error('A reason is required');
+  const idempotencyKey = String(payload.idempotencyKey || `admin:${adminUserId}:${userId}:${Date.now()}`);
+  const { data, error } = await supabaseAdmin.rpc('admin_adjust_credits', {
+    p_admin: adminUserId, p_user: userId, p_amount: creditsToAdd, p_reason: reason, p_key: idempotencyKey,
+  });
+  if (error) throw error;
+  return data;
+}
 
-  if (walletError) {
-    throw walletError;
-  }
+export async function setUserStatus(supabaseAdmin, payload) {
+  const userId = String(payload.userId || '').trim();
+  const status = String(payload.status || '').trim();
+  const reason = String(payload.reason || '').trim();
+  if (!userId || !['active', 'suspended'].includes(status) || reason.length < 3) throw new Error('Valid user, status and reason are required');
+  const { data, error } = await supabaseAdmin.rpc('admin_set_user_status', {
+    p_admin: payload.adminUserId, p_user: userId, p_status: status, p_reason: reason,
+  });
+  if (error) throw error;
+  return data;
+}
 
-  const currentCredits = normalizeCredits(walletData?.credits);
-  const newCredits = currentCredits + creditsToAdd;
-  const reference = `admin_credit_${userId}_${Date.now()}`;
-  const description = adminUserId
-    ? `Admin credit adjustment by ${adminUserId}`
-    : 'Admin credit adjustment';
+export async function listAdminTransactions(supabaseAdmin) {
+  const { data, error } = await supabaseAdmin.from('transactions').select('*').order('created_at', { ascending: false }).limit(500);
+  if (error) throw error;
+  const users = await listAllAuthUsers(supabaseAdmin);
+  const emailById = new Map(users.map((user) => [user.id, user.email || user.id]));
+  return (data || []).map((tx) => ({
+    ref: tx.reference || tx.id, userId: tx.user_id, customer: emailById.get(tx.user_id) || tx.user_id,
+    package: tx.package_name_snapshot || tx.description || 'Credit purchase', amount: Number(tx.amount_naira || tx.amount || 0),
+    credits: Number(tx.package_credits_snapshot || tx.credits || 0), gateway: tx.payment_gateway || 'manual',
+    status: tx.status || 'success', date: tx.verified_at || tx.created_at, gatewayFee: Number(tx.gateway_fee_ngn || 0),
+    refundStatus: tx.refund_status || 'none',
+  }));
+}
 
-  const results = await Promise.all([
-    supabaseAdmin.from('wallets').update({ credits: newCredits }).eq('user_id', userId),
-    supabaseAdmin.from('transactions').insert({
-      user_id: userId,
-      type: 'credit',
-      amount: 0,
-      credits: creditsToAdd,
-      reference,
-      status: 'success',
-      description,
-      created_at: new Date().toISOString(),
-    }),
-  ]);
-
-  const failedResult = results.find((result) => result?.error);
-  if (failedResult?.error) {
-    throw failedResult.error;
-  }
-
-  return {
-    userId,
-    creditsAdded: creditsToAdd,
-    newCredits,
-    reference,
-  };
+export async function listSystemLogs(supabaseAdmin) {
+  const { data, error } = await supabaseAdmin.from('error_logs').select('*').order('last_seen_at', { ascending: false }).limit(500);
+  if (error) throw error;
+  return data || [];
 }
 
 export async function deleteUserAccount(supabaseAdmin, payload) {

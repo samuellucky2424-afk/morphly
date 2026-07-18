@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
-import { apiFetch } from '@/lib/api-client';
+import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
 
 declare global {
@@ -206,6 +206,11 @@ function Subscription() {
       return;
     }
 
+    if (!selectedPlan.id) {
+      toast.error('Live credit packages are unavailable. Please try again later.');
+      return;
+    }
+
     if (!user.email) {
       toast.error('Your account is missing an email address.');
       return;
@@ -249,6 +254,7 @@ function Subscription() {
         meta: {
           userId: user.id,
           credits: selectedPlan.credits,
+          packageId: selectedPlan.id,
           priceUSD,
         },
         customizations: {
@@ -270,7 +276,7 @@ function Subscription() {
 
           (async () => {
             try {
-              const res = await apiFetch('/verify-payment', {
+              const res = await apiFetchWithAuth('/verify-payment', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -280,6 +286,7 @@ function Subscription() {
                   transactionId: response.transaction_id,
                   userId: user?.id,
                   credits: selectedPlan.credits,
+                  packageId: selectedPlan.id,
                   priceUSD: priceUSD,
                 }),
               });
@@ -297,6 +304,9 @@ function Subscription() {
                   setCredits(data.newCredits);
                 }
                 toast.success(`Successfully purchased ${selectedPlan.credits} credits!`);
+                navigate('/wallet');
+              } else if (data.status === 'pending') {
+                toast.success('Payment received. Credits will appear after secure webhook confirmation.');
                 navigate('/wallet');
               } else {
                 toast.error(data.message || 'Payment verification failed');

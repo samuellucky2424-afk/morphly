@@ -12,6 +12,7 @@ import startSessionHandler from './api/start-session.js';
 import verifyPaymentHandler from './api/verify-payment.js';
 import versionHandler from './api/version.js';
 import walletHandler from './api/wallet.js';
+import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
 
 const routeHandlers = {
   'admin-audit-log': createAdminHandler('audit-log'),
@@ -19,6 +20,8 @@ const routeHandlers = {
   'admin-me': createAdminHandler('me'),
   'admin-overview': createAdminHandler('overview'),
   'admin-users': createAdminHandler('users'),
+  'admin-transactions': createAdminHandler('transactions'),
+  'admin-logs': createAdminHandler('logs'),
   'credit-packages': creditPackagesHandler,
   'end-session': endSessionHandler,
   'ensure-user-wallet': ensureUserWalletHandler,
@@ -31,6 +34,8 @@ const routeHandlers = {
   'verify-payment': verifyPaymentHandler,
   version: versionHandler,
   wallet: walletHandler,
+  telemetry: telemetryHandler,
+  'error-log': errorLogHandler,
 };
 
 function normalizeRouteSegment(value) {
