@@ -1962,17 +1962,19 @@ function Dashboard() {
         })
       : Promise.resolve(null);
 
-    try {
-      const [virtualCameraStartResult, stream] = await Promise.all([
-        virtualCameraStartPromise,
-        startWebcam(activeMode, { forceNewStream: true }),
-      ]);
-
+    // The virtual camera is an optional output. Do not make webcam/Decart startup
+    // wait for driver probing or fail when Windows cannot register the device.
+    void virtualCameraStartPromise.then((virtualCameraStartResult) => {
       if (virtualCameraStartResult && virtualCameraStartResult.success === false) {
-        const virtualCameraMessage = virtualCameraStartResult.error || virtualCameraStartResult.message || 'Morphly virtual camera is unavailable';
-        console.warn('Morphly virtual camera is unavailable:', virtualCameraMessage);
-        toast.error(virtualCameraMessage);
+        morphlyCamWindowEnabledRef.current = false;
+        const message = virtualCameraStartResult.error || virtualCameraStartResult.message || 'Morphly virtual camera is unavailable';
+        console.warn('Morphly virtual camera is unavailable:', message);
+        toast.warning('Morphly started without virtual-camera output. Reinstall as Administrator to enable Morphly G1.');
       }
+    });
+
+    try {
+      const stream = await startWebcam(activeMode, { forceNewStream: true });
 
       if (!stream) {
         throw new Error('Webcam start failed');

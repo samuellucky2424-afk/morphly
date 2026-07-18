@@ -887,8 +887,12 @@ function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:start', async () => {
     virtualCameraEnabled = true;
 
-    const registrationResult = ensureVirtualCameraRegistration({ attemptRepair: true });
+    // Starting an AI session must never launch a synchronous elevated driver repair.
+    // Driver installation belongs to the installer; at runtime we only probe and
+    // degrade gracefully when the optional virtual-camera output is unavailable.
+    const registrationResult = ensureVirtualCameraRegistration({ attemptRepair: false });
     if (!registrationResult.success) {
+      virtualCameraEnabled = false;
       return registrationResult;
     }
 
