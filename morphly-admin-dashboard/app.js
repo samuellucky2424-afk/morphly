@@ -112,9 +112,14 @@ function persistDemoState() {
 
 const AdminAPI = {
   async request(path, options = {}) {
-    const session = (await window.morphlySupabase.auth.getSession()).data.session;
-    if (!session) throw new Error("Your admin session has expired.");
-    const response = await fetch(`${CONFIG.apiBase}${path}`, { ...options, headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}`, ...(options.headers || {}) } });
+    let accessToken = window.morphlyAccessToken;
+    if (!accessToken) {
+      const session = (await window.morphlySupabase.auth.getSession()).data.session;
+      accessToken = session?.access_token;
+      window.morphlyAccessToken = accessToken || null;
+    }
+    if (!accessToken) throw new Error("Your admin session has expired.");
+    const response = await fetch(`${CONFIG.apiBase}${path}`, { ...options, cache: "no-store", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) } });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || data.message || `Request failed (${response.status})`);
     return data;
@@ -692,10 +697,12 @@ async function loadLiveData() {
     AdminAPI.request(CONFIG.endpoints.transactions), AdminAPI.request(CONFIG.endpoints.logs), AdminAPI.request(CONFIG.endpoints.audit)
   ]);
   const failures = requests.filter((result) => result.status === "rejected");
-  if (failures.length) throw new Error(`Live dashboard data failed to load: ${failures.map((failure) => failure.reason?.message || "unknown error").join("; ")}`);
-  const value = (index) => requests[index].value;
-  const overview = value(0), users = value(1), packages = value(2);
-  const txs = value(3), logs = value(4), audit = value(5);
+  const warning = $("#liveDataWarning");
+  warning.hidden = failures.length === 0;
+  $("#liveDataWarningText").textContent = failures.length ? failures.map((failure) => failure.reason?.message || "Unknown API error").join(" · ") : "";
+  const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
+  const overview = value(0, {}), users = value(1, { users: [] }), packages = value(2, { packages: [] });
+  const txs = value(3, { transactions: [] }), logs = value(4, { logs: [] }), audit = value(5, { entries: [] });
   state.users = (users.users || []).map((u) => ({ ...u, lastActive: u.lastSignInAt ? new Date(u.lastSignInAt).toLocaleString("en-NG") : "Never", joined: u.createdAt ? new Date(u.createdAt).toLocaleDateString("en-NG") : "", plan: "Credits", platform: "windows", source: "direct", sessions: 0, successRate: 0 }));
   state.packages = (packages.packages || []).map((p) => ({ ...p, price: p.priceNGN, status: p.status || (p.isActive ? "active" : "paused"), featured: p.isRecommended || false, purchases: p.purchases || 0, createdAt: p.createdAt ? new Date(p.createdAt).toLocaleDateString("en-NG") : "" }));
   transactions = txs.transactions || [];
@@ -711,11 +718,11 @@ async function loadLiveData() {
 }
 
 async function startAuthenticatedApp() {
-  await loadLiveData();
   $("#loginGate").hidden = true;
   $("#loginGate").style.display = "none";
   $("#adminApp").hidden = false;
   bindEvents();
+  await loadLiveData();
   renderAll();
   window.clearInterval(startAuthenticatedApp.refreshTimer);
   startAuthenticatedApp.refreshTimer = window.setInterval(async () => {
@@ -728,27 +735,22 @@ async function init() {
   const response = await fetch(`${CONFIG.apiBase}${CONFIG.endpoints.config}`);
   const config = await response.json();
   if (!config.supabaseUrl || !config.supabaseAnonKey) throw new Error("Supabase public configuration is missing.");
-  try {
-    const projectRef = new URL(config.supabaseUrl).hostname.split(".")[0];
-    const storageKey = `sb-${projectRef}-auth-token`;
-    const storedSession = JSON.parse(localStorage.getItem(storageKey) || "null");
-    const expiresAt = Number(storedSession?.expires_at || storedSession?.currentSession?.expires_at || 0);
-    const refreshToken = storedSession?.refresh_token || storedSession?.currentSession?.refresh_token;
-    if (storedSession && (!refreshToken || !expiresAt || expiresAt * 1000 <= Date.now() + 30000)) {
-      localStorage.removeItem(storageKey);
-    }
-  } catch (storageError) {
-    console.warn("Unable to inspect the saved admin session", storageError);
-  }
-  window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+  window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
   const session = (await window.morphlySupabase.auth.getSession()).data.session;
+  window.morphlyAccessToken = session?.access_token || null;
+  window.morphlySupabase.auth.onAuthStateChange((_event, nextSession) => {
+    window.morphlyAccessToken = nextSession?.access_token || null;
+  });
   if (session) {
     try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (me.isAdmin) { await startAuthenticatedApp(); return; } } catch (error) { $("#loginError").textContent = error.message; }
   }
   $("#adminLoginForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("#loginError").textContent = "";
-    const { error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value, password: $("#adminPassword").value });
+    const { data, error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value, password: $("#adminPassword").value });
     if (error) { $("#loginError").textContent = error.message; return; }
+    window.morphlyAccessToken = data.session?.access_token || null;
     try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); await startAuthenticatedApp(); }
     catch (appError) { $("#loginError").textContent = appError.message; }
   });
