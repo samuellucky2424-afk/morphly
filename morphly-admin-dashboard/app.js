@@ -78,7 +78,7 @@ function isSuccessfulTransaction(transaction) {
 
 function isPurchaseTransaction(transaction) {
   const type = String(transaction?.type || transaction?.transactionType || transaction?.transaction_type || "").toLowerCase();
-  if (type) return ["credit", "credit_purchase", "purchase", "package_purchase"].includes(type);
+  if (type && type !== "null" && type !== "undefined") return ["credit", "credit_purchase", "purchase", "package_purchase", "payment"].includes(type);
   return safeNumber(transaction?.amount) > 0 && safeNumber(transaction?.credits) > 0;
 }
 

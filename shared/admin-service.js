@@ -203,7 +203,7 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
     };
   }
 
-  const [wallets, sessions, transactions, profiles, analyticsResult] = await Promise.all([
+  const [wallets, sessions, transactions, profiles, analyticsResult, errorResult] = await Promise.all([
     fetchAllRows(
       () => supabaseAdmin.from('wallets').select('user_id, credits').order('user_id'),
       'wallets',
@@ -224,6 +224,11 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
       queryAnalyticsEvents(supabaseAdmin, filters, 'event_name, user_id, installation_id, platform, acquisition_source, created_at'),
       'analytics_events',
     ),
+    fetchOptionalRows(() => {
+      let query = supabaseAdmin.from('error_logs').select('occurrences, severity, platform, user_id, last_seen_at').gte('last_seen_at', filters.since);
+      if (filters.platform) query = query.eq('platform', filters.platform);
+      return query;
+    }, 'error_logs'),
   ]);
 
   const morphlyUserIds = buildMorphlyUserIdSet(authUsers, { profiles, wallets, sessions, transactions });
@@ -241,6 +246,21 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
     (sum, wallet) => sum + normalizeCredits(wallet.credits),
     0,
   );
+
+  const filteredErrors = errorResult.rows.filter((log) => 
+    (!log.user_id || morphlyUserIds.has(log.user_id)) && 
+    (!cohortUserIds || !log.user_id || cohortUserIds.has(log.user_id))
+  );
+
+  const crashes = filteredErrors
+    .filter((log) => log.severity === 'critical')
+    .reduce((sum, log) => sum + (Number(log.occurrences) || 1), 0);
+  
+  const apiErrors = filteredErrors
+    .filter((log) => log.severity === 'error')
+    .reduce((sum, log) => sum + (Number(log.occurrences) || 1), 0);
+  
+  const apiRequests = events.length;
 
   const successfulPurchases = filteredTransactions.filter((transaction) =>
     isPurchaseTransaction(transaction) && isSuccessfulPayment(transaction));
@@ -276,6 +296,9 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
     repeatBuyers: [...purchaseCounts.values()].filter((count) => count > 1).length,
     sessions: filteredSessions.length,
     failedSessions,
+    crashes,
+    apiRequests,
+    apiErrors,
     gatewayFeesNGN,
     refundsNGN,
     growthSeries: growthByDay,
