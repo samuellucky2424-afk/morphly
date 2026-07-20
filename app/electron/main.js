@@ -950,6 +950,10 @@ function registerUpdaterHandlers() {
   });
 }
 
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.morphly.app');
+}
+
 app.whenReady().then(async () => {
   loadEnvironmentVariables();
 
