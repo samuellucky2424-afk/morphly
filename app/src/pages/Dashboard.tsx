@@ -16,6 +16,13 @@ import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
+import {
+  trackConnectionStarted,
+  trackConnectionFailed,
+  trackFirstFrameReceived,
+  trackSessionCompleted,
+  trackSessionDisconnected,
+} from '@/lib/telemetry-client';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import {
   QUALITY_MODE_PROFILES,
@@ -1679,6 +1686,7 @@ function Dashboard() {
 
     if (!options?.silent) {
       toast.info('Session stopped');
+      trackSessionCompleted(activeSessionId);
     }
 
     if (endSessionPromise) {
@@ -1945,6 +1953,7 @@ function Dashboard() {
     setIsLoading(true);
     setConnectionState('connecting');
     setUiStatus('Connecting...');
+    trackConnectionStarted();
     setRuntimeModeCap('hd');
     resetHealthCounters();
     resetBillableUsageTracking();
@@ -2054,8 +2063,12 @@ function Dashboard() {
       setIsStreaming(true);
       setSessionStatus('LIVE');
       setUiStatus('Live');
+      trackFirstFrameReceived(sessionIdRef.current || undefined);
     } catch (error) {
       console.error('Start session error:', error);
+      trackConnectionFailed(sessionIdRef.current || undefined, {
+        reason: error instanceof Error ? error.message : 'unknown',
+      });
       const sessionExpired = error instanceof Error && (
         error.message === 'AUTH_SESSION_REQUIRED' ||
         /missing authorization|invalid or expired access token/i.test(error.message)

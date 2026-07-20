@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin } from './supabase-admin.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
+import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
 export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
   const response = await fetch(`https://api.flutterwave.com/v3/transactions/${encodeURIComponent(String(transactionId))}/verify`, {
@@ -12,6 +13,7 @@ export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
   });
 
   const data = await response.json();
+
   const transaction = data?.data;
   const status = String(transaction?.status || '').toLowerCase();
 
@@ -24,7 +26,20 @@ export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
 }
 
 export function extractFlutterwavePaymentContext(transaction, fallback = {}) {
-  const meta = transaction?.meta && typeof transaction.meta === 'object' ? transaction.meta : {};
+  let meta = transaction?.meta && typeof transaction.meta === 'object' ? transaction.meta : {};
+
+  // Flutterwave v3 can return meta as an array of {metaname, metavalue} objects.
+  // Normalize it to a plain object so property reads work correctly.
+  if (Array.isArray(meta)) {
+    const normalized = {};
+    for (const entry of meta) {
+      if (entry && typeof entry === 'object' && entry.metaname) {
+        normalized[entry.metaname] = entry.metavalue;
+      }
+    }
+    meta = normalized;
+  }
+
   const reference = transaction?.tx_ref || transaction?.reference || fallback.reference || null;
 
   const metaUserId = meta.userId || meta.user_id || null;
@@ -51,7 +66,27 @@ export function extractFlutterwavePaymentContext(transaction, fallback = {}) {
     ? metaCredits
     : (Number.isFinite(fallbackCredits) && fallbackCredits > 0 ? fallbackCredits : null);
 
-  const packageId = meta.packageId || meta.package_id || fallback.packageId || null;
+  const metaPackageId = meta.packageId || meta.package_id || null;
+  const fallbackPackageId = fallback.packageId || null;
+  if (metaPackageId && fallbackPackageId && metaPackageId !== fallbackPackageId) {
+    throw new Error('Payment package mismatch');
+  }
+
+  const packageId = metaPackageId || fallbackPackageId;
+
+  if (!userId) {
+    console.warn('[payment] extractFlutterwavePaymentContext: userId is missing', {
+      metaKeys: Object.keys(meta), hasFallbackUserId: Boolean(fallbackUserId),
+      transactionId: transaction?.id, txRef: transaction?.tx_ref,
+    });
+  }
+  if (!packageId) {
+    console.warn('[payment] extractFlutterwavePaymentContext: packageId is missing', {
+      metaKeys: Object.keys(meta), hasFallbackPackageId: Boolean(fallbackPackageId),
+      transactionId: transaction?.id, txRef: transaction?.tx_ref,
+    });
+  }
+
   return { reference, userId, credits, packageId };
 }
 
@@ -61,7 +96,7 @@ export function validateFlutterwaveTransaction(transaction, expectedReference) {
     return { ok: false, message: 'Payment reference mismatch' };
   }
 
-  if (transaction?.currency && transaction.currency !== 'NGN') {
+  if (transaction?.currency && transaction.currency.toUpperCase() !== 'NGN') {
     return { ok: false, message: 'Unexpected payment currency' };
   }
 
@@ -77,28 +112,67 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, packa
   if (!reference || !userId || !packageId || !transactionId) {
     throw new Error('Missing verified payment context');
   }
-  const { data: profile, error: profileError } = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
+  let { data: profile, error: profileError } = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
   if (profileError) throw profileError;
+
+  if (!profile) {
+    const { data: authRecord, error: authError } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (authError) throw authError;
+    if (!authRecord?.user) throw new Error('Payment user not found');
+    await ensureUserWallet(supabaseAdmin, authRecord.user);
+
+    const profileResult = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
+    if (profileResult.error) throw profileResult.error;
+    profile = profileResult.data;
+  }
+
   if (profile?.account_status === 'suspended') throw new Error('Account suspended');
 
   const { data, error } = await supabaseAdmin.rpc('apply_verified_package_payment', {
     p_user: userId, p_package: packageId, p_reference: reference,
     p_gateway_id: String(transactionId), p_amount: amountPaidNGN, p_fee: gatewayFeeNGN,
   });
-  if (error) throw error;
+  if (error && error.code !== '23505') throw error;
+
+  let normalizedData = error?.code === '23505'
+    ? { status: 'success', duplicate: true }
+    : (data || {});
+  if (normalizedData.duplicate && (normalizedData.newCredits == null || normalizedData.creditsAdded == null)) {
+    let transactionQuery = supabaseAdmin.from('transactions')
+      .select('id, user_id, credits, package_credits_snapshot');
+    transactionQuery = normalizedData.transactionId
+      ? transactionQuery.eq('id', normalizedData.transactionId)
+      : transactionQuery.eq('reference', reference);
+
+    const [walletResult, transactionResult] = await Promise.all([
+      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
+      transactionQuery.limit(1).maybeSingle(),
+    ]);
+    if (walletResult.error) throw walletResult.error;
+    if (transactionResult.error) throw transactionResult.error;
+    if (transactionResult.data?.user_id && transactionResult.data.user_id !== userId) {
+      throw new Error('Payment user mismatch');
+    }
+    normalizedData = {
+      ...normalizedData,
+      transactionId: normalizedData.transactionId || transactionResult.data?.id,
+      creditsAdded: Number(transactionResult.data?.package_credits_snapshot ?? transactionResult.data?.credits ?? 0),
+      newCredits: Number(walletResult.data?.credits ?? 0),
+    };
+  }
 
   await logPaymentEvent('payment.credits_applied', {
     reference,
     userId,
     amountPaidNGN,
-    creditsAdded: data?.creditsAdded || 0,
-    newCredits: data?.newCredits,
-    duplicate: Boolean(data?.duplicate),
+    creditsAdded: normalizedData.creditsAdded || 0,
+    newCredits: normalizedData.newCredits,
+    duplicate: Boolean(normalizedData.duplicate),
   });
 
   return {
     status: 'success',
-    message: data?.duplicate ? 'Payment already processed' : 'Payment verified by webhook',
-    ...data,
+    message: normalizedData.duplicate ? 'Payment already processed' : 'Payment verified and credits applied',
+    ...normalizedData,
   };
 }

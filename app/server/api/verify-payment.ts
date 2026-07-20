@@ -2,6 +2,7 @@
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
+  applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
   verifyFlutterwaveTransaction
@@ -17,7 +18,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
-  const { reference, transactionId, userId, credits, priceUSD } = req.body;
+  const { reference, transactionId, userId, credits, packageId, priceUSD } = req.body;
   await logRequestEvent('verify-payment.request', {
     method: req.method,
     path: '/api/verify-payment',
@@ -25,6 +26,7 @@ export default async function handler(req, res) {
     transactionId,
     userId,
     credits,
+    packageId,
     priceUSD,
   });
 
@@ -55,9 +57,19 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: verification.data?.message || 'Payment verification failed' });
     }
 
-    const paymentContext = extractFlutterwavePaymentContext(verification.transaction, { reference, userId, credits, priceUSD });
+    const paymentContext = extractFlutterwavePaymentContext(verification.transaction, {
+      reference,
+      userId,
+      credits,
+      packageId,
+      priceUSD,
+    });
     if (!paymentContext.userId) {
       return res.status(400).json({ status: 'failed', message: 'Missing payment userId metadata' });
+    }
+
+    if (!paymentContext.packageId) {
+      return res.status(400).json({ status: 'failed', message: 'Missing payment packageId metadata' });
     }
 
     const validation = validateFlutterwaveTransaction(verification.transaction, paymentContext.reference);
@@ -71,14 +83,25 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: validation.message });
     }
 
-    await logPaymentEvent('verify-payment.awaiting_webhook', {
+    const result = await applyVerifiedFlutterwavePayment({
+      reference: validation.reference,
+      userId: paymentContext.userId,
+      packageId: paymentContext.packageId,
+      transactionId,
+      amountPaidNGN: validation.amountPaidNGN,
+      gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
+    });
+
+    await logPaymentEvent('verify-payment.processed', {
       reference: validation.reference,
       transactionId,
       userId: paymentContext.userId,
-      status: 'pending_webhook',
+      creditsAdded: result.creditsAdded,
+      newCredits: result.newCredits,
+      duplicate: Boolean(result.duplicate),
     });
 
-    res.json({ status: 'pending', message: 'Payment verified; credits will be applied by the signed webhook.' });
+    res.json(result);
   } catch (error) {
     await logErrorEvent('verify-payment.exception', error, {
       reference,

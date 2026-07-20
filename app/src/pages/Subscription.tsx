@@ -8,6 +8,7 @@ import { useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
 import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
+import { trackPaymentStarted, trackPaymentSucceeded, trackPaymentFailed } from '@/lib/telemetry-client';
 
 declare global {
   interface Window {
@@ -239,6 +240,7 @@ function Subscription() {
 
     paymentCompletedRef.current = false;
     setIsProcessing(true);
+    trackPaymentStarted({ packageId: selectedPlan.id, priceNGN: amountNGN });
 
     try {
       window.FlutterwaveCheckout?.({
@@ -268,6 +270,7 @@ function Subscription() {
 
           if (!response?.transaction_id) {
             setIsProcessing(false);
+            trackPaymentFailed({ packageId: selectedPlan.id, reason: 'missing_transaction_id' });
             toast.error('Payment was not completed.');
             return;
           }
@@ -303,16 +306,20 @@ function Subscription() {
                 if (typeof data.newCredits === 'number') {
                   setCredits(data.newCredits);
                 }
+                trackPaymentSucceeded({ packageId: selectedPlan.id, transactionId: data.transactionId });
                 toast.success(`Successfully purchased ${selectedPlan.credits} credits!`);
                 navigate('/wallet');
               } else if (data.status === 'pending') {
+                trackPaymentSucceeded({ packageId: selectedPlan.id, transactionId: data.transactionId, pending: true });
                 toast.success('Payment received. Credits will appear after secure webhook confirmation.');
                 navigate('/wallet');
               } else {
+                trackPaymentFailed({ packageId: selectedPlan.id, reason: 'verification_failed' });
                 toast.error(data.message || 'Payment verification failed');
               }
             } catch (error) {
               console.error(error);
+              trackPaymentFailed({ packageId: selectedPlan.id, reason: 'verification_error', message: error instanceof Error ? error.message : 'Unknown error' });
               toast.error(error instanceof Error ? error.message : 'Payment could not be verified, so credits were not added.');
             } finally {
               setIsProcessing(false);
@@ -321,6 +328,7 @@ function Subscription() {
         },
         onclose: function () {
           if (!paymentCompletedRef.current) {
+            trackPaymentFailed({ packageId: selectedPlan.id, reason: 'user_cancelled' });
             toast.info('Payment cancelled');
             setIsProcessing(false);
           }
@@ -328,6 +336,7 @@ function Subscription() {
       });
     } catch (error) {
       console.error(error);
+      trackPaymentFailed({ packageId: selectedPlan.id, reason: 'gateway_init_failed' });
       toast.error('Failed to initialize payment gateway');
       setIsProcessing(false);
     }

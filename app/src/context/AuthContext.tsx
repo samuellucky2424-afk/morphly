@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { getDefaultRoute, ROUTES } from '@/lib/routes';
 import { apiFetch } from '@/lib/api-client';
 import { supabase } from '@/lib/supabase';
+import { trackLogin, trackSignupCompleted } from '@/lib/telemetry-client';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 
 // We map Supabase's user object properties to what our frontend expects where possible
@@ -177,6 +178,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       
       navigate(getDefaultRoute(adminState.isAdmin), { replace: true });
+      trackLogin();
     } catch (err: any) {
       const message = err.message || 'Login failed';
       setError(message);
@@ -218,8 +220,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(formatUser(registeredSession.user, adminState));
       }
       
-      // Navigate on success. If email confirmations are required, you may want to redirect to a 'verify email' page instead.
       navigate(getDefaultRoute(adminState.isAdmin), { replace: true });
+      trackSignupCompleted();
     } catch (err: any) {
       const message = err.message || 'Registration failed';
       setError(message);

@@ -116,12 +116,25 @@ function queryAnalyticsEvents(supabaseAdmin, filters, columns = '*') {
   };
 }
 
-function isMorphlyAuthUser(user) {
-  return String(user?.user_metadata?.app || '').trim().toLowerCase() === 'morphly';
+function isMorphlyAuthUser(user, profileIds) {
+  if (String(user?.user_metadata?.app || '').trim().toLowerCase() === 'morphly') return true;
+  // Users who exist in public.users are Morphly-owned even without the metadata tag
+  // (covers accounts created before the tag was introduced).
+  if (profileIds && profileIds.has(user?.id)) return true;
+  return false;
 }
 
-function buildMorphlyUserIdSet(authUsers, sessions = [], transactions = []) {
-  const ids = new Set(authUsers.filter(isMorphlyAuthUser).map((user) => user.id));
+function buildMorphlyUserIdSet(authUsers, sources = {}) {
+  const profiles = sources.profiles || [];
+  const wallets = sources.wallets || [];
+  const sessions = sources.sessions || [];
+  const transactions = sources.transactions || [];
+  // Build a set of all profile IDs so isMorphlyAuthUser can check membership.
+  const profileIds = new Set(profiles.map((p) => p.id).filter(Boolean));
+  const ids = new Set(authUsers.filter((u) => isMorphlyAuthUser(u, profileIds)).map((user) => user.id));
+  // Ensure every profile-backed user is always included.
+  for (const profile of profiles) if (profile.id) ids.add(profile.id);
+  for (const wallet of wallets) if (wallet.user_id) ids.add(wallet.user_id);
   for (const session of sessions) if (session.user_id) ids.add(session.user_id);
   for (const transaction of transactions) {
     const reference = String(transaction?.reference || '').toLowerCase();
@@ -180,9 +193,7 @@ function buildGrowthSeries(days, signups, events, sessions, purchases) {
 export async function getAdminOverview(supabaseAdmin, options = {}) {
   const filters = normalizeReportOptions(options);
   const authUsers = await listAllAuthUsers(supabaseAdmin);
-  const userIds = authUsers.map((user) => user.id);
-
-  if (userIds.length === 0) {
+  if (authUsers.length === 0) {
     return {
       totalUsers: 0,
       blockedUsers: 0,
@@ -215,7 +226,7 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
     ),
   ]);
 
-  const morphlyUserIds = buildMorphlyUserIdSet(authUsers, sessions, transactions);
+  const morphlyUserIds = buildMorphlyUserIdSet(authUsers, { profiles, wallets, sessions, transactions });
   const morphlyAuthUsers = authUsers.filter((user) => morphlyUserIds.has(user.id));
   const events = analyticsResult.rows.filter((event) => !event.user_id || morphlyUserIds.has(event.user_id));
   const cohortUserIds = (filters.platform || filters.source)
@@ -282,9 +293,7 @@ export async function getAdminOverview(supabaseAdmin, options = {}) {
 export async function listAdminUsers(supabaseAdmin, options = {}) {
   const filters = normalizeReportOptions(options);
   const authUsers = await listAllAuthUsers(supabaseAdmin);
-  const userIds = authUsers.map((user) => user.id);
-
-  if (userIds.length === 0) {
+  if (authUsers.length === 0) {
     return [];
   }
 
@@ -328,14 +337,13 @@ export async function listAdminUsers(supabaseAdmin, options = {}) {
   for (const event of analyticsResult.rows) {
     if (event.user_id) latestEventByUserId.set(event.user_id, event);
   }
-  const morphlyUserIds = buildMorphlyUserIdSet(authUsers, sessions, transactions);
+  const morphlyUserIds = buildMorphlyUserIdSet(authUsers, { profiles, wallets, sessions, transactions });
   const dimensionUserIds = (filters.platform || filters.source)
     ? new Set(analyticsResult.rows.map((event) => event.user_id).filter(Boolean))
     : null;
 
   return authUsers
     .filter((authUser) => morphlyUserIds.has(authUser.id))
-    .filter((authUser) => String(authUser.created_at || '') >= filters.since)
     .filter((authUser) => !dimensionUserIds || dimensionUserIds.has(authUser.id))
     .map((authUser) => ({
       id: authUser.id,
@@ -414,7 +422,7 @@ export async function listAdminTransactions(supabaseAdmin, options = {}) {
   ]);
   const users = await listAllAuthUsers(supabaseAdmin);
   const emailById = new Map(users.map((user) => [user.id, user.email || user.id]));
-  const morphlyUserIds = buildMorphlyUserIdSet(users, sessions, data);
+  const morphlyUserIds = buildMorphlyUserIdSet(users, { sessions, transactions: data });
   const latestEventByUserId = new Map();
   for (const event of analyticsResult.rows) {
     if (event.user_id) latestEventByUserId.set(event.user_id, event);

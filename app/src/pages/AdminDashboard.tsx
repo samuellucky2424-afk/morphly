@@ -175,17 +175,29 @@ function AdminDashboard() {
     }
 
     try {
-      const [usersResponse, packagesResponse, overviewResponse, auditResponse] = await Promise.all([
+      const [usersResult, packagesResult, overviewResult, auditResult] = await Promise.allSettled([
         adminRequest<{ users: AdminUserRecord[] }>('/admin-users'),
         adminRequest<{ packages: CreditPackage[] }>('/admin-credit-packages'),
         adminRequest<AdminOverview>('/admin-overview'),
         adminRequest<{ entries: AuditLogEntry[] }>('/admin-audit-log?limit=50'),
       ]);
 
-      setUsers(usersResponse.users || []);
-      setPackages(packagesResponse.packages || []);
-      setOverview(overviewResponse);
-      setAuditEntries(auditResponse.entries || []);
+      if (usersResult.status === 'fulfilled') setUsers(usersResult.value.users || []);
+      if (packagesResult.status === 'fulfilled') setPackages(packagesResult.value.packages || []);
+      if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
+      if (auditResult.status === 'fulfilled') setAuditEntries(auditResult.value.entries || []);
+
+      const failedSections = [
+        usersResult.status === 'rejected' ? 'users' : null,
+        packagesResult.status === 'rejected' ? 'packages' : null,
+        overviewResult.status === 'rejected' ? 'overview' : null,
+        auditResult.status === 'rejected' ? 'audit log' : null,
+      ].filter((section): section is string => Boolean(section));
+
+      if (failedSections.length > 0) {
+        const sectionNames = failedSections.join(', ');
+        toast.error(`Some dashboard sections could not be loaded: ${sectionNames}`);
+      }
     } catch (error) {
       console.error(error);
       toast.error(error instanceof Error ? error.message : 'Failed to load admin dashboard');
