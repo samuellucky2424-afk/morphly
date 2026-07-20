@@ -21,7 +21,6 @@ import {
   trackConnectionFailed,
   trackFirstFrameReceived,
   trackSessionCompleted,
-  trackSessionDisconnected,
 } from '@/lib/telemetry-client';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import {
