@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
+import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,
@@ -128,8 +129,15 @@ export default async function handler(req, res) {
       return res.status(503).json({ success: false, message: supabaseAdminConfigError || 'Supabase admin is not configured' });
     }
 
-    const { userId, sessionId, secondsDelta } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: 'User ID is required' });
+    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    if (authResult.error) {
+      return res.status(authResult.status).json({ success: false, message: authResult.error });
+    }
+    const userId = authResult.user.id;
+    const { sessionId, secondsDelta } = req.body;
+    if (req.body?.userId && req.body.userId !== userId) {
+      return res.status(403).json({ success: false, message: 'User mismatch' });
+    }
 
     await logRequestEvent('end-session.request', {
       method: req.method,

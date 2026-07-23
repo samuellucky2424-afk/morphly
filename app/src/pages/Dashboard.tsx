@@ -4,12 +4,14 @@ import {
   Upload,
   Play,
   Square,
-  Clock,
   Monitor,
   Settings,
+  Maximize,
+  Minimize,
   Plus,
   Coins,
   LoaderCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
@@ -23,6 +25,26 @@ import {
   trackSessionCompleted,
 } from '@/lib/telemetry-client';
 import { UpdateBanner } from '@/components/UpdateBanner';
+import { MorphlyDashboardTour } from '@/components/onboarding/MorphlyDashboardTour';
+import {
+  claimSignupBonusWelcome,
+  getOnboardingState,
+  shouldAutoStartOnboarding,
+  updateOnboardingState,
+} from '@/lib/account';
+import {
+  getDesktopUpdateState,
+  subscribeToDesktopUpdateState,
+} from '@/lib/desktop-updater';
+import {
+  isVirtualCamera,
+  subscribeToCameraDeviceChanges,
+} from '@/utils/cameraDeviceClassifier';
+import {
+  enumeratePhysicalCameras,
+  validateOpenedCameraTrack,
+  validateSelectedPhysicalCamera,
+} from '@/utils/physicalCameraAccess';
 import {
   QUALITY_MODE_PROFILES,
   buildVideoInputConstraints,
@@ -154,6 +176,7 @@ const DECART_REALTIME_MODEL = 'lucy-2.5';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
 const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;
+const SELECTED_CAMERA_STORAGE_PREFIX = 'morphly:selected-physical-camera';
 
 function createEmptyStreamMetrics(): StreamMetrics {
   return {
@@ -324,8 +347,8 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
   return response.json();
 }
 
-// Preload the SDK module so it's already cached when the user clicks Start.
-void import('@decartai/sdk');
+// Preload the SDK module so readiness is visible and cached before Start.
+const decartSdkReadyPromise = import('@decartai/sdk');
 
 function Dashboard() {
   const { user, logout } = useAuth();
@@ -336,15 +359,26 @@ function Dashboard() {
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [allVideoInputDevices, setAllVideoInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [virtualCameraDevices, setVirtualCameraDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
+  const [cameraPermission, setCameraPermission] = useState<PermissionState | 'unsupported' | 'unknown'>('unknown');
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isRefreshingCameras, setIsRefreshingCameras] = useState(false);
+  const [isEngineReady, setIsEngineReady] = useState(false);
+  const [engineLoadError, setEngineLoadError] = useState<string | null>(null);
+  const [isUpdaterBlocking, setIsUpdaterBlocking] = useState(false);
+  const [isTourRunning, setIsTourRunning] = useState(false);
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [isValidatingImage, setIsValidatingImage] = useState(false);
   const [prompt] = useState(BASE_PROMPT);
   const [preferredMode, setPreferredMode] = useState<QualityMode>('hd');
   const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
-  const [uiStatus, setUiStatus] = useState('Disconnected');
+  const [, setUiStatus] = useState('Disconnected');
   const [isSyncingTransform, setIsSyncingTransform] = useState(false);
   const [hasRemoteFrame, setHasRemoteFrame] = useState(false);
-  const [streamMetrics, setStreamMetrics] = useState<StreamMetrics>(() => createEmptyStreamMetrics());
+  const [, setStreamMetrics] = useState<StreamMetrics>(() => createEmptyStreamMetrics());
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const webcamVideoRef = useRef<HTMLVideoElement>(null);
@@ -379,6 +413,7 @@ function Dashboard() {
   const userSelectedModeRef = useRef(false);
   const userInitiatedCameraChangeRef = useRef(false);
   const previousCameraIdRef = useRef('');
+  const selectedCameraIdRef = useRef('');
   const morphlyCamWindowRef = useRef<Window | null>(null);
   const morphlyCamVideoRef = useRef<HTMLVideoElement | null>(null);
   const morphlyCamCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -428,6 +463,118 @@ function Dashboard() {
   useEffect(() => {
     preferredModeRef.current = preferredMode;
   }, [preferredMode]);
+
+  useEffect(() => {
+    selectedCameraIdRef.current = selectedCameraId;
+  }, [selectedCameraId]);
+
+  useEffect(() => {
+    const syncBrowserFullScreen = () => {
+      if (!window.electron?.isElectron) {
+        setIsFullScreen(Boolean(document.fullscreenElement));
+      }
+    };
+
+    document.addEventListener('fullscreenchange', syncBrowserFullScreen);
+
+    if (!window.electron?.isElectron) {
+      syncBrowserFullScreen();
+      return () => {
+        document.removeEventListener('fullscreenchange', syncBrowserFullScreen);
+      };
+    }
+
+    void window.electron.invoke('window:get-full-screen')
+      .then((fullScreen) => setIsFullScreen(Boolean(fullScreen)))
+      .catch((error) => {
+        console.warn('Unable to read full-screen state:', error);
+      });
+
+    const unsubscribe = window.electron.on(
+      'window:full-screen-changed',
+      (fullScreen: boolean) => setIsFullScreen(Boolean(fullScreen)),
+    );
+
+    return () => {
+      document.removeEventListener('fullscreenchange', syncBrowserFullScreen);
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void decartSdkReadyPromise
+      .then(() => {
+        if (!cancelled) {
+          setIsEngineReady(true);
+          setEngineLoadError(null);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to preload Morphly realtime engine:', error);
+        if (!cancelled) {
+          setIsEngineReady(false);
+          setEngineLoadError('The Morphly engine is not ready yet.');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const applyUpdateState = (state: {
+      checkInProgress?: boolean;
+      downloadInProgress?: boolean;
+      installInProgress?: boolean;
+    }) => {
+      setIsUpdaterBlocking(Boolean(
+        state.checkInProgress || state.downloadInProgress || state.installInProgress,
+      ));
+    };
+
+    void getDesktopUpdateState().then(applyUpdateState).catch((error) => {
+      console.warn('Unable to read desktop updater state:', error);
+    });
+
+    return subscribeToDesktopUpdateState(applyUpdateState);
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    let cancelled = false;
+    let startTimer: ReturnType<typeof setTimeout> | null = null;
+
+    void claimSignupBonusWelcome()
+      .then((showWelcome) => {
+        if (!cancelled && showWelcome) {
+          toast.success('Welcome to Morphly — 50 free testing credits have been added to your account.');
+        }
+      })
+      .catch((error) => {
+        console.warn('Unable to claim signup welcome message:', error);
+      });
+
+    void getOnboardingState()
+      .then((onboarding) => {
+        if (cancelled || !shouldAutoStartOnboarding(onboarding)) return;
+
+        startTimer = setTimeout(() => {
+          if (!cancelled) setIsTourRunning(true);
+        }, 450);
+      })
+      .catch((error) => {
+        console.warn('Unable to load guided-tour state:', error);
+      });
+
+    return () => {
+      cancelled = true;
+      if (startTimer) clearTimeout(startTimer);
+    };
+  }, [user?.id]);
 
   const clearUsageFlushInterval = useCallback(() => {
     if (usageFlushIntervalRef.current) {
@@ -1106,6 +1253,12 @@ function Dashboard() {
         const nextTrack = nextStream.getVideoTracks()[0];
 
         if (nextTrack) {
+          try {
+            validateOpenedCameraTrack(nextTrack, selectedCameraId);
+          } catch (error) {
+            nextStream.getTracks().forEach((track) => track.stop());
+            throw error;
+          }
           nextTrack.contentHint = attemptedMode === 'fast' ? 'motion' : 'detail';
         }
 
@@ -1130,18 +1283,27 @@ function Dashboard() {
         const isNotReadable =
           error instanceof DOMException && error.name === 'NotReadableError';
 
-        // Camera is locked by another app — quality downgrade won't help.
-        // Try once more without an exact deviceId so the browser can pick
-        // any available camera instead of insisting on the busy one.
+        // Retry the same exact physical device once in case the operating
+        // system releases a transient camera lock between requests.
         if (isNotReadable && selectedCameraId) {
           try {
             const fallbackStream = await navigator.mediaDevices.getUserMedia(
-              buildVideoInputConstraints(attemptedMode, undefined),
+              buildVideoInputConstraints(attemptedMode, selectedCameraId),
             );
             const fallbackTrack = fallbackStream.getVideoTracks()[0];
 
             if (fallbackTrack) {
               fallbackTrack.contentHint = attemptedMode === 'fast' ? 'motion' : 'detail';
+            }
+            if (!fallbackTrack) {
+              fallbackStream.getTracks().forEach((track) => track.stop());
+              throw new Error('The selected camera did not provide a video track.');
+            }
+            try {
+              validateOpenedCameraTrack(fallbackTrack, selectedCameraId);
+            } catch (error) {
+              fallbackStream.getTracks().forEach((track) => track.stop());
+              throw error;
             }
 
             const previousSourceStream = webcamSourceStreamRef.current;
@@ -1746,26 +1908,82 @@ function Dashboard() {
     }
   }, [handleStop, setCredits, user?.id]);
 
-  const enumerateCameras = useCallback(async () => {
+  const refreshCameras = useCallback(async (
+    options?: { requestPermission?: boolean; notifyIfMissing?: boolean },
+  ) => {
+    setIsRefreshingCameras(true);
+
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter((device) => device.kind === 'videoinput');
-      setCameraDevices(videoDevices);
+      const result = await enumeratePhysicalCameras({
+        requestPermission: options?.requestPermission,
+      });
+      const previousSelection = selectedCameraIdRef.current;
+      const storageKey = user?.id
+        ? `${SELECTED_CAMERA_STORAGE_PREFIX}:${user.id}`
+        : SELECTED_CAMERA_STORAGE_PREFIX;
+      const storedSelection = localStorage.getItem(storageKey) || '';
+      const physicalIds = new Set(result.physicalCameras.map((device) => device.deviceId));
 
-      if (videoDevices.length > 0 && !selectedCameraId) {
-        const builtinCamera = videoDevices.find((device) =>
-          device.label.toLowerCase().includes('integrated') ||
-          device.label.toLowerCase().includes('built-in') ||
-          device.label.toLowerCase().includes('facetime') ||
-          device.label.toLowerCase().includes('internal'),
-        );
+      setAllVideoInputDevices(result.allVideoInputs);
+      setCameraDevices(result.physicalCameras);
+      setVirtualCameraDevices(result.virtualCameras);
+      setCameraPermission(result.permission);
+      setCameraError(null);
 
-        setSelectedCameraId(builtinCamera?.deviceId || videoDevices[0].deviceId);
+      if (previousSelection && physicalIds.has(previousSelection)) {
+        return result;
       }
+
+      if (previousSelection && !physicalIds.has(previousSelection)) {
+        const message = 'The selected camera is no longer available. Please select another physical camera.';
+        selectedCameraIdRef.current = '';
+        setSelectedCameraId('');
+        localStorage.removeItem(storageKey);
+        setCameraError(message);
+
+        if (options?.notifyIfMissing) {
+          toast.error(message);
+        }
+
+        if (isStreamingRef.current) {
+          void safelyStopSessionRef.current?.();
+        }
+      }
+
+      const nextSelection = physicalIds.has(storedSelection)
+        ? storedSelection
+        : result.physicalCameras.length === 1
+          ? result.physicalCameras[0].deviceId
+          : '';
+
+      selectedCameraIdRef.current = nextSelection;
+      setSelectedCameraId(nextSelection);
+      if (nextSelection) localStorage.setItem(storageKey, nextSelection);
+
+      if (result.physicalCameras.length === 0) {
+        setCameraError(
+          'No physical camera was detected. Connect or enable your laptop camera, allow camera permission, then refresh the camera list.',
+        );
+      }
+
+      return result;
     } catch (error) {
       console.error('Failed to enumerate cameras:', error);
+      const permissionDenied = error instanceof DOMException
+        && ['NotAllowedError', 'SecurityError'].includes(error.name);
+      const message = permissionDenied
+        ? 'Camera permission is required. Allow access, then refresh the camera list.'
+        : 'No physical camera was detected. Connect or enable your laptop camera, allow camera permission, then refresh the camera list.';
+      setCameraPermission(permissionDenied ? 'denied' : 'unknown');
+      setAllVideoInputDevices([]);
+      setCameraDevices([]);
+      setVirtualCameraDevices([]);
+      setCameraError(message);
+      return null;
+    } finally {
+      setIsRefreshingCameras(false);
     }
-  }, [selectedCameraId]);
+  }, [user?.id]);
 
   useEffect(() => () => {
     if (pollIntervalRef.current) {
@@ -1789,10 +2007,13 @@ function Dashboard() {
   }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearFrameWatchdog, clearSoftReconnectTimer, clearUsageFlushInterval, closeMorphlyCamWindow]);
 
   useEffect(() => {
-    enumerateCameras();
-    navigator.mediaDevices.addEventListener('devicechange', enumerateCameras);
-    return () => navigator.mediaDevices.removeEventListener('devicechange', enumerateCameras);
-  }, [enumerateCameras]);
+    if (!navigator.mediaDevices) return undefined;
+
+    void refreshCameras({ requestPermission: true });
+    return subscribeToCameraDeviceChanges(navigator.mediaDevices, () => {
+      void refreshCameras({ notifyIfMissing: true });
+    });
+  }, [refreshCameras]);
 
   useEffect(() => {
     const connection = getNavigatorConnection();
@@ -1948,7 +2169,89 @@ function Dashboard() {
     })();
   }, [activeMode, isStreaming, restartRealtimeSession, selectedCameraId, startWebcam]);
 
+  const selectedVideoDevice = allVideoInputDevices.find((device) =>
+    device.deviceId === selectedCameraId);
+  const selectedDeviceIsVirtual = Boolean(
+    selectedVideoDevice && isVirtualCamera(selectedVideoDevice.label),
+  );
+
+  const getStartBlockReason = () => {
+    if (!selectedCameraId) return 'Select your physical laptop camera first.';
+    if (selectedDeviceIsVirtual) {
+      return 'Virtual cameras cannot be used as the Morphly input. Select your integrated or USB hardware camera.';
+    }
+    if (cameraPermission === 'denied') {
+      return 'Camera permission is required. Allow access, then refresh the camera list.';
+    }
+    if (!referenceImage) return 'Upload a reference image before starting.';
+    if (isValidatingImage) return 'Morphly is checking the reference image.';
+    if (credits < CREDITS_PER_SECOND) {
+      return 'You do not have enough credits. Buy credits to continue.';
+    }
+    if (!isEngineReady) return engineLoadError || 'The Morphly engine is not ready yet.';
+    if (isUpdaterBlocking) return 'Wait for the application update process to finish.';
+    if (isLoading) return 'Morphly is already starting.';
+    if (isStreaming) return 'Morphly is already streaming.';
+    return null;
+  };
+
+  const startBlockReason = getStartBlockReason();
+
+  const revalidateStartRequirements = async () => {
+    const latestCameras = await enumeratePhysicalCameras();
+    const selectedDevice = validateSelectedPhysicalCamera(
+      selectedCameraIdRef.current,
+      latestCameras.allVideoInputs,
+    );
+
+    if (!referenceImageRef.current) {
+      throw new Error('Upload a reference image before starting.');
+    }
+    if (!isEngineReady) {
+      throw new Error(engineLoadError || 'The Morphly engine is not ready yet.');
+    }
+    if (credits < CREDITS_PER_SECOND) {
+      throw new Error('You do not have enough credits. Buy credits to continue.');
+    }
+    if (isUpdaterBlocking) {
+      throw new Error('Wait for the application update process to finish.');
+    }
+
+    if (window.electron?.invoke) {
+      const trustedValidation = await window.electron.invoke('camera:validate-selection', {
+        selectedDeviceId: selectedDevice.deviceId,
+        selectedLabel: selectedDevice.label,
+        availableDevices: latestCameras.allVideoInputs.map((device) => ({
+          deviceId: device.deviceId,
+          label: device.label,
+          kind: device.kind,
+        })),
+      });
+
+      if (!trustedValidation?.valid) {
+        throw new Error(trustedValidation?.error || 'The selected camera could not be validated.');
+      }
+    }
+
+    setAllVideoInputDevices(latestCameras.allVideoInputs);
+    setCameraDevices(latestCameras.physicalCameras);
+    setVirtualCameraDevices(latestCameras.virtualCameras);
+    setCameraPermission(latestCameras.permission);
+  };
+
   const handleStart = async () => {
+    try {
+      await revalidateStartRequirements();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Morphly could not validate the stream setup.';
+      if (/camera|permission/i.test(message)) {
+        setCameraError(message);
+        void refreshCameras();
+      }
+      toast.error(message);
+      return;
+    }
+
     setIsLoading(true);
     setConnectionState('connecting');
     setUiStatus('Connecting...');
@@ -2102,7 +2405,7 @@ function Dashboard() {
     }
   };
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
 
@@ -2110,11 +2413,32 @@ function Dashboard() {
       return;
     }
 
-    setReferenceImage({
-      file,
-      name: file.name,
-      signature: `${file.name}:${file.size}:${file.lastModified}`,
-    });
+    if (!file.type.startsWith('image/')) {
+      toast.error('Select a valid image file.');
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error('The reference image must be 15 MB or smaller.');
+      return;
+    }
+
+    setIsValidatingImage(true);
+    try {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close();
+
+      setReferenceImage({
+        file,
+        name: file.name,
+        signature: `${file.name}:${file.size}:${file.lastModified}`,
+      });
+    } catch (error) {
+      console.error('Reference image validation failed:', error);
+      toast.error('Morphly could not read that image. Select another image file.');
+      return;
+    } finally {
+      setIsValidatingImage(false);
+    }
 
     if (isStreaming) {
       toast.info('Updating reference image...');
@@ -2132,31 +2456,67 @@ function Dashboard() {
     setPreferredMode(mode as QualityMode);
   };
 
+  const handleFullScreenToggle = async () => {
+    try {
+      if (window.electron?.isElectron) {
+        const nextState = await window.electron.invoke('window:toggle-full-screen');
+        setIsFullScreen(Boolean(nextState));
+        return;
+      }
+
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (error) {
+      console.error('Unable to change full-screen mode:', error);
+      toast.error('Morphly could not change the display mode.');
+    }
+  };
+
   const handleCameraChange = (cameraId: string) => {
-    if (!cameraId || cameraId === selectedCameraId) {
+    if (cameraId === selectedCameraId) {
       return;
     }
 
     userInitiatedCameraChangeRef.current = true;
+    selectedCameraIdRef.current = cameraId;
     setSelectedCameraId(cameraId);
+    setCameraError(null);
+
+    const storageKey = user?.id
+      ? `${SELECTED_CAMERA_STORAGE_PREFIX}:${user.id}`
+      : SELECTED_CAMERA_STORAGE_PREFIX;
+    if (cameraId) {
+      localStorage.setItem(storageKey, cameraId);
+    } else {
+      localStorage.removeItem(storageKey);
+    }
   };
 
-  const getRemainingSeconds = () => Math.floor(credits / CREDITS_PER_SECOND);
+  const handleTourFinish = () => {
+    setIsTourRunning(false);
+    void updateOnboardingState('complete').catch((error) => {
+      console.warn('Unable to save guided-tour completion:', error);
+      toast.error('The guide finished, but Morphly could not save the completion state.');
+    });
+  };
 
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-
-    if (mins > 0) {
-      return `~${mins}m ${secs}s`;
-    }
-
-    return `~${secs}s`;
+  const handleTourSkip = () => {
+    setIsTourRunning(false);
+    void updateOnboardingState('skip').catch((error) => {
+      console.warn('Unable to save guided-tour skip state:', error);
+      toast.error('Morphly could not save the skipped guide state.');
+    });
   };
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-black font-sans text-white">
-      <main className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#000000] shadow-inner">
+      <main
+        data-tour="dashboard"
+        className="relative flex flex-1 items-center justify-center overflow-hidden bg-[#000000] shadow-inner"
+      >
         <UpdateBanner />
         <video
           id="output"
@@ -2209,22 +2569,38 @@ function Dashboard() {
           </div>
         )}
 
-        <button
-          title="Settings"
-          onClick={() => navigate('/settings')}
-          className="absolute right-6 top-6 z-20 rounded-full border border-white/5 bg-black/40 p-2.5 text-[#71717A] backdrop-blur-md transition-all hover:scale-110 hover:text-white"
-        >
-          <Settings className="h-5 w-5" />
-        </button>
+        <div className="absolute right-6 top-6 z-20 flex items-center gap-2">
+          <button
+            type="button"
+            title={isFullScreen ? 'Exit full screen' : 'Full screen'}
+            aria-label={isFullScreen ? 'Exit full screen' : 'Switch to full screen'}
+            onClick={() => void handleFullScreenToggle()}
+            className="inline-flex h-10 items-center gap-2 rounded-full border border-white/5 bg-black/40 px-3 text-xs font-semibold text-[#A1A1AA] backdrop-blur-md transition-all hover:scale-105 hover:text-white"
+          >
+            {isFullScreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            <span>{isFullScreen ? 'Exit Full Screen' : 'Full Screen'}</span>
+          </button>
+          <button
+            data-tour="settings"
+            title="Settings"
+            aria-label="Open Settings"
+            onClick={() => navigate('/settings')}
+            className="rounded-full border border-white/5 bg-black/40 p-2.5 text-[#71717A] backdrop-blur-md transition-all hover:scale-110 hover:text-white"
+          >
+            <Settings className="h-5 w-5" />
+          </button>
+        </div>
       </main>
 
-      <footer className="relative z-10 flex flex-col gap-2 border-t border-white/5 bg-[#0A0A0A] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+      <footer className="relative z-10 flex max-h-[24vh] flex-col gap-1 overflow-y-auto border-t border-white/5 bg-[#0A0A0A] px-3 py-1">
+        <div className="flex flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <button
+            data-tour="start-stream"
             onClick={handleStart}
-            disabled={isStreaming || isLoading}
-            className={`flex h-[34px] items-center gap-2 rounded-sm border px-3.5 transition-all ${
-              isStreaming
+            disabled={Boolean(startBlockReason)}
+            className={`flex h-[30px] items-center gap-2 rounded-sm border px-3 transition-all ${
+              startBlockReason
                 ? 'border-[#133C29] bg-[#122A1F] text-[#22C55E] opacity-50'
                 : 'border-[#133C29] bg-[#122A1F] text-[#22C55E] hover:bg-[#153828]'
             }`}
@@ -2234,17 +2610,19 @@ function Dashboard() {
           </button>
 
           <button
+            data-tour="stop-stream"
             onClick={() => void handleStop()}
             disabled={!isStreaming}
-            className="flex h-[34px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3.5 text-[#737373] transition-all hover:text-[#A3A3A3]"
+            className="flex h-[30px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3 text-[#737373] transition-all hover:text-[#A3A3A3]"
           >
             <Square className="h-3.5 w-3.5 fill-current opacity-70" />
             <span className="text-[13px] font-medium">Stop</span>
           </button>
 
           <button
+            data-tour="upload-image"
             onClick={() => fileInputRef.current?.click()}
-            className="flex h-[34px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3.5 text-[#737373] transition-all hover:text-[#A3A3A3]"
+            className="flex h-[30px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3 text-[#737373] transition-all hover:text-[#A3A3A3]"
           >
             <Upload className="h-3.5 w-3.5 opacity-80" />
             <span className="text-[13px] font-medium">{referenceImage ? 'Change Image' : 'Upload Image'}</span>
@@ -2262,24 +2640,56 @@ function Dashboard() {
             <option value="hd">HD Mode</option>
           </select>
 
-          {cameraDevices.length >= 1 && (
+          <div
+            data-tour="camera-selector"
+            className="min-w-[260px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
+          >
+            <div className="mb-0.5 flex items-center justify-between gap-3">
+              <label htmlFor="physical-camera-selector" className="text-[10px] font-bold uppercase tracking-wider text-[#d4d4d8]">
+                Input camera
+              </label>
+              <button
+                type="button"
+                onClick={() => void refreshCameras({ requestPermission: true })}
+                disabled={isRefreshingCameras || isStreaming || isLoading}
+                className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300 transition-colors hover:text-amber-200 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3 w-3 ${isRefreshingCameras ? 'animate-spin' : ''}`} />
+                Refresh Cameras
+              </button>
+            </div>
             <select
+              id="physical-camera-selector"
               value={selectedCameraId}
               onChange={(event) => handleCameraChange(event.target.value)}
-              title="Select camera"
-              className="h-[34px] rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[12px] text-[#A3A3A3] transition-colors focus:border-[#3A3A3A] focus:outline-none"
+              title="Select your physical laptop or USB camera"
+              aria-label="Input camera: select your physical laptop or USB camera"
+              className="h-[30px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] text-[#D4D4D8] transition-colors focus:border-amber-400 focus:outline-none"
             >
+              <option value="">Select your physical laptop or USB camera</option>
               {cameraDevices.map((device, index) => (
                 <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Camera ${index + 1}`}
+                  {device.label || `Physical camera ${index + 1}`}
                 </option>
               ))}
+              {virtualCameraDevices.length > 0 && (
+                <optgroup label="Virtual cameras cannot be used as input">
+                  {virtualCameraDevices.map((device, index) => (
+                    <option key={device.deviceId} value="" disabled>
+                      {device.label || `Blocked virtual camera ${index + 1}`}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-          )}
+            <p className="mt-0.5 text-[9px] leading-3 text-[#71717A]">
+              Morphly Virtual Camera is the output camera. Do not select it here.
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <div className="flex items-center gap-3 rounded-xl border border-[#222222] bg-[#111111] px-3 py-2">
+          <div className="flex items-center gap-3 rounded-xl border border-[#222222] bg-[#111111] px-3 py-1.5">
             <div className="flex flex-col gap-[2px]">
               <span className="text-[8px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
               <div className="flex items-center gap-1.5">
@@ -2288,6 +2698,7 @@ function Dashboard() {
               </div>
             </div>
             <button
+              data-tour="buy-credits"
               onClick={() => navigate('/subscription')}
               className="ml-1 flex h-[28px] items-center gap-1 rounded-sm bg-[#FFFFFF] px-2.5 text-[11px] font-bold text-[#000000] shadow-sm transition-colors hover:bg-[#E5E5E5]"
             >
@@ -2296,17 +2707,25 @@ function Dashboard() {
             </button>
           </div>
 
-          <div className="flex min-w-[140px] items-center gap-3 rounded-xl border border-[#0F284B] bg-[#0E1524] px-3 py-2">
-            <Clock className="h-4 w-4 stroke-[2.5] text-[#3B82F6]" />
-            <div className="flex flex-col gap-[2px]">
-              <span className="text-[8px] font-bold uppercase tracking-widest text-[#60A5FA]">Remaining</span>
-              <span className="text-xs font-bold text-[#E5E5E5]">{formatTime(getRemainingSeconds())}</span>
-              <span className="text-[10px] text-[#6B7280]">{streamMetrics.limitation === 'none' ? 'No throttling' : `${streamMetrics.limitation} limited`}</span>
-              <span className="text-[10px] text-[#6B7280]">{uiStatus}</span>
-            </div>
-          </div>
+        </div>
+        </div>
+        <div
+          className={`rounded-md border px-3 py-1 text-[11px] leading-4 ${
+            startBlockReason
+              ? 'border-amber-400/20 bg-amber-400/5 text-amber-100'
+              : 'border-emerald-400/20 bg-emerald-400/5 text-emerald-200'
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {cameraError || startBlockReason || `Ready to start with ${selectedVideoDevice?.label || 'the selected physical camera'}.`}
         </div>
       </footer>
+      <MorphlyDashboardTour
+        run={isTourRunning}
+        onFinish={handleTourFinish}
+        onSkip={handleTourSkip}
+      />
     </div>
   );
 }

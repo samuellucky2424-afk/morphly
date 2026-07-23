@@ -567,6 +567,141 @@ export async function listCreditPackages(supabaseAdmin, options = {}) {
   return packages.map((pkg) => ({ ...pkg, purchases: stats.get(pkg.id)?.purchases || 0, revenueNGN: stats.get(pkg.id)?.revenueNGN || 0 }));
 }
 
+export async function listAdminReferrals(supabaseAdmin, options = {}) {
+  const requestedStatus = String(options.status || 'all').trim().toLowerCase();
+  const authUsers = await listAllAuthUsers(supabaseAdmin);
+  const emailById = new Map(authUsers.map((user) => [user.id, user.email || user.id]));
+
+  const [referrals, profiles, bonusTransactions, rewardTransactions, auditLogs] = await Promise.all([
+    fetchAllRows(
+      () => supabaseAdmin.from('referrals').select('*').order('created_at', { ascending: false }),
+      'referrals',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('users').select('id, referral_code, referred_by_user_id, account_status').order('created_at', { ascending: false }),
+      'users',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('transactions')
+        .select('id, user_id, credits, reference, status, created_at')
+        .eq('transaction_type', 'signup_bonus')
+        .order('created_at', { ascending: false }),
+      'signup bonus transactions',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('transactions')
+        .select('id, user_id, related_user_id, related_payment_id, credits, reference, status, refund_status, created_at')
+        .eq('transaction_type', 'referral_reward')
+        .order('created_at', { ascending: false }),
+      'referral reward transactions',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('referral_audit_logs').select('*').order('created_at', { ascending: false }),
+      'referral audit logs',
+    ),
+  ]);
+
+  const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const rewardById = new Map(rewardTransactions.map((transaction) => [transaction.id, transaction]));
+  const qualifyingPurchaseIds = referrals.map((entry) => entry.qualified_purchase_id).filter(Boolean);
+  let qualifyingPurchases = [];
+
+  if (qualifyingPurchaseIds.length > 0) {
+    qualifyingPurchases = await fetchAllRows(
+      () => supabaseAdmin.from('transactions')
+        .select('id, reference, user_id, package_name_snapshot, status, refund_status, verified_at, created_at')
+        .in('id', qualifyingPurchaseIds)
+        .order('created_at', { ascending: false }),
+      'referral qualifying purchases',
+    );
+  }
+
+  const purchaseById = new Map(qualifyingPurchases.map((transaction) => [transaction.id, transaction]));
+  const filteredReferrals = referrals.filter((entry) => {
+    if (requestedStatus === 'all') return true;
+    if (requestedStatus === 'registered') return entry.status !== 'disqualified';
+    if (requestedStatus === 'waiting') return entry.status === 'registered';
+    return entry.status === requestedStatus;
+  });
+
+  return {
+    referrals: filteredReferrals.map((entry) => {
+      const purchase = purchaseById.get(entry.qualified_purchase_id) || null;
+      const reward = rewardById.get(entry.reward_transaction_id) || null;
+      const referrerProfile = profileById.get(entry.referrer_user_id);
+      const referredProfile = profileById.get(entry.referred_user_id);
+
+      return {
+        id: entry.id,
+        referralCodeUsed: entry.referral_code_used,
+        referrerUserId: entry.referrer_user_id,
+        referrerEmail: entry.referrer_user_id ? emailById.get(entry.referrer_user_id) || entry.referrer_user_id : 'Deleted user',
+        referrerCode: referrerProfile?.referral_code || null,
+        referrerStatus: referrerProfile?.account_status || 'deleted',
+        referredUserId: entry.referred_user_id,
+        referredEmail: emailById.get(entry.referred_user_id) || entry.referred_user_id,
+        referredStatus: referredProfile?.account_status || 'deleted',
+        status: entry.status,
+        registeredAt: entry.created_at,
+        qualifiedAt: entry.qualified_at,
+        rewardedAt: entry.rewarded_at,
+        disqualifiedAt: entry.disqualified_at,
+        disqualificationReason: entry.disqualification_reason,
+        refundWarning: Boolean(entry.refund_warning),
+        suspicious: Boolean(entry.suspicious),
+        suspiciousReason: entry.suspicious_reason,
+        firstQualifyingPurchase: purchase ? {
+          id: purchase.id,
+          reference: purchase.reference,
+          package: purchase.package_name_snapshot,
+          status: purchase.status,
+          refundStatus: purchase.refund_status || 'none',
+          verifiedAt: purchase.verified_at || purchase.created_at,
+        } : null,
+        rewardTransaction: reward ? {
+          id: reward.id,
+          reference: reward.reference,
+          credits: Number(reward.credits || 0),
+          status: reward.status,
+          createdAt: reward.created_at,
+        } : null,
+      };
+    }),
+    totals: {
+      registrations: referrals.length,
+      waitingForPurchase: referrals.filter((entry) => entry.status === 'registered').length,
+      rewarded: referrals.filter((entry) => entry.status === 'rewarded').length,
+      disqualified: referrals.filter((entry) => entry.status === 'disqualified').length,
+      referralCreditsIssued: rewardTransactions
+        .filter((transaction) => transaction.status === 'success')
+        .reduce((sum, transaction) => sum + Number(transaction.credits || 0), 0),
+      signupBonusesIssued: bonusTransactions.filter((transaction) => transaction.status === 'success').length,
+      signupBonusCreditsIssued: bonusTransactions
+        .filter((transaction) => transaction.status === 'success')
+        .reduce((sum, transaction) => sum + Number(transaction.credits || 0), 0),
+      suspicious: referrals.filter((entry) => entry.suspicious).length,
+    },
+    audit: auditLogs.slice(0, 250),
+  };
+}
+
+export async function disqualifyAdminReferral(supabaseAdmin, payload) {
+  const referralId = String(payload.referralId || '').trim();
+  const adminUserId = String(payload.adminUserId || '').trim();
+  const reason = String(payload.reason || '').trim();
+  if (!referralId || !adminUserId || reason.length < 3) {
+    throw new Error('Referral, administrator and reason are required');
+  }
+
+  const { data, error } = await supabaseAdmin.rpc('admin_disqualify_referral', {
+    p_admin: adminUserId,
+    p_referral: referralId,
+    p_reason: reason,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function deleteUserAccount(supabaseAdmin, payload) {
   const userId = String(payload.userId || '').trim();
   if (!userId) {

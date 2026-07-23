@@ -5,7 +5,7 @@ const CONFIG = {
   endpoints: {
     overview: "/api/admin-overview", users: "/api/admin-users", addCredit: () => "/api/admin-users",
     updateStatus: () => "/api/admin-users", packages: "/api/admin-credit-packages",
-    transactions: "/api/admin-transactions", logs: "/api/admin-logs", audit: "/api/admin-audit-log",
+    transactions: "/api/admin-transactions", referrals: "/api/admin-referrals", logs: "/api/admin-logs", audit: "/api/admin-audit-log",
     me: "/api/admin-me", config: "/api/public-config"
   }
 };
@@ -30,6 +30,7 @@ const state = {
   selectedUserId: null,
   editingPackageId: null,
   users: [],
+  referralData: { referrals: [], totals: {}, audit: [] },
   audit: [],
   packages: []
 };
@@ -204,6 +205,12 @@ const AdminAPI = {
     return AdminAPI.request(CONFIG.endpoints.transactions, {
       method: "POST",
       body: JSON.stringify({ transactionId, userId, packageId, reference: reference || undefined })
+    });
+  },
+  async disqualifyReferral(referralId, reason) {
+    return AdminAPI.request(CONFIG.endpoints.referrals, {
+      method: "POST",
+      body: JSON.stringify({ referralId, reason })
     });
   }
 };
@@ -571,10 +578,50 @@ function renderDeveloper() {
   $("#developerRequirements").innerHTML = requirements.map(([title, detail, status]) => `<div class="requirement-row"><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small></span><span class="status-pill ${status}">${escapeHtml(status)}</span></div>`).join("");
 }
 
+function renderReferrals() {
+  const totals = state.referralData.totals || {};
+  const selectedStatus = $("#referralStatusFilter").value;
+  const referrals = (state.referralData.referrals || []).filter((entry) => {
+    if (selectedStatus === "all") return true;
+    if (selectedStatus === "registered") return entry.status !== "disqualified";
+    if (selectedStatus === "waiting") return entry.status === "registered";
+    return entry.status === selectedStatus;
+  });
+
+  $("#sidebarReferralCount").textContent = number(totals.registrations || 0);
+  $("#referralMetrics").innerHTML = [
+    metricCard("Registrations", number(totals.registrations || 0), "Referral relationships", "", "+"),
+    metricCard("Waiting for purchase", number(totals.waitingForPurchase || 0), "No qualifying purchase yet", "", "..."),
+    metricCard("Referral credits issued", number(totals.referralCreditsIssued || 0), "Verified first purchases only", "", "+"),
+    metricCard("Signup bonuses issued", number(totals.signupBonusesIssued || 0), `${number(totals.signupBonusCreditsIssued || 0)} credits`, "", "+")
+  ].join("");
+
+  $("#referralTableBody").innerHTML = referrals.length ? referrals.map((entry) => {
+    const purchase = entry.firstQualifyingPurchase;
+    const reward = entry.rewardTransaction;
+    const flags = [
+      entry.refundWarning ? '<span class="status-pill warning">Refund warning</span>' : "",
+      entry.suspicious ? '<span class="status-pill error">Suspicious</span>' : "",
+      ["registered", "qualified"].includes(entry.status)
+        ? `<button class="manage-button" type="button" data-disqualify-referral="${escapeHtml(entry.id)}">Disqualify</button>`
+        : ""
+    ].filter(Boolean).join(" ") || "None";
+    return `<tr><td><strong>${escapeHtml(entry.referralCodeUsed || "-")}</strong><small>${escapeHtml(entry.referrerEmail || "Deleted user")}</small></td><td>${escapeHtml(entry.referredEmail || "-")}</td><td>${escapeHtml(formatDateTime(entry.registeredAt))}</td><td><span class="status-pill ${entry.status === "rewarded" ? "success" : entry.status === "disqualified" ? "error" : "pending"}">${escapeHtml(entry.status)}</span></td><td>${purchase ? `<strong>${escapeHtml(purchase.reference || purchase.id)}</strong><small>${escapeHtml(purchase.package || "Credit package")}</small>` : "Waiting for first purchase"}</td><td>${reward ? `<strong>${escapeHtml(reward.reference || reward.id)}</strong><small>${number(reward.credits)} credits</small>` : "Not rewarded"}</td><td>${flags}</td></tr>`;
+  }).join("") : '<tr><td class="empty-cell" colspan="7">No referral records match this filter.</td></tr>';
+
+  const audit = state.referralData.audit || [];
+  $("#referralAuditList").innerHTML = audit.length
+    ? audit.slice(0, 50).map((entry) => (
+      `<div class="audit-row"><span><strong>${escapeHtml(entry.action || "Referral event")}</strong><small>Referred user: ${escapeHtml(entry.referred_user_id || "Not applicable")}</small></span><small>${escapeHtml(formatDateTime(entry.created_at))}</small></div>`
+    )).join("")
+    : '<p class="empty-cell">No referral audit events have been recorded.</p>';
+}
+
 function renderAll() {
   $("#sidebarUserCount").textContent = number(state.users.length);
   renderOverview();
   renderUsers();
+  renderReferrals();
   renderTransactions();
   renderPackages();
   renderLogs();
@@ -585,12 +632,13 @@ function renderAll() {
 
 function setView(view) {
   state.activeView = view;
-  const titles = { overview: "Business overview", users: "User management", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
+  const titles = { overview: "Business overview", users: "User management", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
   $$("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
   $("#pageTitle").textContent = titles[view] || "Morphly admin";
   $("#sidebar").classList.remove("open");
   if (view === "users") renderUsers();
+  if (view === "referrals") renderReferrals();
   if (view === "packages") renderPackages();
   if (view === "logs") renderLogs();
 }
@@ -735,6 +783,31 @@ function bindEvents() {
   });
   $("#userSearch").addEventListener("input", renderUsers);
   $("#userStatusFilter").addEventListener("change", renderUsers);
+  $("#referralStatusFilter").addEventListener("change", renderReferrals);
+  $("#referralTableBody").addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-disqualify-referral]");
+    if (!button) return;
+    const referral = (state.referralData.referrals || []).find((entry) => entry.id === button.dataset.disqualifyReferral);
+    if (!referral) return;
+
+    const reason = window.prompt(`Why should the referral for ${referral.referredEmail} be disqualified?`);
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      showToast("Enter a disqualification reason of at least 3 characters.");
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      await AdminAPI.disqualifyReferral(referral.id, reason.trim());
+      await loadLiveData();
+      renderAll();
+      showToast("Referral disqualified and recorded in the audit log.");
+    } catch (error) {
+      showToast(error.message || "Unable to disqualify referral.");
+      button.disabled = false;
+    }
+  });
   $("#packageStatusFilter").addEventListener("change", renderPackages);
   $("#packageForm").addEventListener("submit", handleCreatePackage);
   $("#packageCancelButton").addEventListener("click", cancelPackageEdit);
@@ -762,6 +835,7 @@ async function loadLiveData() {
   const definitions = [
     { key: "overview", path: scopedEndpoint(CONFIG.endpoints.overview) },
     { key: "users", path: scopedEndpoint(CONFIG.endpoints.users) },
+    { key: "referrals", path: CONFIG.endpoints.referrals },
     { key: "packages", path: CONFIG.endpoints.packages },
     { key: "transactions", path: scopedEndpoint(CONFIG.endpoints.transactions) },
     { key: "logs", path: scopedEndpoint(CONFIG.endpoints.logs) },
@@ -804,6 +878,10 @@ async function loadLiveData() {
         successRate: safeNumber(user.successRate ?? user.success_rate)
       };
     });
+  }
+
+  if (results.referrals.status === "fulfilled") {
+    state.referralData = results.referrals.value || { referrals: [], totals: {}, audit: [] };
   }
 
   if (results.packages.status === "fulfilled") {

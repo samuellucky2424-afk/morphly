@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const HEARTBEAT_SECONDS = 30;
 const CREDITS_PER_SECOND = 2;
@@ -56,17 +57,24 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!supabaseAdmin) return res.status(503).json({ error: supabaseAdminConfigError });
 
-  const { userId, sessionId } = req.body;
-  if (!userId || !sessionId) {
-    return res.status(400).json({ error: 'userId and sessionId are required' });
-  }
-
-  const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
-  if (secondsDelta <= 0) {
-    return res.status(400).json({ error: 'secondsDelta must be greater than 0' });
-  }
-
   try {
+    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    if (authResult.error) return res.status(authResult.status).json({ error: authResult.error });
+    const userId = authResult.user.id;
+    const requestedUserId = req.body?.userId;
+    const sessionId = req.body?.sessionId;
+    if (requestedUserId && requestedUserId !== userId) {
+      return res.status(403).json({ error: 'User mismatch' });
+    }
+    if (!sessionId) {
+      return res.status(400).json({ error: 'sessionId is required' });
+    }
+
+    const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
+    if (secondsDelta <= 0) {
+      return res.status(400).json({ error: 'secondsDelta must be greater than 0' });
+    }
+
     const [{ data: walletData, error: walletError }, { data: sessionData, error: sessionError }] = await Promise.all([
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       supabaseAdmin

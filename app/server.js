@@ -19,7 +19,11 @@ const decartConfigError = process.env.DECART_API_KEY?.trim()
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  verify: (req, _res, buffer) => {
+    req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use((req, res, next) => {
   const startedAt = Date.now();
 

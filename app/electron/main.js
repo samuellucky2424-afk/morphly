@@ -1,12 +1,13 @@
 import { spawn, spawnSync } from 'child_process';
 import { once } from 'events';
 
-import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import { createDesktopUpdater } from './updater.js';
+import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +33,8 @@ const VIRTUAL_CAM_PIPE_HEADER_BYTES = 40;
 const WINDOWS_FILETIME_EPOCH_OFFSET = 116444736000000000n;
 const VIRTUAL_CAM_STATS_INTERVAL_MS = 5000;
 const VIRTUAL_CAM_BLACK_SAMPLE_PIXELS = 512;
+
+app.setName('Morphly Desktop');
 
 app.disableHardwareAcceleration();
 
@@ -820,13 +823,18 @@ function createWindow() {
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, 'icon.ico')
     : path.join(__dirname, '../build/icon.ico');
+  const windowIcon = nativeImage.createFromPath(iconPath);
+
+  if (windowIcon.isEmpty()) {
+    console.error(`Morphly window icon could not be loaded: ${iconPath}`);
+  }
 
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
     backgroundColor: '#000000',
     autoHideMenuBar: true,
-    icon: iconPath,
+    icon: windowIcon.isEmpty() ? iconPath : windowIcon,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -836,6 +844,19 @@ function createWindow() {
 
   Menu.setApplicationMenu(null);
   mainWindow.setMenuBarVisibility(false);
+  if (!windowIcon.isEmpty() && process.platform === 'win32') {
+    mainWindow.setIcon(windowIcon);
+  }
+  mainWindow.on('enter-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:full-screen-changed', true);
+    }
+  });
+  mainWindow.on('leave-full-screen', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:full-screen-changed', false);
+    }
+  });
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isMorphlyCamPopup(details)) {
       return {
@@ -954,6 +975,41 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.morphly.app');
 }
 
+function registerCameraHandlers() {
+  ipcMain.handle('camera:validate-selection', async (_event, payload) => {
+    return validateCameraSelectionForTrustedProcess(payload);
+  });
+}
+
+function registerWindowHandlers() {
+  ipcMain.handle('window:get-full-screen', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    return Boolean(window && !window.isDestroyed() && window.isFullScreen());
+  });
+
+  ipcMain.handle('window:toggle-full-screen', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window || window.isDestroyed()) {
+      return false;
+    }
+
+    const nextState = !window.isFullScreen();
+    window.setFullScreen(nextState);
+    return nextState;
+  });
+}
+
+function registerClipboardHandlers() {
+  ipcMain.handle('clipboard:write-text', (_event, value) => {
+    if (typeof value !== 'string' || value.length === 0 || value.length > 4096) {
+      return { success: false, error: 'Clipboard text is invalid.' };
+    }
+
+    clipboard.writeText(value);
+    return { success: clipboard.readText() === value };
+  });
+}
+
 app.whenReady().then(async () => {
   loadEnvironmentVariables();
 
@@ -962,6 +1018,9 @@ app.whenReady().then(async () => {
   }
 
   registerVirtualCameraHandlers();
+  registerCameraHandlers();
+  registerWindowHandlers();
+  registerClipboardHandlers();
 
   desktopUpdater = createDesktopUpdater({
     manifestUrl: resolveUpdateManifestUrl(),

@@ -203,6 +203,12 @@ tbody tr:hover { background: #fbfbfc; }
 .requirement-row strong, .requirement-row small { display: block; }
 .requirement-row strong { font-size: 11px; }
 .requirement-row small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.audit-list { display: grid; padding: 0 18px; }
+.audit-row { padding: 12px 0; border-bottom: 1px solid var(--line); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+.audit-row:last-child { border-bottom: 0; }
+.audit-row strong, .audit-row small { display: block; }
+.audit-row strong { font-size: 11px; }
+.audit-row small { margin-top: 3px; color: var(--muted); font-size: 9px; }
 .locked-plan { min-height: 260px; display: grid; place-items: center; align-content: center; gap: 8px; text-align: center; }
 .locked-plan p { max-width: 330px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .locked-plan button { margin-top: 8px; min-height: 36px; padding: 0 13px; border: 1px solid var(--line); border-radius: 8px; }
@@ -283,4 +289,17 @@ form input { min-height: 38px; }
   .permission-banner .status-pill { grid-column: 1 / -1; justify-self: start; }
   .detail-grid, .form-row { grid-template-columns: 1fr; }
   .drawer-content { padding: 14px; }
+}
+.referral-note {
+  color: var(--muted);
+}
+
+#referralTableBody td > strong,
+#referralTableBody td > small {
+  display: block;
+}
+
+#referralTableBody td > small {
+  margin-top: 4px;
+  color: var(--muted);
 }

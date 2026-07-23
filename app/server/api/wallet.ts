@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
+import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -8,6 +9,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
   if (!supabaseAdmin) {
     return res.status(200).json({
       balance: 0,
@@ -17,16 +19,21 @@ export default async function handler(req, res) {
     });
   }
   
-  const userId = req.query.userId || req.query.id;
-  if (!userId) return res.status(400).json({ error: 'User ID is required' });
-
-  await logRequestEvent('wallet.request', {
-    method: req.method,
-    path: '/api/wallet',
-    userId,
-  });
-
   try {
+    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    if (authResult.error) return res.status(authResult.status).json({ error: authResult.error });
+    const requestedUserId = req.query.userId || req.query.id;
+    const userId = authResult.user.id;
+    if (requestedUserId && requestedUserId !== userId) {
+      return res.status(403).json({ error: 'User mismatch' });
+    }
+
+    await logRequestEvent('wallet.request', {
+      method: req.method,
+      path: '/api/wallet',
+      userId,
+    });
+
     let { data: wallet } = await supabaseAdmin.from('wallets').select('balance, credits').eq('user_id', userId).single();
     let { data: txs } = await supabaseAdmin.from('transactions').select('*').eq('user_id', userId).order('created_at', { ascending: false }).limit(50);
     
@@ -46,9 +53,7 @@ export default async function handler(req, res) {
       transactions: mappedTxs
     });
   } catch (error) {
-    await logErrorEvent('wallet.exception', error, {
-      userId,
-    });
+    await logErrorEvent('wallet.exception', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

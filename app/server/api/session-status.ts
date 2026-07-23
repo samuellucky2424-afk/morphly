@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
+import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
 
@@ -20,20 +21,26 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
-
-  const userId = req.query.userId || req.query.id;
-  if (!userId) return res.status(400).json({ error: 'User ID is required' });
-
-  await logRequestEvent('session-status.request', {
-    method: req.method,
-    path: '/api/session-status',
-    userId,
-  });
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     if (!supabaseAdmin) {
       return res.status(503).json({ error: supabaseAdminConfigError || 'Supabase admin is not configured' });
     }
+
+    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    if (authResult.error) return res.status(authResult.status).json({ error: authResult.error });
+    const requestedUserId = req.query.userId || req.query.id;
+    const userId = authResult.user.id;
+    if (requestedUserId && requestedUserId !== userId) {
+      return res.status(403).json({ error: 'User mismatch' });
+    }
+
+    await logRequestEvent('session-status.request', {
+      method: req.method,
+      path: '/api/session-status',
+      userId,
+    });
 
     const [walletResult, activeSessionResult] = await Promise.all([
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
@@ -82,9 +89,7 @@ export default async function handler(req, res) {
     });
   } catch (error) {
     console.error('session-status unexpected error:', error);
-    await logErrorEvent('session-status.exception', error, {
-      userId,
-    });
+    await logErrorEvent('session-status.exception', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

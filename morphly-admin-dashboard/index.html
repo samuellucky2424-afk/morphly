@@ -36,6 +36,9 @@
         <button class="nav-item" type="button" data-view="users">
           <span class="nav-icon">◎</span><span>Users</span><span class="nav-count" id="sidebarUserCount">0</span>
         </button>
+        <button class="nav-item" type="button" data-view="referrals">
+          <span class="nav-icon">+</span><span>Referrals</span><span class="nav-count" id="sidebarReferralCount">0</span>
+        </button>
         <button class="nav-item" type="button" data-view="transactions">
           <span class="nav-icon">₦</span><span>Transactions</span>
         </button>
@@ -121,6 +124,34 @@
               </table>
             </div>
             <div class="table-footer"><span id="userTableSummary">Showing 0 users</span><div class="pagination"><button type="button" disabled>Previous</button><button class="active" type="button">1</button><button type="button" disabled>Next</button></div></div>
+          </article>
+        </section>
+
+        <section class="view" id="referralsView" data-view-panel="referrals">
+          <div class="metric-grid compact" id="referralMetrics"></div>
+          <article class="panel">
+            <div class="panel-head">
+              <div><p class="eyebrow">Referral program</p><h2>Registrations and rewards</h2></div>
+              <select id="referralStatusFilter" aria-label="Filter referral status">
+                <option value="all">All</option>
+                <option value="registered">Registered</option>
+                <option value="waiting">Waiting for purchase</option>
+                <option value="rewarded">Rewarded</option>
+                <option value="disqualified">Disqualified</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Code / referrer</th><th>Referred user</th><th>Registered</th><th>Status</th><th>First qualifying purchase</th><th>Reward transaction</th><th>Flags</th></tr></thead>
+                <tbody id="referralTableBody"></tbody>
+              </table>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div><p class="eyebrow">Referral security</p><h2>Referral audit log</h2></div>
+            </div>
+            <div class="audit-list" id="referralAuditList"></div>
           </article>
         </section>
 

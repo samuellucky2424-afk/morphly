@@ -5,11 +5,15 @@ contextBridge.exposeInMainWorld('electron', {
     const validChannels = [
       'virtual-camera:start',
       'virtual-camera:stop',
+      'camera:validate-selection',
       'get-update-state',
       'check-for-updates',
       'download-update',
       'install-update',
-      'open-release-page'
+      'open-release-page',
+      'window:get-full-screen',
+      'window:toggle-full-screen',
+      'clipboard:write-text'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);
@@ -17,7 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
     return Promise.reject(new Error(`Invalid channel: `));
   },
   on: (channel, listener) => {
-    const validChannels = ['desktop-updater:state'];
+    const validChannels = ['desktop-updater:state', 'window:full-screen-changed'];
     if (!validChannels.includes(channel) || typeof listener !== 'function') {
       return () => {};
     }

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Video, Loader2, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,17 +7,37 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 import { supabase } from '@/lib/supabase';
+import { validateReferralCode } from '@/lib/account';
+import {
+  getReferralCodeFormatError,
+  normalizeReferralCode,
+} from '@/utils/referralCode';
 
 const PASSWORD_RESET_URL = 'https://morphly-alpha.vercel.app/reset-password';
 
 function Login() {
+  const location = useLocation();
   const { login, register, loading, error, clearError } = useAuth();
-  const [isLogin, setIsLogin] = useState(true);
+  const [isLogin, setIsLogin] = useState(() => location.pathname !== '/signup');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [referralCode, setReferralCode] = useState('');
+  const [referralError, setReferralError] = useState<string | null>(null);
+  const [referralValid, setReferralValid] = useState(false);
+  const [validatingReferral, setValidatingReferral] = useState(false);
+
+  useEffect(() => {
+    const signupMode = location.pathname === '/signup';
+    setIsLogin(!signupMode);
+
+    if (signupMode) {
+      const queryCode = normalizeReferralCode(new URLSearchParams(location.search).get('ref') || '');
+      if (queryCode) setReferralCode(queryCode);
+    }
+  }, [location.pathname, location.search]);
 
   const handleForgotPassword = async () => {
     const normalizedEmail = email.trim().toLowerCase();
@@ -44,6 +64,39 @@ function Login() {
     }
   }, [error, clearError]);
 
+  const checkReferralCode = async (): Promise<boolean> => {
+    const normalized = normalizeReferralCode(referralCode);
+    setReferralCode(normalized);
+    setReferralValid(false);
+
+    if (!normalized) {
+      setReferralError(null);
+      return true;
+    }
+
+    const formatError = getReferralCodeFormatError(normalized);
+    if (formatError) {
+      setReferralError(formatError);
+      return false;
+    }
+
+    setValidatingReferral(true);
+    try {
+      const valid = await validateReferralCode(normalized);
+      setReferralValid(valid);
+      setReferralError(valid ? null : 'This referral code is invalid.');
+      return valid;
+    } catch (validationError) {
+      const message = validationError instanceof Error
+        ? validationError.message
+        : 'Unable to validate the referral code.';
+      setReferralError(message);
+      return false;
+    } finally {
+      setValidatingReferral(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -52,7 +105,8 @@ function Login() {
         await login(email, password);
         toast.success('Welcome back!');
       } else {
-        await register(email, name, password);
+        if (!(await checkReferralCode())) return;
+        await register(email, name, password, referralCode);
         toast.success('Account created successfully!');
       }
     } catch (_err) {
@@ -61,7 +115,9 @@ function Login() {
   };
 
   const toggleMode = () => {
-    setIsLogin(!isLogin);
+    setIsLogin((current) => !current);
+    setReferralError(null);
+    setReferralValid(false);
     clearError();
   };
 
@@ -84,18 +140,65 @@ function Login() {
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
               {!isLogin && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-[#a1a1aa]">Full Name</label>
-                  <Input
-                    type="text"
-                    placeholder="Jane Doe"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="h-11 bg-[#27272a] border-[#3f3f46] text-white placeholder:text-[#71717a]"
-                    disabled={loading}
-                    required={!isLogin}
-                  />
-                </div>
+                <>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-[#a1a1aa]">Full Name</label>
+                    <Input
+                      type="text"
+                      placeholder="Jane Doe"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="h-11 bg-[#27272a] border-[#3f3f46] text-white placeholder:text-[#71717a]"
+                      disabled={loading}
+                      required={!isLogin}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor="referral-code" className="text-sm font-medium text-[#a1a1aa]">
+                      Referral code (optional)
+                    </label>
+                    <Input
+                      id="referral-code"
+                      type="text"
+                      inputMode="text"
+                      autoCapitalize="characters"
+                      autoComplete="off"
+                      maxLength={12}
+                      placeholder="Enter referral code"
+                      value={referralCode}
+                      onChange={(event) => {
+                        setReferralCode(normalizeReferralCode(event.target.value));
+                        setReferralError(null);
+                        setReferralValid(false);
+                      }}
+                      onBlur={() => void checkReferralCode()}
+                      aria-invalid={Boolean(referralError)}
+                      aria-describedby="referral-code-help referral-code-status"
+                      className={`h-11 bg-[#27272a] text-white placeholder:text-[#71717a] ${
+                        referralError
+                          ? 'border-red-500 focus-visible:ring-red-500/30'
+                          : referralValid
+                            ? 'border-emerald-500 focus-visible:ring-emerald-500/30'
+                            : 'border-[#3f3f46]'
+                      }`}
+                      disabled={loading || validatingReferral}
+                    />
+                    <p id="referral-code-help" className="text-xs leading-5 text-[#71717a]">
+                      Have a referral code? Enter it here. Your referrer receives 200 credits after
+                      your first successful credit purchase.
+                    </p>
+                    <p
+                      id="referral-code-status"
+                      className={`min-h-4 text-xs ${
+                        referralError ? 'text-red-400' : referralValid ? 'text-emerald-400' : 'text-[#71717a]'
+                      }`}
+                    >
+                      {validatingReferral
+                        ? 'Checking referral code...'
+                        : referralError || (referralValid ? 'Referral code accepted.' : '')}
+                    </p>
+                  </div>
+                </>
               )}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-[#a1a1aa]">Email</label>
@@ -145,7 +248,7 @@ function Login() {
               </div>
               <Button
                 type="submit"
-                disabled={loading}
+                disabled={loading || validatingReferral}
                 className="w-full h-11 bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium disabled:opacity-50"
               >
                 {loading ? (

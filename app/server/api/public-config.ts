@@ -10,7 +10,21 @@ function resolveFlutterwavePublicKey() {
 
   for (const key of candidateKeys) {
     if (typeof key === 'string' && key.trim().length > 0) {
-      return key.trim();
+      const normalizedKey = key.trim();
+      const configuredMode = String(
+        process.env.FLUTTERWAVE_MODE
+          || process.env.PAYMENT_ENVIRONMENT
+          || '',
+      ).trim().toLowerCase();
+      const productionMode = configuredMode
+        ? ['live', 'production', 'prod'].includes(configuredMode)
+        : process.env.NODE_ENV === 'production';
+
+      if (productionMode && /(?:^|_)TEST(?:-|_)/i.test(normalizedKey)) {
+        return '';
+      }
+
+      return normalizedKey;
     }
   }
 

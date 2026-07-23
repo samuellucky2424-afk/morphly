@@ -16,6 +16,8 @@ function getHeader(req, name) {
 }
 
 async function readRawBody(req) {
+  if (Buffer.isBuffer(req.rawBody)) return req.rawBody.toString('utf8');
+  if (typeof req.rawBody === 'string') return req.rawBody;
   if (typeof req.body === 'string') return req.body;
   if (Buffer.isBuffer(req.body)) return req.body.toString('utf8');
   if (req.body && typeof req.body === 'object') return JSON.stringify(req.body);

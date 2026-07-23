@@ -5,6 +5,8 @@ import { apiFetch } from '@/lib/api-client';
 import { supabase } from '@/lib/supabase';
 import { trackLogin, trackSignupCompleted } from '@/lib/telemetry-client';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
+import { normalizeReferralCode } from '@/utils/referralCode';
+import { validateReferralCode } from '@/lib/account';
 
 // We map Supabase's user object properties to what our frontend expects where possible
 interface User {
@@ -25,7 +27,7 @@ interface AuthContextType {
   defaultRoute: string;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
-  register: (email: string, name: string, password: string) => Promise<void>;
+  register: (email: string, name: string, password: string, referralCode?: string) => Promise<void>;
   loading: boolean;
   error: string | null;
   clearError: () => void;
@@ -188,7 +190,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const register = async (email: string, name: string, password: string) => {
+  const register = async (email: string, name: string, password: string, referralCode?: string) => {
     setLoading(true);
     setError(null);
     
@@ -197,18 +199,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error('Name must be at least 2 characters');
       }
 
+      const normalizedReferralCode = normalizeReferralCode(referralCode || '');
+      if (normalizedReferralCode) {
+        const referralIsValid = await validateReferralCode(normalizedReferralCode);
+        if (!referralIsValid) {
+          throw new Error('This referral code is invalid.');
+        }
+      }
+
       const { error: authError } = await supabase.auth.signUp({
-        email,
+        email: email.trim().toLowerCase(),
         password,
         options: {
           data: {
             name: name.trim(),
             app: 'morphly',
+            ...(normalizedReferralCode ? { referral_code: normalizedReferralCode } : {}),
           }
         }
       });
 
       if (authError) {
+        if (/INVALID_REFERRAL_CODE/i.test(authError.message || '')) {
+          throw new Error('This referral code is invalid.');
+        }
         throw authError;
       }
 

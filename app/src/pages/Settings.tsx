@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -21,8 +22,14 @@ import {
   formatUpdatePackageType,
   type DesktopUpdateState
 } from '@/lib/desktop-updater';
+import {
+  getReferralSummary,
+  updateOnboardingState,
+  type ReferralSummary,
+} from '@/lib/account';
 
 function Settings() {
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const [name, setName] = useState(user?.name || '');
   const [email, setEmail] = useState(user?.email || '');
@@ -65,6 +72,10 @@ function Settings() {
     lastInstalledAt: null
   }));
   const [isGuideModalOpen, setIsGuideModalOpen] = useState(false);
+  const [referralSummary, setReferralSummary] = useState<ReferralSummary | null>(null);
+  const [isLoadingReferrals, setIsLoadingReferrals] = useState(true);
+  const [cameraPermissionStatus, setCameraPermissionStatus] = useState('Not checked');
+  const [isRequestingCameraPermission, setIsRequestingCameraPermission] = useState(false);
   const isDesktopUpdatesAvailable = isDesktopUpdaterAvailable();
 
   useEffect(() => {
@@ -89,6 +100,25 @@ function Settings() {
     };
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+
+    void getReferralSummary()
+      .then((summary) => {
+        if (alive) setReferralSummary(summary);
+      })
+      .catch((error) => {
+        console.warn('Unable to load referral program details:', error);
+      })
+      .finally(() => {
+        if (alive) setIsLoadingReferrals(false);
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const formatBytes = (value: number | null | undefined) => {
     if (!value || value <= 0) return '0 B';
 
@@ -100,17 +130,27 @@ function Settings() {
 
   const updateProgressLabel = () => {
     const progress = desktopUpdateState.downloadProgress;
+    if (desktopUpdateState.error) {
+      return 'Update check failed';
+    }
+    if (desktopUpdateState.checkInProgress) {
+      return 'Checking for updates';
+    }
     if (desktopUpdateState.downloadInProgress) {
       const total = progress.totalBytes ? ` / ${formatBytes(progress.totalBytes)}` : '';
-      return `${formatBytes(progress.transferredBytes)}${total}`;
+      return `Downloading update — ${formatBytes(progress.transferredBytes)}${total}`;
     }
 
     if (desktopUpdateState.readyToInstall && desktopUpdateState.downloadedFileName) {
-      return `${desktopUpdateState.downloadedFileName} is ready to install`;
+      return `Restart to install — ${desktopUpdateState.downloadedFileName}`;
+    }
+
+    if (desktopUpdateState.updateAvailable) {
+      return 'Update available';
     }
 
     if (desktopUpdateState.latestVersion && desktopUpdateState.latestVersion === desktopUpdateState.currentVersion) {
-      return 'You are up to date';
+      return 'You are using the latest version';
     }
 
     return 'No download in progress';
@@ -176,6 +216,79 @@ function Settings() {
       toast.error(result.error || 'Failed to start the installer');
     }
   };
+
+  const handleRestartTour = async () => {
+    try {
+      await updateOnboardingState('restart');
+      toast.success('The guided tour will restart on the dashboard.');
+      navigate('/dashboard');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to restart the guided tour.');
+    }
+  };
+
+  const handleCameraPermission = async () => {
+    setIsRequestingCameraPermission(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      stream.getTracks().forEach((track) => track.stop());
+      setCameraPermissionStatus('Camera access allowed');
+      toast.success('Camera permission is enabled.');
+    } catch (error) {
+      const denied = error instanceof DOMException
+        && ['NotAllowedError', 'SecurityError'].includes(error.name);
+      setCameraPermissionStatus(denied ? 'Camera access denied' : 'Camera access unavailable');
+      toast.error(
+        denied
+          ? 'Camera access was denied. Enable it in Windows privacy settings, then try again.'
+          : 'Morphly could not access a camera on this device.',
+      );
+    } finally {
+      setIsRequestingCameraPermission(false);
+    }
+  };
+
+  const copyText = async (value: string, label: string) => {
+    try {
+      if (!value) {
+        throw new Error('There is nothing to copy.');
+      }
+
+      if (window.electron?.isElectron) {
+        const result = await window.electron.invoke('clipboard:write-text', value);
+        if (!result?.success) {
+          throw new Error(result?.error || 'Electron clipboard write failed.');
+        }
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = value;
+        textArea.setAttribute('readonly', '');
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.select();
+        const copied = document.execCommand('copy');
+        textArea.remove();
+        if (!copied) {
+          throw new Error('Browser clipboard write failed.');
+        }
+      }
+
+      toast.success(`${label} copied.`);
+    } catch (error) {
+      console.error(`Unable to copy ${label.toLowerCase()}:`, error);
+      toast.error(`Unable to copy ${label.toLowerCase()}.`);
+    }
+  };
+
+  const referralBaseUrl = String(
+    import.meta.env.VITE_PUBLIC_APP_URL || 'https://morphly-alpha.vercel.app',
+  ).replace(/\/+$/, '');
+  const referralLink = referralSummary?.referralCode
+    ? `${referralBaseUrl}/#/signup?ref=${encodeURIComponent(referralSummary.referralCode)}`
+    : '';
 
 
 
@@ -286,6 +399,136 @@ function Settings() {
 
         <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
           <CardHeader className="border-b border-[#1f1f23]">
+            <CardTitle className="text-lg font-semibold tracking-tight text-white">Guided Tour &amp; Camera Permissions</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">
+              Reopen the dashboard walkthrough or confirm that Morphly can see your physical camera.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4 p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <Label className="text-sm font-medium text-white">Restart Guided Tour</Label>
+                <p className="mt-1 text-xs text-[#71717a]">
+                  Restarting changes only your guide state. Credits, camera settings and purchases are untouched.
+                </p>
+              </div>
+              <Button
+                data-tour="restart-tour"
+                onClick={() => void handleRestartTour()}
+                className="bg-amber-400 font-semibold text-black hover:bg-amber-300"
+              >
+                Restart Guided Tour
+              </Button>
+            </div>
+            <Separator className="bg-[#27272a]" />
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <Label className="text-sm font-medium text-white">Camera Permissions</Label>
+                <p className="mt-1 text-xs text-[#71717a]">{cameraPermissionStatus}</p>
+              </div>
+              <Button
+                onClick={() => void handleCameraPermission()}
+                disabled={isRequestingCameraPermission}
+                variant="outline"
+                className="border-[#3f3f46] text-white hover:bg-[#27272a]"
+              >
+                {isRequestingCameraPermission ? 'Checking...' : 'Check Camera Access'}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
+          <CardHeader className="border-b border-[#1f1f23]">
+            <CardTitle className="text-lg font-semibold tracking-tight text-white">Referral Program</CardTitle>
+            <CardDescription className="text-xs text-[#71717a]">
+              Invite people to Morphly. You receive 200 credits after each referred user completes
+              their first successful credit purchase.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5 p-6">
+            {isLoadingReferrals ? (
+              <p className="text-sm text-[#a1a1aa]">Loading your referral details...</p>
+            ) : referralSummary?.referralCode ? (
+              <>
+                <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-amber-300">Your referral code</p>
+                  <p className="mt-2 font-mono text-2xl font-bold tracking-[0.2em] text-white">
+                    {referralSummary.referralCode}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => void copyText(referralSummary.referralCode, 'Referral code')}
+                      className="bg-amber-400 font-semibold text-black hover:bg-amber-300"
+                    >
+                      Copy Code
+                    </Button>
+                    <Button
+                      onClick={() => void copyText(referralLink, 'Referral link')}
+                      variant="outline"
+                      className="border-[#3f3f46] text-white hover:bg-[#27272a]"
+                    >
+                      Copy Referral Link
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
+                    <p className="text-xs text-[#71717a]">People referred</p>
+                    <p className="mt-1 text-2xl font-semibold text-white">{referralSummary.referredCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
+                    <p className="text-xs text-[#71717a]">Qualifying purchases</p>
+                    <p className="mt-1 text-2xl font-semibold text-white">{referralSummary.qualifyingPurchaseCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
+                    <p className="text-xs text-[#71717a]">Credits earned</p>
+                    <p className="mt-1 text-2xl font-semibold text-white">
+                      {referralSummary.totalReferralCreditsEarned.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+                {referralSummary.referrals.length === 0 ? (
+                  <p className="text-sm text-[#71717a]">You have not referred anyone yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {referralSummary.referrals.map((referral) => (
+                      <div
+                        key={referral.id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#27272a] bg-[#18181b] px-4 py-3"
+                      >
+                        <div>
+                          <p className="text-sm font-medium text-white">
+                            {referral.status === 'rewarded'
+                              ? 'Reward earned — 200 credits added'
+                              : referral.status === 'registered'
+                                ? 'Signed up — waiting for first purchase'
+                                : referral.status === 'qualified'
+                                  ? 'First purchase confirmed'
+                                  : 'Referral disqualified'}
+                          </p>
+                          <p className="mt-1 text-xs text-[#71717a]">
+                            Registered {new Date(referral.createdAt).toLocaleDateString()}
+                          </p>
+                        </div>
+                        {referral.refundWarning && (
+                          <Badge variant="destructive">Qualifying purchase refunded</Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-red-300">
+                Referral details are temporarily unavailable. Please try again later.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
+          <CardHeader className="border-b border-[#1f1f23]">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <CardTitle className="text-lg font-semibold tracking-tight text-white">Software Updates</CardTitle>
@@ -305,7 +548,7 @@ function Settings() {
           <CardContent className="space-y-5 p-6">
             <div className="grid gap-4 md:grid-cols-2">
               <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-[#71717a]">Current Version</p>
+                <p className="text-xs uppercase tracking-[0.24em] text-[#71717a]">Application Version</p>
                 <p className="mt-2 text-2xl font-semibold text-white">{desktopUpdateState.currentVersion}</p>
                 <p className="mt-2 text-xs text-[#a1a1aa]">Installed on this device right now.</p>
               </div>

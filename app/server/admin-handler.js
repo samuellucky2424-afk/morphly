@@ -7,6 +7,8 @@ import {
   getAdminOverview,
   listAdminUsers,
   listAdminTransactions,
+  listAdminReferrals,
+  disqualifyAdminReferral,
   listSystemLogs,
   setUserStatus,
   listCreditPackages,
@@ -55,6 +57,12 @@ const ADMIN_ROUTE_CONFIG = {
     event: 'admin-audit-log',
     handler: handleAdminAuditLog,
   },
+  referrals: {
+    path: '/api/admin-referrals',
+    methods: ['GET', 'POST'],
+    event: 'admin-referrals',
+    handler: handleAdminReferrals,
+  },
 };
 
 function normalizeRouteName(value) {
@@ -70,7 +78,34 @@ function getReportOptions(req) {
     days: req.query?.days,
     platform: req.query?.platform,
     source: req.query?.source,
+    status: req.query?.status,
   };
+}
+
+async function handleAdminReferrals(req, res, routeConfig) {
+  await logRequestEvent(`${routeConfig.event}.request`, {
+    method: req.method,
+    path: routeConfig.path,
+  });
+
+  try {
+    const adminContext = await requireAdminContext(req, res, supabaseAdmin);
+    if (!adminContext) return;
+
+    if (req.method === 'GET') {
+      return res.json(await listAdminReferrals(supabaseAdmin, getReportOptions(req)));
+    }
+
+    const result = await disqualifyAdminReferral(supabaseAdmin, {
+      referralId: req.body?.referralId,
+      reason: req.body?.reason,
+      adminUserId: adminContext.user.id,
+    });
+    return res.json(result);
+  } catch (error) {
+    await logErrorEvent(`${routeConfig.event}.exception`, error);
+    return res.status(500).json({ error: 'Failed to load referral administration data' });
+  }
 }
 
 function setResponseHeaders(res, methods) {

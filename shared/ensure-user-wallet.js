@@ -76,6 +76,18 @@ async function insertMissingWallet(supabaseAdmin, userId) {
 export async function ensureUserWallet(supabaseAdmin, user) {
   await ensurePublicUser(supabaseAdmin, user);
 
+  const referralCodeResult = await supabaseAdmin.rpc('morphly_ensure_user_referral_code', {
+    p_user: user.id,
+  });
+  if (
+    referralCodeResult.error
+    && !/morphly_ensure_user_referral_code|schema cache|does not exist/i.test(
+      String(referralCodeResult.error.message || referralCodeResult.error.details || ''),
+    )
+  ) {
+    throw referralCodeResult.error;
+  }
+
   const existingWallet = await getExistingWallet(supabaseAdmin, user.id);
   if (existingWallet) {
     return { walletCreated: false };

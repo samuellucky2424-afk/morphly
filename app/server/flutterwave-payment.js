@@ -3,7 +3,47 @@ import { supabaseAdmin } from './supabase-admin.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
+export function isFlutterwaveTestKey(value) {
+  return /(?:^|_)TEST(?:-|_)/i.test(String(value || '').trim());
+}
+
+export function isProductionPaymentEnvironment() {
+  const configuredMode = String(
+    process.env.FLUTTERWAVE_MODE
+      || process.env.PAYMENT_ENVIRONMENT
+      || '',
+  ).trim().toLowerCase();
+
+  if (configuredMode) {
+    return ['live', 'production', 'prod'].includes(configuredMode);
+  }
+
+  return process.env.NODE_ENV === 'production';
+}
+
+export function validateFlutterwaveEnvironment(secretKey) {
+  if (isProductionPaymentEnvironment() && isFlutterwaveTestKey(secretKey)) {
+    return {
+      ok: false,
+      message: 'Test-mode Flutterwave transactions are disabled in production',
+    };
+  }
+
+  return { ok: true };
+}
+
 export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
+  const environmentValidation = validateFlutterwaveEnvironment(secretKey);
+  if (!environmentValidation.ok) {
+    return {
+      response: null,
+      data: { status: 'error', message: environmentValidation.message },
+      transaction: null,
+      isVerified: false,
+      environmentRejected: true,
+    };
+  }
+
   const response = await fetch(`https://api.flutterwave.com/v3/transactions/${encodeURIComponent(String(transactionId))}/verify`, {
     method: 'GET',
     headers: {

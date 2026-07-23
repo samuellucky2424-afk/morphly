@@ -14,6 +14,7 @@
     { "source": "/reset-password", "destination": "/reset-password/index.html" },
     { "source": "/api/admin-me", "destination": "/api/admin?name=me" },
     { "source": "/api/admin-overview", "destination": "/api/admin?name=overview" },
+    { "source": "/api/admin-referrals", "destination": "/api/admin?name=referrals" },
     { "source": "/api/admin-users", "destination": "/api/admin?name=users" },
     { "source": "/api/admin-credit-packages", "destination": "/api/admin?name=credit-packages" },
     { "source": "/api/admin-audit-log", "destination": "/api/admin?name=audit-log" },

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Coins,
   DollarSign,
+  Gift,
   Loader2,
   LogOut,
   RefreshCcw,
@@ -67,6 +68,60 @@ interface AuditLogEntry {
   channel?: string;
   event?: string;
   [key: string]: unknown;
+}
+
+interface AdminReferralRecord {
+  id: string;
+  referralCodeUsed: string;
+  referrerEmail: string;
+  referrerCode: string | null;
+  referredEmail: string;
+  status: 'registered' | 'qualified' | 'rewarded' | 'disqualified';
+  registeredAt: string | null;
+  rewardedAt: string | null;
+  disqualificationReason: string | null;
+  refundWarning: boolean;
+  suspicious: boolean;
+  suspiciousReason: string | null;
+  firstQualifyingPurchase: {
+    id: string;
+    reference: string | null;
+    package: string | null;
+    status: string | null;
+    refundStatus: string;
+    verifiedAt: string | null;
+  } | null;
+  rewardTransaction: {
+    id: string;
+    reference: string | null;
+    credits: number;
+    status: string | null;
+    createdAt: string | null;
+  } | null;
+}
+
+interface AdminReferralData {
+  referrals: AdminReferralRecord[];
+  totals: {
+    registrations: number;
+    waitingForPurchase: number;
+    rewarded: number;
+    disqualified: number;
+    referralCreditsIssued: number;
+    signupBonusesIssued: number;
+    signupBonusCreditsIssued: number;
+    suspicious: number;
+  };
+  audit: Array<{
+    id: number;
+    action: string;
+    referral_id: string | null;
+    referrer_user_id: string | null;
+    referred_user_id: string | null;
+    actor_user_id: string | null;
+    metadata: Record<string, unknown>;
+    created_at: string | null;
+  }>;
 }
 
 const ngnFormatter = new Intl.NumberFormat('en-NG', {
@@ -156,6 +211,21 @@ function AdminDashboard() {
     activeSessions: 0,
   });
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
+  const [referralData, setReferralData] = useState<AdminReferralData>({
+    referrals: [],
+    totals: {
+      registrations: 0,
+      waitingForPurchase: 0,
+      rewarded: 0,
+      disqualified: 0,
+      referralCreditsIssued: 0,
+      signupBonusesIssued: 0,
+      signupBonusCreditsIssued: 0,
+      suspicious: 0,
+    },
+    audit: [],
+  });
+  const [referralFilter, setReferralFilter] = useState('all');
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('users');
@@ -166,6 +236,7 @@ function AdminDashboard() {
   const [creditsToAdd, setCreditsToAdd] = useState('');
   const [isSubmittingCredit, setIsSubmittingCredit] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [disqualifyingReferralId, setDisqualifyingReferralId] = useState<string | null>(null);
 
   const loadDashboardData = async (options?: { silent?: boolean }) => {
     if (options?.silent) {
@@ -175,23 +246,26 @@ function AdminDashboard() {
     }
 
     try {
-      const [usersResult, packagesResult, overviewResult, auditResult] = await Promise.allSettled([
+      const [usersResult, packagesResult, overviewResult, auditResult, referralsResult] = await Promise.allSettled([
         adminRequest<{ users: AdminUserRecord[] }>('/admin-users'),
         adminRequest<{ packages: CreditPackage[] }>('/admin-credit-packages'),
         adminRequest<AdminOverview>('/admin-overview'),
         adminRequest<{ entries: AuditLogEntry[] }>('/admin-audit-log?limit=50'),
+        adminRequest<AdminReferralData>('/admin-referrals'),
       ]);
 
       if (usersResult.status === 'fulfilled') setUsers(usersResult.value.users || []);
       if (packagesResult.status === 'fulfilled') setPackages(packagesResult.value.packages || []);
       if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
       if (auditResult.status === 'fulfilled') setAuditEntries(auditResult.value.entries || []);
+      if (referralsResult.status === 'fulfilled') setReferralData(referralsResult.value);
 
       const failedSections = [
         usersResult.status === 'rejected' ? 'users' : null,
         packagesResult.status === 'rejected' ? 'packages' : null,
         overviewResult.status === 'rejected' ? 'overview' : null,
         auditResult.status === 'rejected' ? 'audit log' : null,
+        referralsResult.status === 'rejected' ? 'referrals' : null,
       ].filter((section): section is string => Boolean(section));
 
       if (failedSections.length > 0) {
@@ -228,6 +302,19 @@ function AdminDashboard() {
     () => packages.filter((pkg) => pkg.isActive).length,
     [packages],
   );
+
+  const filteredReferrals = useMemo(() => {
+    if (referralFilter === 'all') {
+      return referralData.referrals;
+    }
+    if (referralFilter === 'registered') {
+      return referralData.referrals.filter((entry) => entry.status !== 'disqualified');
+    }
+    if (referralFilter === 'waiting') {
+      return referralData.referrals.filter((entry) => entry.status === 'registered');
+    }
+    return referralData.referrals.filter((entry) => entry.status === referralFilter);
+  }, [referralData.referrals, referralFilter]);
 
   const overviewCards = [
     {
@@ -369,6 +456,35 @@ function AdminDashboard() {
     }
   };
 
+  const handleDisqualifyReferral = async (entry: AdminReferralRecord) => {
+    const reason = window.prompt(
+      `Why should the referral for ${entry.referredEmail} be disqualified?`,
+    );
+    if (reason === null) return;
+    if (reason.trim().length < 3) {
+      toast.error('Enter a disqualification reason of at least 3 characters.');
+      return;
+    }
+
+    setDisqualifyingReferralId(entry.id);
+    try {
+      await adminRequest('/admin-referrals', {
+        method: 'POST',
+        body: JSON.stringify({
+          referralId: entry.id,
+          reason: reason.trim(),
+        }),
+      });
+      toast.success('Referral disqualified and recorded in the audit log.');
+      await loadDashboardData({ silent: true });
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : 'Failed to disqualify referral');
+    } finally {
+      setDisqualifyingReferralId(null);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-6">
@@ -478,12 +594,18 @@ function AdminDashboard() {
                   <p className="mt-2 text-sm text-[#64748b]">Users, pricing, and backend audit trails aligned in one admin surface.</p>
                 </div>
 
-                <TabsList className="h-auto rounded-full bg-[#f1f5f9] p-1">
+                <TabsList className="h-auto flex-wrap rounded-2xl bg-[#f1f5f9] p-1">
                   <TabsTrigger
                     value="users"
                     className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
                   >
                     Users
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="referrals"
+                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                  >
+                    Referrals
                   </TabsTrigger>
                   <TabsTrigger
                     value="pricing"
@@ -620,6 +742,174 @@ function AdminDashboard() {
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="referrals" className="m-0 p-6 sm:p-8">
+              <div className="space-y-5">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    ['Registrations', referralData.totals.registrations],
+                    ['Waiting for purchase', referralData.totals.waitingForPurchase],
+                    ['Referral credits issued', referralData.totals.referralCreditsIssued],
+                    ['Signup bonuses issued', referralData.totals.signupBonusesIssued],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-2xl border border-[#e5e7eb] bg-[#fcfcfd] p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">{label}</p>
+                      <p className="mt-2 text-2xl font-semibold text-[#0f172a]">{Number(value).toLocaleString()}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
+                  <div className="flex flex-col gap-4 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h4 className="flex items-center gap-2 text-lg font-semibold text-[#0f172a]">
+                        <Gift className="h-5 w-5 text-[#d97706]" />
+                        Referral administration
+                      </h4>
+                      <p className="mt-1 text-sm text-[#64748b]">
+                        Inspect referral codes, qualifying purchases, rewards, refunds and suspicious records.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        ['all', 'All'],
+                        ['registered', 'Registered'],
+                        ['waiting', 'Waiting for purchase'],
+                        ['rewarded', 'Rewarded'],
+                        ['disqualified', 'Disqualified'],
+                      ].map(([value, label]) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          variant="outline"
+                          onClick={() => setReferralFilter(value)}
+                          className={`h-9 rounded-full px-3 text-xs ${
+                            referralFilter === value
+                              ? 'border-[#f59e0b] bg-[#fffbeb] text-[#92400e]'
+                              : 'border-[#dbe4ff] bg-white text-[#475569]'
+                          }`}
+                        >
+                          {label}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Table className="min-w-[1280px]">
+                    <TableHeader>
+                      <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Code / Referrer</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Referred user</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Registered</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Status</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">First qualifying purchase</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Reward transaction</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Flags</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredReferrals.length === 0 ? (
+                        <TableRow className="border-[#e5e7eb] hover:bg-transparent">
+                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                            No referral records match this filter.
+                          </TableCell>
+                        </TableRow>
+                      ) : filteredReferrals.map((entry) => (
+                        <TableRow key={entry.id} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                          <TableCell className="px-5 py-4 whitespace-normal">
+                            <p className="font-mono text-sm font-semibold text-[#0f172a]">{entry.referralCodeUsed}</p>
+                            <p className="mt-1 text-xs text-[#64748b]">{entry.referrerEmail}</p>
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#0f172a]">{entry.referredEmail}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDateTime(entry.registeredAt)}</TableCell>
+                          <TableCell className="px-5 py-4">
+                            <Badge
+                              variant="outline"
+                              className={`rounded-full ${
+                                entry.status === 'rewarded'
+                                  ? 'border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]'
+                                  : entry.status === 'disqualified'
+                                    ? 'border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]'
+                                    : 'border-[#fde68a] bg-[#fffbeb] text-[#92400e]'
+                              }`}
+                            >
+                              {entry.status}
+                            </Badge>
+                            {entry.disqualificationReason && (
+                              <p className="mt-2 max-w-44 text-xs text-[#b91c1c]">
+                                {entry.disqualificationReason}
+                              </p>
+                            )}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-[#475569]">
+                            {entry.firstQualifyingPurchase ? (
+                              <>
+                                <p className="font-medium text-[#0f172a]">{entry.firstQualifyingPurchase.reference || entry.firstQualifyingPurchase.id}</p>
+                                <p className="mt-1 text-xs text-[#64748b]">{entry.firstQualifyingPurchase.package || 'Credit package'}</p>
+                              </>
+                            ) : 'Waiting for first purchase'}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-[#475569]">
+                            {entry.rewardTransaction ? (
+                              <>
+                                <p className="font-medium text-[#0f172a]">{entry.rewardTransaction.reference}</p>
+                                <p className="mt-1 text-xs text-[#64748b]">{entry.rewardTransaction.credits} credits · {formatDateTime(entry.rewardedAt)}</p>
+                              </>
+                            ) : 'Not rewarded'}
+                          </TableCell>
+                          <TableCell className="px-5 py-4">
+                            <div className="flex flex-wrap gap-2">
+                              {entry.refundWarning && <Badge variant="destructive">Refund warning</Badge>}
+                              {entry.suspicious && <Badge variant="destructive">Suspicious</Badge>}
+                              {!entry.refundWarning && !entry.suspicious && (
+                                <span className="text-sm text-[#64748b]">None</span>
+                              )}
+                              {['registered', 'qualified'].includes(entry.status) && (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  disabled={disqualifyingReferralId === entry.id}
+                                  onClick={() => void handleDisqualifyReferral(entry)}
+                                  className="h-7 rounded-full border-[#fecaca] px-2 text-[11px] text-[#b91c1c] hover:bg-[#fff1f2]"
+                                >
+                                  {disqualifyingReferralId === entry.id ? 'Saving...' : 'Disqualify'}
+                                </Button>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
+                  <div className="border-b border-[#e5e7eb] px-5 py-5">
+                    <h4 className="text-lg font-semibold text-[#0f172a]">Referral audit log</h4>
+                    <p className="mt-1 text-sm text-[#64748b]">
+                      Signup bonuses, attachments, qualifications, rewards, disqualifications and refund warnings.
+                    </p>
+                  </div>
+                  <div className="divide-y divide-[#e5e7eb]">
+                    {referralData.audit.length === 0 ? (
+                      <p className="px-5 py-10 text-center text-sm text-[#64748b]">
+                        No referral audit events have been recorded.
+                      </p>
+                    ) : referralData.audit.slice(0, 50).map((entry) => (
+                      <div key={entry.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-[#0f172a]">{entry.action}</p>
+                          <p className="mt-1 text-xs text-[#64748b]">
+                            Referred user: {entry.referred_user_id || 'Not applicable'}
+                          </p>
+                        </div>
+                        <p className="text-xs text-[#64748b]">{formatDateTime(entry.created_at)}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             </TabsContent>
 
