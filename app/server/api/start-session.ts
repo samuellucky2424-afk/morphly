@@ -5,7 +5,7 @@ import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
 const DECART_API_BASE_URL = 'https://api.decart.ai';
-const DECART_REALTIME_MODEL = 'lucy-2.1';
+const DECART_REALTIME_MODEL = 'lucy-2.5';
 const CLIENT_TOKEN_TTL_SECONDS = 300;
 
 function getDecartApiKey() {
