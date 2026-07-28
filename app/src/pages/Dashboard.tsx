@@ -19,6 +19,7 @@ import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
 import {
+  getInstallationId,
   trackConnectionStarted,
   trackConnectionFailed,
   trackFirstFrameReceived,
@@ -172,6 +173,7 @@ const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
 const AI_CONNECT_TIMEOUT_MS = 45000;
 const AI_CONNECT_MAX_ATTEMPTS = 3;
+const MAX_GENERATION_TICK_DELTA_SECONDS = 60;
 const DECART_REALTIME_MODEL = 'lucy-2.5';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
@@ -656,7 +658,13 @@ function Dashboard() {
     }
 
     if (secondsDelta > 0) {
-      pendingBillableSecondsRef.current += Math.min(secondsDelta, 10);
+      // Decart reports cumulative generation time and may emit ticks in
+      // intervals larger than 10 seconds. Capping every tick at 10 silently
+      // discarded real provider usage and made the admin totals too low.
+      pendingBillableSecondsRef.current += Math.min(
+        secondsDelta,
+        MAX_GENERATION_TICK_DELTA_SECONDS,
+      );
     }
   }, []);
 
@@ -2298,7 +2306,11 @@ function Dashboard() {
         console.log(`[AI_WS] Connection attempt ${attempt}`);
         const startResponse = await apiRequest<AiSessionResponse>('/start-session', {
           method: 'POST',
-          body: JSON.stringify({ userId: user?.id }),
+          body: JSON.stringify({
+            userId: user?.id,
+            installationId: getInstallationId(),
+            platform: window.electron ? 'desktop' : 'web',
+          }),
         });
 
         if (!startResponse.allowed) {

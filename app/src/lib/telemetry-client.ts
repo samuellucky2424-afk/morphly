@@ -21,7 +21,7 @@ type TelemetryMetadata = Record<string, string | number | boolean>;
 let cachedInstallationId: string | null = null;
 const sentEventsThisSession = new Set<string>();
 
-function getInstallationId(): string {
+export function getInstallationId(): string {
   if (cachedInstallationId) return cachedInstallationId;
 
   const STORAGE_KEY = 'morphly_installation_id';
@@ -124,7 +124,7 @@ export function trackConnectionFailed(sessionId?: string, metadata?: TelemetryMe
 
 /** Convenience: fire first_frame_received */
 export function trackFirstFrameReceived(sessionId?: string): void {
-  void trackEvent('first_frame_received', { sessionId });
+  void trackEvent('first_frame_received', { sessionId, allowDuplicate: true });
 }
 
 /** Convenience: fire session_completed */

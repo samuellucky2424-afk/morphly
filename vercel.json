@@ -19,6 +19,7 @@
     { "source": "/api/admin-credit-packages", "destination": "/api/admin?name=credit-packages" },
     { "source": "/api/admin-audit-log", "destination": "/api/admin?name=audit-log" },
     { "source": "/api/admin-transactions", "destination": "/api/admin?name=transactions" },
+    { "source": "/api/admin-usage", "destination": "/api/admin?name=usage" },
     { "source": "/api/admin-logs", "destination": "/api/admin?name=logs" },
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ],

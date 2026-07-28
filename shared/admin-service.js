@@ -391,6 +391,252 @@ export async function listAdminUsers(supabaseAdmin, options = {}) {
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')));
 }
 
+function normalizeSessionSeconds(value) {
+  const seconds = Number(value ?? 0);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+}
+
+function sessionTimestamp(value) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getSessionDurationSeconds(session, nowMs) {
+  const startedAt = sessionTimestamp(session.start_time || session.created_at);
+  const endedAt = sessionTimestamp(session.end_time) ?? (
+    String(session.status || '').toLowerCase() === 'active' ? nowMs : startedAt
+  );
+  if (startedAt === null || endedAt === null || endedAt <= startedAt) return 0;
+  return Math.floor((endedAt - startedAt) / 1000);
+}
+
+/**
+ * Admin-only Decart usage report.
+ *
+ * "Untracked exposure" is intentionally not presented as confirmed billing. It
+ * is the portion of a session that had a first-frame event but was not covered
+ * by recorded generation ticks, capped by the provider session limit. This
+ * makes client heartbeat failures and possible token replay visible without
+ * claiming that every wall-clock second was billed by Decart.
+ */
+export async function listAdminUsage(supabaseAdmin, options = {}) {
+  const filters = normalizeReportOptions(options);
+  const nowMs = Date.now();
+  const authUsersPromise = listAllAuthUsers(supabaseAdmin);
+  const [authUsers, sessions, wallets, transactions, ledgerResult, admins, analyticsResult] = await Promise.all([
+    authUsersPromise,
+    fetchAllRows(
+      () => supabaseAdmin.from('sessions').select('*')
+        .gte('created_at', filters.since).order('created_at', { ascending: false }),
+      'sessions',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('wallets').select('user_id, credits, updated_at').order('user_id'),
+      'wallets',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('transactions').select('*').order('created_at', { ascending: false }),
+      'transactions',
+    ),
+    fetchOptionalRows(
+      () => supabaseAdmin.from('wallet_ledger')
+        .select('user_id, delta, entry_type, created_at').order('created_at', { ascending: false }),
+      'wallet_ledger',
+    ),
+    fetchAllRows(
+      () => supabaseAdmin.from('admin_users').select('user_id').eq('is_active', true).order('user_id'),
+      'admin_users',
+    ),
+    fetchOptionalRows(
+      () => supabaseAdmin.from('analytics_events')
+        .select('user_id, session_id, installation_id, event_name, metadata, created_at')
+        .gte('created_at', filters.since)
+        .in('event_name', ['first_frame_received', 'decart_token_issued'])
+        .order('created_at', { ascending: false }),
+      'analytics_events',
+    ),
+  ]);
+
+  const emailByUserId = new Map(authUsers.map((user) => [user.id, user.email || user.id]));
+  const walletByUserId = new Map(wallets.map((wallet) => [wallet.user_id, wallet]));
+  const adminUserIds = new Set(admins.map((admin) => admin.user_id));
+  const transactionGrantsByUserId = new Map();
+  const ledgerGrantsByUserId = new Map();
+
+  for (const transaction of transactions) {
+    const type = String(transaction.transaction_type || transaction.type || '').toLowerCase();
+    if (['debit', 'usage', 'session_usage'].includes(type)) continue;
+    const credits = Math.max(
+      normalizeSessionSeconds(transaction.credits),
+      normalizeSessionSeconds(transaction.package_credits_snapshot),
+    );
+    if (transaction.user_id && credits > 0) {
+      transactionGrantsByUserId.set(
+        transaction.user_id,
+        (transactionGrantsByUserId.get(transaction.user_id) || 0) + credits,
+      );
+    }
+  }
+  for (const entry of ledgerResult.rows) {
+    const delta = Number(entry.delta || 0);
+    if (entry.user_id && Number.isFinite(delta) && delta > 0) {
+      ledgerGrantsByUserId.set(
+        entry.user_id,
+        (ledgerGrantsByUserId.get(entry.user_id) || 0) + Math.floor(delta),
+      );
+    }
+  }
+  const firstFrameSessionIds = new Set(
+    analyticsResult.rows
+      .filter((event) => event.event_name === 'first_frame_received' && event.session_id)
+      .map((event) => event.session_id),
+  );
+  const tokenEventsByUserId = new Map();
+  const installationsByUserId = new Map();
+  const installationBySessionId = new Map();
+
+  for (const event of analyticsResult.rows) {
+    if (event.user_id && event.installation_id) {
+      if (!installationsByUserId.has(event.user_id)) installationsByUserId.set(event.user_id, new Set());
+      installationsByUserId.get(event.user_id).add(event.installation_id);
+    }
+    if (event.session_id && event.installation_id && !installationBySessionId.has(event.session_id)) {
+      installationBySessionId.set(event.session_id, event.installation_id);
+    }
+    if (event.event_name === 'decart_token_issued' && event.user_id) {
+      tokenEventsByUserId.set(event.user_id, (tokenEventsByUserId.get(event.user_id) || 0) + 1);
+    }
+  }
+
+  const usageByUserId = new Map();
+  const sessionRows = sessions.map((session) => {
+    const recordedSeconds = normalizeSessionSeconds(session.seconds_used);
+    const recordedCredits = Math.max(
+      normalizeSessionSeconds(session.cost),
+      normalizeSessionSeconds(session.credits_used),
+      recordedSeconds * 2,
+    );
+    const providerMaxSeconds = Math.max(
+      10,
+      normalizeSessionSeconds(session.provider_max_seconds) || 7200,
+    );
+    const wallSeconds = getSessionDurationSeconds(session, nowMs);
+    const sawFirstFrame = firstFrameSessionIds.has(session.id);
+    const untrackedExposureSeconds = sawFirstFrame
+      ? Math.max(0, Math.min(wallSeconds, providerMaxSeconds) - recordedSeconds)
+      : 0;
+    const status = String(session.status || 'unknown').toLowerCase();
+    const latestAt = session.end_time || session.start_time || session.created_at || null;
+    const row = {
+      id: session.id,
+      userId: session.user_id,
+      email: emailByUserId.get(session.user_id) || session.user_id,
+      status,
+      startedAt: session.start_time || session.created_at || null,
+      endedAt: session.end_time || null,
+      latestAt,
+      recordedSeconds,
+      recordedCredits,
+      walletDebitedCredits: normalizeSessionSeconds(session.wallet_debited_credits),
+      wallSeconds,
+      untrackedExposureSeconds,
+      untrackedExposureCredits: untrackedExposureSeconds * 2,
+      providerMaxSeconds,
+      providerModel: session.provider_model || 'lucy-2.5',
+      installationId: session.client_installation_id || installationBySessionId.get(session.id) || null,
+      sawFirstFrame,
+    };
+
+    const summary = usageByUserId.get(session.user_id) || {
+      userId: session.user_id,
+      email: emailByUserId.get(session.user_id) || session.user_id,
+      walletCredits: normalizeCredits(walletByUserId.get(session.user_id)?.credits),
+      sessions: 0,
+      activeSessions: 0,
+      recordedSeconds: 0,
+      recordedCredits: 0,
+      untrackedExposureSeconds: 0,
+      untrackedExposureCredits: 0,
+      firstActivityAt: null,
+      lastActivityAt: null,
+    };
+    summary.sessions += 1;
+    if (status === 'active') summary.activeSessions += 1;
+    summary.recordedSeconds += recordedSeconds;
+    summary.recordedCredits += recordedCredits;
+    summary.untrackedExposureSeconds += untrackedExposureSeconds;
+    summary.untrackedExposureCredits += untrackedExposureSeconds * 2;
+    if (!summary.firstActivityAt || String(row.startedAt || '') < String(summary.firstActivityAt)) {
+      summary.firstActivityAt = row.startedAt;
+    }
+    if (!summary.lastActivityAt || String(latestAt || '') > String(summary.lastActivityAt)) {
+      summary.lastActivityAt = latestAt;
+    }
+    usageByUserId.set(session.user_id, summary);
+    return row;
+  });
+
+  const users = [...usageByUserId.values()].map((summary) => {
+    const installationIds = [...(installationsByUserId.get(summary.userId) || [])];
+    const auditedTokenMints = tokenEventsByUserId.get(summary.userId) || 0;
+    const tokenMints = Math.max(auditedTokenMints, summary.sessions);
+    const explainedCreditGrants = Math.max(
+      transactionGrantsByUserId.get(summary.userId) || 0,
+      ledgerGrantsByUserId.get(summary.userId) || 0,
+    );
+    const unexplainedBalanceCredits = Math.max(0, summary.walletCredits - explainedCreditGrants);
+    const isAdmin = adminUserIds.has(summary.userId);
+    const reasons = [];
+    if (summary.untrackedExposureSeconds >= 60) reasons.push('generation time missing from client usage reports');
+    if (installationIds.length >= 3) reasons.push(`used from ${installationIds.length} installations`);
+    if (tokenMints >= 10) reasons.push(`${tokenMints} provider tokens issued`);
+    if (summary.activeSessions > 1) reasons.push(`${summary.activeSessions} active sessions`);
+    if (!isAdmin && unexplainedBalanceCredits >= 5000) {
+      reasons.push(`${unexplainedBalanceCredits.toLocaleString()} wallet credits lack a purchase or ledger grant`);
+    }
+
+    return {
+      ...summary,
+      isAdmin,
+      tokenMints,
+      auditedTokenMints,
+      explainedCreditGrants,
+      unexplainedBalanceCredits,
+      installationIds,
+      installationCount: installationIds.length,
+      suspicious: reasons.length > 0,
+      suspiciousReasons: reasons,
+    };
+  }).sort((left, right) =>
+    right.recordedCredits - left.recordedCredits
+    || right.untrackedExposureSeconds - left.untrackedExposureSeconds
+    || right.sessions - left.sessions);
+
+  return {
+    periodDays: filters.days,
+    since: filters.since,
+    asOf: new Date(nowMs).toISOString(),
+    totals: {
+      users: users.length,
+      sessions: sessionRows.length,
+      activeSessions: sessionRows.filter((session) => session.status === 'active').length,
+      recordedSeconds: users.reduce((sum, user) => sum + user.recordedSeconds, 0),
+      recordedCredits: users.reduce((sum, user) => sum + user.recordedCredits, 0),
+      untrackedExposureSeconds: users.reduce((sum, user) => sum + user.untrackedExposureSeconds, 0),
+      untrackedExposureCredits: users.reduce((sum, user) => sum + user.untrackedExposureCredits, 0),
+      usersWithUsageGaps: users.filter((user) => user.untrackedExposureSeconds > 0).length,
+      auditedTokenMints: users.reduce((sum, user) => sum + user.auditedTokenMints, 0),
+    },
+    users,
+    sessions: sessionRows.slice(0, 500),
+    dataHealth: {
+      analyticsAvailable: analyticsResult.available,
+      walletLedgerAvailable: ledgerResult.available,
+      tokenAuditEnabled: [...tokenEventsByUserId.values()].some((count) => count > 0),
+    },
+  };
+}
+
 export async function addCreditsToUser(supabaseAdmin, payload) {
   const userId = String(payload.userId || '').trim();
   const creditsToAdd = normalizeCredits(payload.creditsToAdd);

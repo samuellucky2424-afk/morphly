@@ -25,6 +25,12 @@ function normalizeHeartbeatSeconds(value) {
   return Math.min(Math.floor(seconds), MAX_SECONDS_PER_HEARTBEAT);
 }
 
+function isMissingUsageRpc(error) {
+  const message = String(error?.message || error?.details || error?.hint || '');
+  return ['PGRST202', '42883'].includes(error?.code) ||
+    /record_ai_session_usage|schema cache|function .* does not exist/i.test(message);
+}
+
 async function updateSessionUsage(sessionId, secondsUsed, creditsUsed) {
   const updateWithCost = await supabaseAdmin
     .from('sessions')
@@ -73,6 +79,23 @@ export default async function handler(req, res) {
     const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
     if (secondsDelta <= 0) {
       return res.status(400).json({ error: 'secondsDelta must be greater than 0' });
+    }
+
+    // New deployments debit the wallet and update the durable ledger in the
+    // same database transaction. Keep the legacy path temporarily so the API
+    // can be deployed immediately before the SQL migration is applied.
+    const usageRpc = await supabaseAdmin.rpc('record_ai_session_usage', {
+      p_user: userId,
+      p_session: sessionId,
+      p_seconds_delta: secondsDelta,
+    });
+
+    if (!usageRpc.error) {
+      return res.json(usageRpc.data);
+    }
+
+    if (!isMissingUsageRpc(usageRpc.error)) {
+      throw usageRpc.error;
     }
 
     const [{ data: walletData, error: walletError }, { data: sessionData, error: sessionError }] = await Promise.all([

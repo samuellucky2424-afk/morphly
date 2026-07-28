@@ -46,7 +46,7 @@ export default async function handler(req, res) {
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       supabaseAdmin
         .from('sessions')
-        .select('id, seconds_used')
+        .select('*')
         .eq('user_id', userId)
         .eq('status', 'active')
         .order('created_at', { ascending: false })
@@ -73,10 +73,19 @@ export default async function handler(req, res) {
       return res.json({ credits: walletCredits, remainingCredits: walletCredits, shouldStop: walletCredits <= 0 });
     }
 
-    // Compute live balance from Decart generation seconds recorded by heartbeat.
-    // The wallet is still deducted only once in end-session.
+    // New sessions are debited atomically by heartbeat. Older deployments only
+    // stored the running cost, so subtract any portion not yet applied.
     const billableSeconds = normalizeSeconds(activeSession.seconds_used);
-    const liveDeducted = Math.min(walletCredits, billableSeconds * CREDITS_PER_SECOND);
+    const recordedCredits = Math.max(
+      normalizeCredits(activeSession.cost),
+      normalizeCredits(activeSession.credits_used),
+      billableSeconds * CREDITS_PER_SECOND,
+    );
+    const walletDebitedCredits = normalizeCredits(activeSession.wallet_debited_credits);
+    const liveDeducted = Math.min(
+      walletCredits,
+      Math.max(0, recordedCredits - walletDebitedCredits),
+    );
     const remainingCredits = Math.max(0, walletCredits - liveDeducted);
     const shouldStop = remainingCredits <= 0;
 

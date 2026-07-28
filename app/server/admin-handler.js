@@ -7,6 +7,7 @@ import {
   getAdminOverview,
   listAdminUsers,
   listAdminTransactions,
+  listAdminUsage,
   listAdminReferrals,
   disqualifyAdminReferral,
   listSystemLogs,
@@ -44,6 +45,7 @@ const ADMIN_ROUTE_CONFIG = {
     handler: handleAdminUsers,
   },
   transactions: { path: '/api/admin-transactions', methods: ['GET', 'POST'], event: 'admin-transactions', handler: handleAdminTransactions },
+  usage: { path: '/api/admin-usage', methods: ['GET'], event: 'admin-usage', handler: handleAdminUsage },
   logs: { path: '/api/admin-logs', methods: ['GET'], event: 'admin-logs', handler: handleAdminLogs },
   'credit-packages': {
     path: '/api/admin-credit-packages',
@@ -357,6 +359,22 @@ async function handleAdminTransactions(req, res) {
     return res.json(result);
   }
   catch (error) { await logErrorEvent('admin-transactions.exception', error); return res.status(500).json({ error: error instanceof Error ? error.message : 'Transaction operation failed' }); }
+}
+
+async function handleAdminUsage(req, res, routeConfig) {
+  await logRequestEvent(`${routeConfig.event}.request`, {
+    method: req.method,
+    path: routeConfig.path,
+  });
+
+  try {
+    const admin = await requireAdminContext(req, res, supabaseAdmin);
+    if (!admin) return;
+    return res.json(await listAdminUsage(supabaseAdmin, getReportOptions(req)));
+  } catch (error) {
+    await logErrorEvent(`${routeConfig.event}.exception`, error);
+    return res.status(500).json({ error: 'Failed to load AI provider usage' });
+  }
 }
 
 async function handleAdminLogs(req, res) {

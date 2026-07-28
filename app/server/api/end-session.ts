@@ -33,6 +33,27 @@ function isMissingColumnError(error, columnName) {
   return error?.code === 'PGRST204' || new RegExp(`\\b${columnName}\\b`, 'i').test(message);
 }
 
+function isMissingFinalizeRpc(error) {
+  const message = String(error?.message || error?.details || error?.hint || '');
+  return ['PGRST202', '42883'].includes(error?.code) ||
+    /finalize_ai_session|schema cache|function .* does not exist/i.test(message);
+}
+
+async function finalizeSessionWithRpc(session, userId, finalSecondsDelta, reason) {
+  const result = await supabaseAdmin.rpc('finalize_ai_session', {
+    p_user: userId,
+    p_session: session.id,
+    p_final_seconds_delta: normalizeFinalSecondsDelta(finalSecondsDelta),
+    p_reason: reason,
+  });
+
+  if (result.error && !isMissingFinalizeRpc(result.error)) {
+    throw result.error;
+  }
+
+  return result;
+}
+
 async function selectActiveSessions(userId) {
   const withCost = await supabaseAdmin
     .from('sessions')
@@ -167,7 +188,16 @@ export default async function handler(req, res) {
 
     const staleSessions = activeSessions.filter(session => session.id !== targetSession.id);
     if (staleSessions.length > 0) {
-      const staleResults = await Promise.all(staleSessions.map(closeStaleSession));
+      const staleResults = [];
+      for (const session of staleSessions) {
+        const rpcResult = await finalizeSessionWithRpc(session, userId, 0, 'superseded');
+        if (rpcResult.error) {
+          await billAndCloseSession(session, userId, 0);
+          staleResults.push({ error: null });
+        } else {
+          staleResults.push(rpcResult);
+        }
+      }
       const staleError = staleResults.find(result => result?.error);
       if (staleError?.error) {
         console.error('Failed to close stale active sessions:', staleError.error);
@@ -181,7 +211,15 @@ export default async function handler(req, res) {
       });
     }
 
-    const remainingCredits = await billAndCloseSession(targetSession, userId, secondsDelta);
+    const finalizeResult = await finalizeSessionWithRpc(
+      targetSession,
+      userId,
+      secondsDelta,
+      'client_ended',
+    );
+    const remainingCredits = finalizeResult.error
+      ? await billAndCloseSession(targetSession, userId, secondsDelta)
+      : normalizeCredits(finalizeResult.data?.remainingCredits);
     await logRequestEvent('end-session.closed', {
       userId,
       sessionId: targetSession.id,

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   Ban,
   ChevronRight,
   Coins,
@@ -68,6 +69,51 @@ interface AuditLogEntry {
   channel?: string;
   event?: string;
   [key: string]: unknown;
+}
+
+interface AdminUsageUser {
+  userId: string;
+  email: string;
+  isAdmin: boolean;
+  walletCredits: number;
+  explainedCreditGrants: number;
+  unexplainedBalanceCredits: number;
+  sessions: number;
+  activeSessions: number;
+  tokenMints: number;
+  auditedTokenMints: number;
+  recordedSeconds: number;
+  recordedCredits: number;
+  untrackedExposureSeconds: number;
+  untrackedExposureCredits: number;
+  installationIds: string[];
+  installationCount: number;
+  suspicious: boolean;
+  suspiciousReasons: string[];
+  lastActivityAt: string | null;
+}
+
+interface AdminUsageData {
+  periodDays: number;
+  since: string | null;
+  asOf: string | null;
+  totals: {
+    users: number;
+    sessions: number;
+    activeSessions: number;
+    recordedSeconds: number;
+    recordedCredits: number;
+    untrackedExposureSeconds: number;
+    untrackedExposureCredits: number;
+    usersWithUsageGaps: number;
+    auditedTokenMints: number;
+  };
+  users: AdminUsageUser[];
+  dataHealth: {
+    analyticsAvailable: boolean;
+    walletLedgerAvailable: boolean;
+    tokenAuditEnabled: boolean;
+  };
 }
 
 interface AdminReferralRecord {
@@ -172,6 +218,16 @@ function formatCurrency(value: number) {
   return ngnFormatter.format(Number.isFinite(value) ? value : 0);
 }
 
+function formatDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${remainder}s`;
+  return `${remainder}s`;
+}
+
 function summarizeAuditEntry(entry: AuditLogEntry) {
   const details = { ...entry };
   delete details.timestamp;
@@ -211,6 +267,28 @@ function AdminDashboard() {
     activeSessions: 0,
   });
   const [auditEntries, setAuditEntries] = useState<AuditLogEntry[]>([]);
+  const [usageData, setUsageData] = useState<AdminUsageData>({
+    periodDays: 30,
+    since: null,
+    asOf: null,
+    totals: {
+      users: 0,
+      sessions: 0,
+      activeSessions: 0,
+      recordedSeconds: 0,
+      recordedCredits: 0,
+      untrackedExposureSeconds: 0,
+      untrackedExposureCredits: 0,
+      usersWithUsageGaps: 0,
+      auditedTokenMints: 0,
+    },
+    users: [],
+    dataHealth: {
+      analyticsAvailable: false,
+      walletLedgerAvailable: false,
+      tokenAuditEnabled: false,
+    },
+  });
   const [referralData, setReferralData] = useState<AdminReferralData>({
     referrals: [],
     totals: {
@@ -246,12 +324,13 @@ function AdminDashboard() {
     }
 
     try {
-      const [usersResult, packagesResult, overviewResult, auditResult, referralsResult] = await Promise.allSettled([
+      const [usersResult, packagesResult, overviewResult, auditResult, referralsResult, usageResult] = await Promise.allSettled([
         adminRequest<{ users: AdminUserRecord[] }>('/admin-users'),
         adminRequest<{ packages: CreditPackage[] }>('/admin-credit-packages'),
         adminRequest<AdminOverview>('/admin-overview'),
         adminRequest<{ entries: AuditLogEntry[] }>('/admin-audit-log?limit=50'),
         adminRequest<AdminReferralData>('/admin-referrals'),
+        adminRequest<AdminUsageData>('/admin-usage'),
       ]);
 
       if (usersResult.status === 'fulfilled') setUsers(usersResult.value.users || []);
@@ -259,6 +338,7 @@ function AdminDashboard() {
       if (overviewResult.status === 'fulfilled') setOverview(overviewResult.value);
       if (auditResult.status === 'fulfilled') setAuditEntries(auditResult.value.entries || []);
       if (referralsResult.status === 'fulfilled') setReferralData(referralsResult.value);
+      if (usageResult.status === 'fulfilled') setUsageData(usageResult.value);
 
       const failedSections = [
         usersResult.status === 'rejected' ? 'users' : null,
@@ -266,6 +346,7 @@ function AdminDashboard() {
         overviewResult.status === 'rejected' ? 'overview' : null,
         auditResult.status === 'rejected' ? 'audit log' : null,
         referralsResult.status === 'rejected' ? 'referrals' : null,
+        usageResult.status === 'rejected' ? 'AI usage' : null,
       ].filter((section): section is string => Boolean(section));
 
       if (failedSections.length > 0) {
@@ -602,6 +683,12 @@ function AdminDashboard() {
                     Users
                   </TabsTrigger>
                   <TabsTrigger
+                    value="usage"
+                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                  >
+                    AI Usage
+                  </TabsTrigger>
+                  <TabsTrigger
                     value="referrals"
                     className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
                   >
@@ -742,6 +829,120 @@ function AdminDashboard() {
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="usage" className="m-0 p-6 sm:p-8">
+              <div className="space-y-5">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    ['Recorded credits', usageData.totals.recordedCredits.toLocaleString(), formatDuration(usageData.totals.recordedSeconds)],
+                    ['Provider sessions', usageData.totals.sessions.toLocaleString(), `${usageData.totals.activeSessions.toLocaleString()} still active`],
+                    ['Untracked exposure', formatDuration(usageData.totals.untrackedExposureSeconds), `${usageData.totals.untrackedExposureCredits.toLocaleString()} potential credits`],
+                    ['Users with gaps', usageData.totals.usersWithUsageGaps.toLocaleString(), `${usageData.totals.auditedTokenMints.toLocaleString()} audited token mints`],
+                  ].map(([label, value, detail]) => (
+                    <div key={label} className="rounded-2xl border border-[#e5e7eb] bg-[#fcfcfd] p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">{label}</p>
+                      <p className="mt-2 text-2xl font-semibold text-[#0f172a]">{value}</p>
+                      <p className="mt-1 text-xs text-[#64748b]">{detail}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {!usageData.dataHealth.tokenAuditEnabled && (
+                  <div className="flex items-start gap-3 rounded-2xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <p>
+                      Historical rows predate server-side token auditing. Session rows are used as the token-mint estimate until the new audit events arrive.
+                    </p>
+                  </div>
+                )}
+
+                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
+                  <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <h4 className="text-lg font-semibold text-[#0f172a]">Decart usage by user</h4>
+                      <p className="mt-1 text-sm text-[#64748b]">
+                        Recorded generation is confirmed by Morphly. Untracked exposure is the maximum connected time with a first frame but no matching usage ticks; it is a warning, not a confirmed Decart charge.
+                      </p>
+                    </div>
+                    <div className="rounded-full border border-[#dbe4ff] bg-white px-4 py-2 text-sm text-[#475569]">
+                      Last {usageData.periodDays} days · as of {formatDateTime(usageData.asOf)}
+                    </div>
+                  </div>
+
+                  <Table className="min-w-[1180px]">
+                    <TableHeader>
+                      <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">User</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Sessions / tokens</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Recorded usage</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Untracked exposure</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Installations</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Last activity</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Risk</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {usageData.users.length === 0 ? (
+                        <TableRow className="border-[#e5e7eb] hover:bg-transparent">
+                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                            No Decart sessions were recorded in this period.
+                          </TableCell>
+                        </TableRow>
+                      ) : usageData.users.map((entry) => (
+                        <TableRow key={entry.userId} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                          <TableCell className="px-5 py-4 whitespace-normal">
+                            <p className="font-medium text-[#0f172a]">{entry.email}</p>
+                            <p className="mt-1 font-mono text-[11px] text-[#64748b]">{entry.userId}</p>
+                            <p className="mt-1 text-xs text-[#64748b]">{entry.walletCredits.toLocaleString()} wallet credits</p>
+                            {entry.unexplainedBalanceCredits >= 5000 && !entry.isAdmin && (
+                              <p className="mt-1 text-xs font-semibold text-[#b91c1c]">
+                                {entry.unexplainedBalanceCredits.toLocaleString()} lack purchase/grant proof
+                              </p>
+                            )}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
+                            <p><span className="font-semibold text-[#0f172a]">{entry.sessions}</span> sessions</p>
+                            <p className="mt-1">{entry.tokenMints} token mints</p>
+                            {entry.activeSessions > 0 && <p className="mt-1 text-[#b91c1c]">{entry.activeSessions} active</p>}
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
+                            <p className="font-semibold text-[#0f172a]">{entry.recordedCredits.toLocaleString()} credits</p>
+                            <p className="mt-1">{formatDuration(entry.recordedSeconds)}</p>
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm">
+                            <p className={entry.untrackedExposureSeconds > 0 ? 'font-semibold text-[#b45309]' : 'text-[#475569]'}>
+                              {formatDuration(entry.untrackedExposureSeconds)}
+                            </p>
+                            <p className="mt-1 text-xs text-[#64748b]">{entry.untrackedExposureCredits.toLocaleString()} potential credits</p>
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
+                            <p className="font-semibold text-[#0f172a]">{entry.installationCount}</p>
+                            <p className="mt-1 max-w-40 truncate font-mono text-[11px]" title={entry.installationIds.join(', ')}>
+                              {entry.installationIds[0] || 'Unknown'}
+                            </p>
+                          </TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDateTime(entry.lastActivityAt)}</TableCell>
+                          <TableCell className="px-5 py-4 whitespace-normal">
+                            {entry.suspicious ? (
+                              <div className="max-w-64">
+                                <Badge variant="outline" className="rounded-full border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]">
+                                  Review
+                                </Badge>
+                                <p className="mt-2 text-xs text-[#b91c1c]">{entry.suspiciousReasons.join('; ')}</p>
+                              </div>
+                            ) : (
+                              <Badge variant="outline" className="rounded-full border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]">
+                                Normal
+                              </Badge>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
             </TabsContent>
 

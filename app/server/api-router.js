@@ -26,6 +26,7 @@ const routeHandlers = {
   'admin-referrals': createAdminHandler('referrals'),
   'admin-users': createAdminHandler('users'),
   'admin-transactions': createAdminHandler('transactions'),
+  'admin-usage': createAdminHandler('usage'),
   'admin-logs': createAdminHandler('logs'),
   'credit-packages': creditPackagesHandler,
   'end-session': endSessionHandler,
