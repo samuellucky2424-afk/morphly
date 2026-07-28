@@ -5,7 +5,7 @@ const CONFIG = {
   endpoints: {
     overview: "/api/admin-overview", users: "/api/admin-users", addCredit: () => "/api/admin-users",
     updateStatus: () => "/api/admin-users", packages: "/api/admin-credit-packages",
-    transactions: "/api/admin-transactions", referrals: "/api/admin-referrals", logs: "/api/admin-logs", audit: "/api/admin-audit-log",
+    transactions: "/api/admin-transactions", referrals: "/api/admin-referrals", usage: "/api/admin-usage", logs: "/api/admin-logs", audit: "/api/admin-audit-log",
     me: "/api/admin-me", config: "/api/public-config"
   }
 };
@@ -30,6 +30,7 @@ const state = {
   selectedUserId: null,
   editingPackageId: null,
   users: [],
+  usage: { periodDays: 30, totals: {}, users: [], dataHealth: {} },
   referralData: { referrals: [], totals: {}, audit: [] },
   audit: [],
   packages: []
@@ -86,6 +87,16 @@ function isPurchaseTransaction(transaction) {
 function formatDateTime(value) {
   const timestamp = parseTimestamp(value);
   return timestamp === null ? "-" : new Date(timestamp).toLocaleString("en-NG");
+}
+
+function formatDuration(value) {
+  const totalSeconds = Math.max(0, Math.round(safeNumber(value)));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function normalizeTransaction(transaction) {
@@ -376,6 +387,65 @@ function renderUsers() {
   $$('[data-manage-user]').forEach((button) => button.addEventListener("click", () => openUserDrawer(button.dataset.manageUser)));
 }
 
+function renderUsage() {
+  const usage = state.usage || {};
+  const totals = usage.totals || {};
+  const allUsers = Array.isArray(usage.users) ? usage.users : [];
+  const query = $("#usageSearch").value.trim().toLowerCase();
+  const risk = $("#usageRiskFilter").value;
+  const users = allUsers.filter((user) => {
+    if (risk === "flagged" && !user.suspicious) return false;
+    if (risk === "active" && safeNumber(user.activeSessions) <= 0) return false;
+    return !query || `${user.email || ""} ${user.userId || ""}`.toLowerCase().includes(query);
+  });
+  const walletCredits = allUsers.reduce((sum, user) => sum + safeNumber(user.walletCredits), 0);
+
+  $("#sidebarUsageCount").textContent = number(allUsers.length);
+  $("#usageMetrics").innerHTML = [
+    metricCard("Credits spent", number(safeNumber(totals.recordedCredits)), "Confirmed Morphly AI usage", "", "AI"),
+    metricCard("Generation time", formatDuration(totals.recordedSeconds), `${number(safeNumber(totals.sessions))} provider sessions`, "", "◷"),
+    metricCard("Wallet credits", number(walletCredits), "Remaining across users listed below", "", "◫"),
+    metricCard("Usage warnings", number(safeNumber(totals.usersWithUsageGaps)), `${number(safeNumber(totals.untrackedExposureCredits))} potential untracked credits`, "", "!")
+  ].join("");
+
+  const health = usage.dataHealth || {};
+  const healthWarnings = [];
+  if (health.analyticsAvailable === false) healthWarnings.push("analytics events are unavailable");
+  if (health.walletLedgerAvailable === false) healthWarnings.push("wallet-ledger history is unavailable");
+  if (health.tokenAuditEnabled === false) healthWarnings.push("older sessions predate provider-token auditing");
+  const healthWarning = $("#usageDataHealthWarning");
+  healthWarning.hidden = healthWarnings.length === 0;
+  $("#usageDataHealthText").textContent = healthWarnings.length
+    ? `${healthWarnings.join("; ")}. Recorded session usage is still shown where available.`
+    : "";
+
+  $("#usageTableBody").innerHTML = users.length ? users.map((user) => {
+    const riskReasons = Array.isArray(user.suspiciousReasons) ? user.suspiciousReasons : [];
+    const userLabel = user.email || user.userId || "Unknown user";
+    const userId = user.userId || "-";
+    const activeSessions = safeNumber(user.activeSessions);
+    return [
+      "<tr><td><div class=\"user-cell\"><span class=\"small-avatar\">", escapeHtml(initials(userLabel)),
+      "</span><span><strong>", escapeHtml(userLabel), user.isAdmin ? " (admin)" : "",
+      "</strong><small>", escapeHtml(userId), "</small></span></div></td>",
+      "<td><strong class=\"usage-value\">", number(safeNumber(user.walletCredits)), " credits</strong><small class=\"usage-detail\">Current wallet balance</small></td>",
+      "<td><strong class=\"usage-value\">", number(safeNumber(user.recordedCredits)), " credits</strong><small class=\"usage-detail\">Confirmed debit for this period</small></td>",
+      "<td><strong class=\"usage-value\">", escapeHtml(formatDuration(user.recordedSeconds)), "</strong><small class=\"usage-detail\">Recorded generation time</small></td>",
+      "<td><strong class=\"usage-value\">", number(safeNumber(user.sessions)), " sessions / ", number(safeNumber(user.tokenMints)), " tokens</strong><small class=\"usage-detail\">",
+      activeSessions > 0 ? `${number(activeSessions)} currently active` : "No active sessions", "</small></td>",
+      "<td><strong class=\"usage-value\">", escapeHtml(formatDuration(user.untrackedExposureSeconds)), "</strong><small class=\"usage-detail\">",
+      number(safeNumber(user.untrackedExposureCredits)), " potential credits, not confirmed</small></td>",
+      "<td>", escapeHtml(formatDateTime(user.lastActivityAt)), "</td>",
+      "<td class=\"usage-risk\"><span class=\"status-pill ", user.suspicious ? "critical" : "success", "\">",
+      user.suspicious ? "Flagged" : "Clear", "</span><small class=\"usage-detail\">",
+      escapeHtml(riskReasons.join("; ") || "No usage anomaly detected"), "</small></td></tr>"
+    ].join("");
+  }).join("") : '<tr><td class="empty-cell" colspan="8">No AI usage matches the selected period and filters.</td></tr>';
+
+  $("#usageTableSummary").textContent = `Showing ${users.length} of ${allUsers.length} users with AI activity`;
+  $("#usagePeriodSummary").textContent = `Last ${safeNumber(usage.periodDays) || safeNumber(state.period)} days · updated ${formatDateTime(usage.asOf)}`;
+}
+
 function renderTransactions() {
   const visibleTransactions = filteredTransactions();
   const successful = visibleTransactions.filter(isSuccessfulTransaction);
@@ -621,6 +691,7 @@ function renderAll() {
   $("#sidebarUserCount").textContent = number(state.users.length);
   renderOverview();
   renderUsers();
+  renderUsage();
   renderReferrals();
   renderTransactions();
   renderPackages();
@@ -632,12 +703,13 @@ function renderAll() {
 
 function setView(view) {
   state.activeView = view;
-  const titles = { overview: "Business overview", users: "User management", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
+  const titles = { overview: "Business overview", users: "User management", usage: "AI credits usage", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
   $$("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
   $("#pageTitle").textContent = titles[view] || "Morphly admin";
   $("#sidebar").classList.remove("open");
   if (view === "users") renderUsers();
+  if (view === "usage") renderUsage();
   if (view === "referrals") renderReferrals();
   if (view === "packages") renderPackages();
   if (view === "logs") renderLogs();
@@ -748,18 +820,38 @@ function showToast(message) {
 }
 
 function exportReport() {
-  const rows = [["User ID", "Name", "Email", "Status", "Credits", "Purchases", "Lifetime spent"]];
-  state.users.forEach((user) => rows.push([user.id, user.name, user.email, user.status, user.credits, user.purchases, user.spent]));
+  const exportingUsage = state.activeView === "usage";
+  const rows = exportingUsage
+    ? [["User ID", "Email", "Wallet credits", "Credits spent", "Generation seconds", "Sessions", "Token mints", "Active sessions", "Untracked seconds", "Potential untracked credits", "Last activity", "Risk reasons"]]
+    : [["User ID", "Name", "Email", "Status", "Credits", "Purchases", "Lifetime spent"]];
+  if (exportingUsage) {
+    (state.usage.users || []).forEach((user) => rows.push([
+      user.userId,
+      user.email,
+      safeNumber(user.walletCredits),
+      safeNumber(user.recordedCredits),
+      safeNumber(user.recordedSeconds),
+      safeNumber(user.sessions),
+      safeNumber(user.tokenMints),
+      safeNumber(user.activeSessions),
+      safeNumber(user.untrackedExposureSeconds),
+      safeNumber(user.untrackedExposureCredits),
+      user.lastActivityAt || "",
+      (user.suspiciousReasons || []).join("; ")
+    ]));
+  } else {
+    state.users.forEach((user) => rows.push([user.id, user.name, user.email, user.status, user.credits, user.purchases, user.spent]));
+  }
   const csv = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\n");
   const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `morphly-users-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = `morphly-${exportingUsage ? "ai-usage" : "users"}-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-  showToast("User report exported.");
+  showToast(exportingUsage ? "AI usage report exported." : "User report exported.");
 }
 
 function bindEvents() {
@@ -783,6 +875,8 @@ function bindEvents() {
   });
   $("#userSearch").addEventListener("input", renderUsers);
   $("#userStatusFilter").addEventListener("change", renderUsers);
+  $("#usageSearch").addEventListener("input", renderUsage);
+  $("#usageRiskFilter").addEventListener("change", renderUsage);
   $("#referralStatusFilter").addEventListener("change", renderReferrals);
   $("#referralTableBody").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-disqualify-referral]");
@@ -835,6 +929,7 @@ async function loadLiveData() {
   const definitions = [
     { key: "overview", path: scopedEndpoint(CONFIG.endpoints.overview) },
     { key: "users", path: scopedEndpoint(CONFIG.endpoints.users) },
+    { key: "usage", path: scopedEndpoint(CONFIG.endpoints.usage) },
     { key: "referrals", path: CONFIG.endpoints.referrals },
     { key: "packages", path: CONFIG.endpoints.packages },
     { key: "transactions", path: scopedEndpoint(CONFIG.endpoints.transactions) },
@@ -878,6 +973,17 @@ async function loadLiveData() {
         successRate: safeNumber(user.successRate ?? user.success_rate)
       };
     });
+  }
+
+  if (results.usage.status === "fulfilled") {
+    const usage = results.usage.value || {};
+    state.usage = {
+      ...usage,
+      periodDays: safeNumber(usage.periodDays) || safeNumber(state.period),
+      totals: usage.totals || {},
+      users: Array.isArray(usage.users) ? usage.users : [],
+      dataHealth: usage.dataHealth || {}
+    };
   }
 
   if (results.referrals.status === "fulfilled") {

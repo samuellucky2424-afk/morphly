@@ -18,6 +18,18 @@ const dashboard = fs.readFileSync(
   path.join(workspaceRoot, 'app/src/pages/Dashboard.tsx'),
   'utf8',
 );
+const adminPortal = fs.readFileSync(
+  path.join(workspaceRoot, 'morphly-admin-dashboard/app.js'),
+  'utf8',
+);
+const adminPortalHtml = fs.readFileSync(
+  path.join(workspaceRoot, 'morphly-admin-dashboard/index.html'),
+  'utf8',
+);
+const appVercelConfig = fs.readFileSync(
+  path.join(workspaceRoot, 'app/vercel.json'),
+  'utf8',
+);
 
 test('AI usage is debited atomically and written to one durable ledger row per session', () => {
   assert.match(migration, /CREATE OR REPLACE FUNCTION public\.record_ai_session_usage/);
@@ -57,4 +69,16 @@ test('Decart client tokens are short-lived, scoped, rate-limited and attributabl
 test('Decart cumulative generation ticks are no longer truncated to ten seconds', () => {
   assert.match(dashboard, /MAX_GENERATION_TICK_DELTA_SECONDS = 60/);
   assert.doesNotMatch(dashboard, /pendingBillableSecondsRef\.current \+= Math\.min\(secondsDelta, 10\)/);
+});
+
+test('private admin portal exposes per-user AI credit and generation-time reporting', () => {
+  assert.match(adminPortalHtml, /data-view="usage"/);
+  assert.match(adminPortalHtml, /AI credits and generation time by user/);
+  assert.match(adminPortalHtml, /id="usageTableBody"/);
+  assert.match(adminPortal, /usage: "\/api\/admin-usage"/);
+  assert.match(adminPortal, /function renderUsage\(\)/);
+  assert.match(adminPortal, /user\.walletCredits/);
+  assert.match(adminPortal, /user\.recordedCredits/);
+  assert.match(adminPortal, /user\.recordedSeconds/);
+  assert.match(appVercelConfig, /"source": "\/api\/admin-usage"/);
 });

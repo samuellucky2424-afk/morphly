@@ -163,6 +163,11 @@ tbody tr:hover { background: #fbfbfc; }
 .user-cell strong, .user-cell small { display: block; max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
 .user-cell strong { font-size: 11px; }
 .user-cell small { margin-top: 2px; color: var(--muted); font-size: 9px; }
+.panel-description { max-width: 760px; margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.usage-table { min-width: 1180px; }
+.usage-value { display: block; font-size: 12px; }
+.usage-detail { display: block; max-width: 250px; margin-top: 3px; color: var(--muted); font-size: 9px; white-space: normal; }
+.usage-risk { max-width: 260px; white-space: normal; }
 .status-pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 999px; color: var(--success); background: var(--success-soft); font-size: 9px; font-weight: 700; text-transform: capitalize; }
 .status-pill::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .status-pill.suspended, .status-pill.failed, .status-pill.critical { color: var(--danger); background: var(--danger-soft); }

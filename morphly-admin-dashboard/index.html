@@ -36,6 +36,9 @@
         <button class="nav-item" type="button" data-view="users">
           <span class="nav-icon">◎</span><span>Users</span><span class="nav-count" id="sidebarUserCount">0</span>
         </button>
+        <button class="nav-item" type="button" data-view="usage">
+          <span class="nav-icon">AI</span><span>AI usage</span><span class="nav-count" id="sidebarUsageCount">0</span>
+        </button>
         <button class="nav-item" type="button" data-view="referrals">
           <span class="nav-icon">+</span><span>Referrals</span><span class="nav-count" id="sidebarReferralCount">0</span>
         </button>
@@ -124,6 +127,37 @@
               </table>
             </div>
             <div class="table-footer"><span id="userTableSummary">Showing 0 users</span><div class="pagination"><button type="button" disabled>Previous</button><button class="active" type="button">1</button><button type="button" disabled>Next</button></div></div>
+          </article>
+        </section>
+
+        <section class="view" id="usageView" data-view-panel="usage">
+          <div class="metric-grid compact" id="usageMetrics"></div>
+          <div class="permission-banner" id="usageDataHealthWarning" hidden>
+            <span class="permission-icon">!</span>
+            <div>
+              <strong>Some historical usage may be incomplete</strong>
+              <p id="usageDataHealthText"></p>
+            </div>
+          </div>
+          <article class="panel user-panel">
+            <div class="panel-head user-panel-head">
+              <div>
+                <p class="eyebrow">Decart consumption</p>
+                <h2>AI credits and generation time by user</h2>
+                <p class="panel-description">Recorded usage is confirmed by Morphly. Untracked exposure is a warning about connected time that was not covered by usage reports; it is not a confirmed Decart charge.</p>
+              </div>
+              <div class="table-tools">
+                <label class="search-field"><span aria-hidden="true">⌕</span><input id="usageSearch" type="search" placeholder="Search email or user ID" autocomplete="off"></label>
+                <select id="usageRiskFilter" aria-label="Filter AI usage risk"><option value="all">All users</option><option value="flagged">Flagged only</option><option value="active">Active sessions</option></select>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="usage-table">
+                <thead><tr><th>User</th><th>Wallet remaining</th><th>Credits spent</th><th>AI generation time</th><th>Sessions / tokens</th><th>Untracked exposure</th><th>Last activity</th><th>Risk</th></tr></thead>
+                <tbody id="usageTableBody"></tbody>
+              </table>
+            </div>
+            <div class="table-footer"><span id="usageTableSummary">Showing 0 users</span><span id="usagePeriodSummary">Last 30 days</span></div>
           </article>
         </section>
 

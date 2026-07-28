@@ -30,6 +30,7 @@ The production build mounts this portal at `/private/morphly/login` and uses the
 - `POST /api/admin/packages`
 - `PATCH /api/admin/packages/:packageId`
 - `GET /api/admin/transactions`
+- `GET /api/admin/usage?days=30`
 - `GET /api/admin/logs`
 
 The admin frontend must never update a Supabase wallet table directly. The backend credit endpoint should:
