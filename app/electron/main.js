@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'child_process';
+import { spawn } from 'child_process';
 import { once } from 'events';
 
 import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard } from 'electron';
@@ -19,8 +19,6 @@ const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 const VIRTUAL_CAM_PUBLISHER_EXE = 'morphly_cam_pipe_publisher.exe';
 const VIRTUAL_CAM_REGISTRAR_EXE = 'morphly_cam_registrar.exe';
 const VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS = 120000;
-const VIRTUAL_CAM_WINDOWS_PROBE_TIMEOUT_MS = 15000;
-const VIRTUAL_CAM_FRIENDLY_NAME = 'Morphly G1';
 const VIRTUAL_CAM_FRAME_WIDTH = 1280;
 const VIRTUAL_CAM_FRAME_HEIGHT = 720;
 const VIRTUAL_CAM_FRAME_STRIDE = VIRTUAL_CAM_FRAME_WIDTH * 4;
@@ -199,103 +197,80 @@ function resolveVirtualCameraRegistrarPath() {
 }
 
 function runVirtualCameraRegistrar(registrarPath, args) {
-  const result = spawnSync(registrarPath, args, {
-    windowsHide: true,
-    timeout: VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS,
-    encoding: 'utf8'
-  });
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timeout = null;
 
-  const stdout = (result.stdout ?? '').trim();
-  const stderr = (result.stderr ?? '').trim();
-  const ok = (result.status ?? 1) === 0 && !result.error;
+    const child = spawn(registrarPath, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
 
-  if (stdout) {
-    console.info(`Morphly cam registrar stdout (${args.join(' ')}):\n${stdout}`);
-  }
+    const finish = (result) => {
+      if (settled) {
+        return;
+      }
 
-  if (stderr) {
-    console.warn(`Morphly cam registrar stderr (${args.join(' ')}):\n${stderr}`);
-  }
+      settled = true;
+      clearTimeout(timeout);
 
-  if (result.error) {
-    console.error(`Morphly cam registrar execution failed for "${args.join(' ')}":`, result.error);
-  }
+      const normalizedStdout = stdout.trim();
+      const normalizedStderr = stderr.trim();
+      if (normalizedStdout) {
+        console.info(`Morphly cam registrar stdout (${args.join(' ')}):\n${normalizedStdout}`);
+      }
+      if (normalizedStderr) {
+        console.warn(`Morphly cam registrar stderr (${args.join(' ')}):\n${normalizedStderr}`);
+      }
 
-  if ((result.signal ?? null) !== null) {
-    console.warn(`Morphly cam registrar was interrupted by signal ${result.signal} for "${args.join(' ')}".`);
-  }
-
-  return {
-    ok,
-    status: result.status,
-    error: result.error,
-    stdout,
-    stderr
-  };
-}
-
-function probeWindowsCameraVisibility() {
-  if (process.platform !== 'win32') {
-    return { supported: false, visible: false };
-  }
-
-  const probeScript = [
-    `$friendlyName = '${VIRTUAL_CAM_FRIENDLY_NAME}'`,
-    "$friendlyNamePattern = ('*' + $friendlyName + '*')",
-    '$visible = $false',
-    'try {',
-    '  $visible = @(Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like $friendlyNamePattern }).Count -gt 0',
-    '} catch {}',
-    'if (-not $visible) {',
-    '  try {',
-    '    $visible = @(Get-PnpDevice -Class Image -ErrorAction SilentlyContinue | Where-Object { $_.FriendlyName -like $friendlyNamePattern }).Count -gt 0',
-    '  } catch {}',
-    '}',
-    'if (-not $visible) {',
-    '  try {',
-    '    $visible = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.Name -like $friendlyNamePattern }).Count -gt 0',
-    '  } catch {}',
-    '}',
-    'if ($visible) {',
-    "  Write-Output 'VISIBLE'",
-    '  exit 0',
-    '}',
-    "Write-Output 'MISSING'",
-    'exit 2'
-  ].join('; ');
-
-  const result = spawnSync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    probeScript
-  ], {
-    windowsHide: true,
-    timeout: VIRTUAL_CAM_WINDOWS_PROBE_TIMEOUT_MS,
-    encoding: 'utf8'
-  });
-
-  if (result.error) {
-    return {
-      supported: true,
-      visible: false,
-      error: formatErrorMessage(result.error)
+      resolve({
+        ...result,
+        stdout: normalizedStdout,
+        stderr: normalizedStderr
+      });
     };
-  }
 
-  const stdout = (result.stdout ?? '').trim();
-  const visible = stdout.includes('VISIBLE');
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
 
-  return {
-    supported: true,
-    visible,
-    stdout,
-    stderr: (result.stderr ?? '').trim(),
-    status: result.status
-  };
+    child.once('error', (error) => {
+      console.error(`Morphly cam registrar execution failed for "${args.join(' ')}":`, error);
+      finish({ ok: false, status: null, error });
+    });
+
+    child.once('close', (status, signal) => {
+      if (signal) {
+        console.warn(`Morphly cam registrar was interrupted by signal ${signal} for "${args.join(' ')}".`);
+      }
+      finish({
+        ok: status === 0 && !signal,
+        status,
+        signal,
+        error: null
+      });
+    });
+
+    timeout = setTimeout(() => {
+      child.kill();
+      finish({
+        ok: false,
+        status: null,
+        error: new Error(`Virtual camera registrar timed out after ${VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS}ms.`)
+      });
+    }, VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS);
+    timeout.unref?.();
+  });
 }
 
-function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
+async function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
   if (process.platform !== 'win32') {
     return { success: false, error: 'Virtual camera registration is only supported on Windows.' };
   }
@@ -307,67 +282,37 @@ function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
     return { success: false, error: formatErrorMessage(error) };
   }
 
-  const probeResult = runVirtualCameraRegistrar(registrarPath, ['probe']);
+  const probeResult = await runVirtualCameraRegistrar(registrarPath, ['probe']);
   if (probeResult.ok) {
-    // Probe success means the driver and MF virtual camera are correctly installed.
-    // PnP visibility is an unreliable secondary check and must never trigger a repair
-    // (repair requires elevation and will always fail in a normal user session).
-    const visibilityResult = probeWindowsCameraVisibility();
-    if (!visibilityResult.visible) {
-      console.warn('Morphly virtual camera probe succeeded but Windows PnP visibility check did not find the device. Continuing anyway.');
-    }
     return {
       success: true,
-      message: 'Morphly virtual camera registration is healthy.',
-      deviceVisible: visibilityResult.visible
+      message: 'Morphly virtual camera registration is healthy.'
     };
   } else if (!attemptRepair) {
     return {
       success: false,
-      error: 'Morphly virtual camera is not registered. Run the installer or morphly_cam_registrar install.',
-      deviceVisible: false
+      error: 'Morphly virtual camera is not registered. Run the installer or morphly_cam_registrar install.'
     };
   }
 
-  const repairReason = probeResult.ok
-    ? 'Windows camera visibility check failed'
-    : 'virtual camera probe failed';
-  console.warn(`Morphly virtual camera ${repairReason}. Attempting automatic registration repair...`);
-
-  const installAllUsersResult = runVirtualCameraRegistrar(registrarPath, ['install', '--all-users']);
+  console.warn('Morphly virtual camera probe failed. Requesting an automatic registration repair...');
+  const installAllUsersResult = await runVirtualCameraRegistrar(registrarPath, ['install', '--all-users']);
   if (!installAllUsersResult.ok) {
-    console.warn('All-users registration failed. Retrying current-user registration...');
-    const installCurrentUserResult = runVirtualCameraRegistrar(registrarPath, ['install']);
-    if (!installCurrentUserResult.ok) {
-      return {
-        success: false,
-        error: 'Unable to register Morphly virtual camera. Please run morphly_cam_registrar install as Administrator.',
-        deviceVisible: false
-      };
-    }
+    return {
+      success: false,
+      error: 'Virtual-camera repair was not completed. Approve the Windows Administrator prompt, then start Morphly again.'
+    };
   }
 
-  const reprobeResult = runVirtualCameraRegistrar(registrarPath, ['probe']);
+  const reprobeResult = await runVirtualCameraRegistrar(registrarPath, ['probe']);
   if (!reprobeResult.ok) {
     return {
       success: false,
-      error: 'Morphly virtual camera still failed probe after repair. Please reinstall Morphly Desktop.',
-      deviceVisible: false
+      error: 'Morphly virtual camera still failed its health check after repair. Please reinstall Morphly Desktop.'
     };
   }
 
-  const visibilityResult = probeWindowsCameraVisibility();
-  if (!visibilityResult.visible) {
-    console.warn('Morphly virtual camera passed registrar probe after repair, but Windows camera visibility check still failed. Continuing because registration is healthy.');
-    return {
-      success: true,
-      message: 'Morphly virtual camera registration repaired successfully, but Windows PnP visibility is still delayed or unavailable.',
-      warning: 'Morphly G1 may not appear in some camera pickers immediately even though the driver probe succeeded.',
-      deviceVisible: false
-    };
-  }
-
-  return { success: true, message: 'Morphly virtual camera registration repaired successfully.', deviceVisible: true };
+  return { success: true, message: 'Morphly virtual camera registration repaired successfully.' };
 }
 
 function createVirtualCameraFrameHeader(payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
@@ -908,10 +853,12 @@ function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:start', async () => {
     virtualCameraEnabled = true;
 
-    // Starting an AI session must never launch a synchronous elevated driver repair.
-    // Driver installation belongs to the installer; at runtime we only probe and
-    // degrade gracefully when the optional virtual-camera output is unavailable.
-    const registrationResult = ensureVirtualCameraRegistration({ attemptRepair: false });
+    // A packaged build can repair genuinely missing registration through the
+    // registrar's UAC flow. The registrar is asynchronous so the Electron main
+    // process and the live AI session remain responsive while Windows prompts.
+    const registrationResult = await ensureVirtualCameraRegistration({
+      attemptRepair: app.isPackaged
+    });
     if (!registrationResult.success) {
       virtualCameraEnabled = false;
       return registrationResult;
