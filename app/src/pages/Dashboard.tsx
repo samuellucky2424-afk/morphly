@@ -2288,7 +2288,7 @@ function Dashboard() {
         morphlyCamWindowEnabledRef.current = false;
         const message = virtualCameraStartResult.error || virtualCameraStartResult.message || 'Morphly virtual camera is unavailable';
         console.warn('Morphly virtual camera is unavailable:', message);
-        toast.warning('Morphly started without virtual-camera output. Reinstall as Administrator to enable Morphly G1.');
+        toast.warning(message);
       }
     });
 

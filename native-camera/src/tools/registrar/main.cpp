@@ -6,10 +6,12 @@
 #include <ksmedia.h>
 #include <mfapi.h>
 #include <mfidl.h>
+#include <mfreadwrite.h>
 #include <mfvirtualcamera.h>
 #include <objbase.h>
 #include <olectl.h>
 #include <shellapi.h>
+#include <wrl.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -36,6 +38,9 @@ namespace
 {
     using DllEntryProc = HRESULT(STDAPICALLTYPE*)();
     using Microsoft::WRL::ComPtr;
+    using Microsoft::WRL::Make;
+    using Microsoft::WRL::RuntimeClass;
+    using Microsoft::WRL::RuntimeClassFlags;
 
     constexpr wchar_t kDirectShowDllName[] = L"MorphlyVirtualCamera.dll";
     constexpr wchar_t kWindowsVirtualCameraDllName[] = L"MorphlyVirtualCameraMF.dll";
@@ -93,6 +98,111 @@ namespace
         }
 
         HRESULT result;
+    };
+
+    class StreamProbeCallback final
+        : public RuntimeClass<
+              RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
+              IMFSourceReaderCallback>
+    {
+    public:
+        StreamProbeCallback()
+            : completionEvent_(CreateEventW(nullptr, TRUE, FALSE, nullptr))
+        {
+        }
+
+        ~StreamProbeCallback() override
+        {
+            if (completionEvent_ != nullptr)
+            {
+                CloseHandle(completionEvent_);
+            }
+        }
+
+        HRESULT Prepare()
+        {
+            if (completionEvent_ == nullptr)
+            {
+                return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
+            }
+
+            status_ = E_PENDING;
+            streamFlags_ = 0;
+            sample_.Reset();
+            return ResetEvent(completionEvent_)
+                ? S_OK
+                : HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        HRESULT WaitForSample(DWORD timeoutMs, DWORD* streamFlags, IMFSample** sample)
+        {
+            if (streamFlags == nullptr || sample == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            *streamFlags = 0;
+            *sample = nullptr;
+            if (completionEvent_ == nullptr)
+            {
+                return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
+            }
+
+            const DWORD waitResult = WaitForSingleObject(completionEvent_, timeoutMs);
+            if (waitResult == WAIT_TIMEOUT)
+            {
+                return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            }
+            if (waitResult != WAIT_OBJECT_0)
+            {
+                return HRESULT_FROM_WIN32(GetLastError());
+            }
+            if (FAILED(status_))
+            {
+                return status_;
+            }
+            if ((streamFlags_ & MF_SOURCE_READERF_ERROR) != 0)
+            {
+                return E_FAIL;
+            }
+            *streamFlags = streamFlags_;
+            if (!sample_)
+            {
+                return S_FALSE;
+            }
+
+            return sample_.CopyTo(sample);
+        }
+
+        IFACEMETHODIMP OnReadSample(
+            HRESULT status,
+            DWORD,
+            DWORD streamFlags,
+            LONGLONG,
+            IMFSample* sample) override
+        {
+            status_ = status;
+            streamFlags_ = streamFlags;
+            sample_ = sample;
+            SetEvent(completionEvent_);
+            return S_OK;
+        }
+
+        IFACEMETHODIMP OnFlush(DWORD) override
+        {
+            return S_OK;
+        }
+
+        IFACEMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override
+        {
+            return S_OK;
+        }
+
+    private:
+        HANDLE completionEvent_ = nullptr;
+        HRESULT status_ = E_PENDING;
+        DWORD streamFlags_ = 0;
+        ComPtr<IMFSample> sample_;
     };
 
     std::wstring FormatHResult(HRESULT value)
@@ -275,6 +385,38 @@ namespace
         return std::filesystem::path(executablePath).parent_path() / fileName;
     }
 
+    HRESULT GetSideBySideBinaryPath(
+        const std::filesystem::path& sourcePath,
+        const std::filesystem::path& targetDirectory,
+        std::filesystem::path* sideBySidePath)
+    {
+        if (sideBySidePath == nullptr)
+        {
+            return E_POINTER;
+        }
+
+        WIN32_FILE_ATTRIBUTE_DATA attributes{};
+        if (!GetFileAttributesExW(
+                sourcePath.c_str(),
+                GetFileExInfoStandard,
+                &attributes))
+        {
+            return HRESULT_FROM_WIN32(GetLastError());
+        }
+
+        ULARGE_INTEGER lastWriteTime{};
+        lastWriteTime.HighPart = attributes.ftLastWriteTime.dwHighDateTime;
+        lastWriteTime.LowPart = attributes.ftLastWriteTime.dwLowDateTime;
+
+        const std::wstring versionedName =
+            sourcePath.stem().wstring() +
+            L"." +
+            std::to_wstring(lastWriteTime.QuadPart) +
+            sourcePath.extension().wstring();
+        *sideBySidePath = targetDirectory / versionedName;
+        return S_OK;
+    }
+
     HRESULT EnsureStagedBinary(const wchar_t* fileName, std::filesystem::path* stagedPath)
     {
         if (stagedPath == nullptr)
@@ -308,12 +450,29 @@ namespace
             const HRESULT copyResult = HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
             if (copyResult == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) && std::filesystem::exists(targetPath))
             {
+                std::filesystem::path sideBySidePath;
+                RETURN_IF_FAILED(GetSideBySideBinaryPath(
+                    sourcePath,
+                    targetDirectory,
+                    &sideBySidePath));
+
+                error.clear();
+                std::filesystem::copy_file(
+                    sourcePath,
+                    sideBySidePath,
+                    std::filesystem::copy_options::overwrite_existing,
+                    error);
+                if (error)
+                {
+                    return HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
+                }
+
                 LogInfo(
-                    std::wstring(L"Staged binary is already in use; reusing existing copy for ") +
+                    std::wstring(L"Staged binary is already in use; installed the update side-by-side for ") +
                     fileName +
-                    L" because " +
-                    FormatHResult(copyResult));
-                *stagedPath = targetPath;
+                    L" at " +
+                    sideBySidePath.wstring());
+                *stagedPath = sideBySidePath;
                 return S_OK;
             }
 
@@ -673,9 +832,15 @@ namespace
         const HRESULT enumerationResult = WaitForVirtualCameraEnumeration(symbolicLink);
         if (FAILED(enumerationResult))
         {
-            LogFailure(L"Virtual camera did not appear in Media Foundation enumeration.", enumerationResult);
+            // Device enumeration is eventually consistent on Windows. The camera can
+            // already be usable by Frame Server while MFEnumDeviceSources still has a
+            // stale snapshot, so this is diagnostic information rather than an
+            // installation failure.
+            LogInfo(
+                L"Virtual camera enumeration is still pending; continuing because the media source activated. " +
+                FormatHResult(enumerationResult));
             LogEnumeratedVideoCaptureDevices();
-            return enumerationResult;
+            return S_OK;
         }
 
         LogSuccess(L"Virtual camera is present in Media Foundation device enumeration.");
@@ -822,6 +987,132 @@ namespace
         return result;
     }
 
+    HRESULT ProbeWindowsVirtualCameraStream()
+    {
+        ComScope com(COINIT_MULTITHREADED);
+        if (FAILED(com.result) && com.result != RPC_E_CHANGED_MODE)
+        {
+            return com.result;
+        }
+
+        ComPtr<IMFActivate> activate;
+        RETURN_IF_FAILED(FindCameraActivateByFriendlyNameFragment(
+            morphly::kVirtualCameraFriendlyName,
+            &activate));
+
+        ComPtr<IMFMediaSource> mediaSource;
+        RETURN_IF_FAILED(activate->ActivateObject(IID_PPV_ARGS(&mediaSource)));
+
+        auto callback = Make<StreamProbeCallback>();
+        if (!callback)
+        {
+            return E_OUTOFMEMORY;
+        }
+
+        ComPtr<IMFAttributes> readerAttributes;
+        RETURN_IF_FAILED(MFCreateAttributes(&readerAttributes, 2));
+        RETURN_IF_FAILED(readerAttributes->SetUnknown(
+            MF_SOURCE_READER_ASYNC_CALLBACK,
+            callback.Get()));
+        RETURN_IF_FAILED(readerAttributes->SetUINT32(
+            MF_READWRITE_DISABLE_CONVERTERS,
+            TRUE));
+
+        ComPtr<IMFSourceReader> reader;
+        RETURN_IF_FAILED(MFCreateSourceReaderFromMediaSource(
+            mediaSource.Get(),
+            readerAttributes.Get(),
+            &reader));
+        RETURN_IF_FAILED(reader->SetStreamSelection(
+            MF_SOURCE_READER_ALL_STREAMS,
+            FALSE));
+        RETURN_IF_FAILED(reader->SetStreamSelection(
+            MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+            TRUE));
+        ComPtr<IMFSample> sample;
+        DWORD streamFlags = 0;
+        HRESULT sampleResult = HRESULT_FROM_WIN32(ERROR_NO_DATA);
+        for (DWORD attempt = 0; attempt < 10 && !sample; ++attempt)
+        {
+            RETURN_IF_FAILED(callback->Prepare());
+            RETURN_IF_FAILED(reader->ReadSample(
+                MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+                0,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr));
+
+            sampleResult = callback->WaitForSample(5000, &streamFlags, &sample);
+            if (FAILED(sampleResult))
+            {
+                (void)mediaSource->Shutdown();
+                (void)activate->ShutdownObject();
+                return sampleResult;
+            }
+            if ((streamFlags & MF_SOURCE_READERF_ENDOFSTREAM) != 0)
+            {
+                break;
+            }
+        }
+
+        if (!sample)
+        {
+            (void)mediaSource->Shutdown();
+            (void)activate->ShutdownObject();
+            return HRESULT_FROM_WIN32(ERROR_NO_DATA);
+        }
+
+        ComPtr<IMFMediaBuffer> buffer;
+        RETURN_IF_FAILED(sample->ConvertToContiguousBuffer(&buffer));
+
+        DWORD byteCount = 0;
+        RETURN_IF_FAILED(buffer->GetCurrentLength(&byteCount));
+        (void)mediaSource->Shutdown();
+        (void)activate->ShutdownObject();
+
+        return byteCount > 0 ? S_OK : HRESULT_FROM_WIN32(ERROR_NO_DATA);
+    }
+
+    HRESULT ProbeRegisteredWindowsVirtualCamera()
+    {
+        HRESULT result = ProbeRegisteredWindowsSource();
+        if (FAILED(result))
+        {
+            LogFailure(L"The Media Foundation camera COM source is not registered.", result);
+            return result;
+        }
+
+        MfScope mf;
+        if (FAILED(mf.result))
+        {
+            return mf.result;
+        }
+
+        ComPtr<IMFVirtualCamera> camera;
+        result = OpenWindowsVirtualCamera(
+            morphly::kVirtualCameraFriendlyName,
+            morphly::kWindowsVirtualCameraSourceClsid,
+            &camera);
+        if (FAILED(result))
+        {
+            LogFailure(L"MFCreateVirtualCamera could not open the Morphly camera identity.", result);
+            return result;
+        }
+
+        result = ProbeWindowsVirtualCameraStream();
+        if (FAILED(result))
+        {
+            LogFailure(
+                L"The Media Foundation camera opened but did not deliver a video sample.",
+                result);
+            return result;
+        }
+
+        LogSuccess(L"Media Foundation virtual camera registration and video stream are healthy.");
+        return S_OK;
+    }
+
     HRESULT ProbeEnumeratedWindowsVirtualCamera()
     {
         ComScope com(COINIT_MULTITHREADED);
@@ -849,13 +1140,7 @@ namespace
             return com.result;
         }
 
-        HRESULT result = InvokeRegisteredBinary(kDirectShowDllName, "DllRegisterServer", true);
-        if (FAILED(result))
-        {
-            return result;
-        }
-
-        result = InvokeRegisteredBinary(kWindowsVirtualCameraDllName, "DllRegisterServer", true);
+        HRESULT result = InvokeRegisteredBinary(kWindowsVirtualCameraDllName, "DllRegisterServer", true);
         if (FAILED(result))
         {
             return result;
@@ -899,12 +1184,14 @@ namespace
         }
 
         LogInfo(std::wstring(L"Starting Windows virtual camera \"") + morphly::kVirtualCameraFriendlyName + L'"');
+        bool cameraWasAlreadyActive = false;
         result = camera->Start(nullptr);
         if (result == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION))
         {
             // A system-lifetime virtual camera with this source CLSID is already active.
             // This is expected on re-install when the camera is in use. Treat as already installed.
             LogInfo(L"Windows virtual camera is already active (sharing violation on Start). Skipping re-registration.");
+            cameraWasAlreadyActive = true;
             result = S_OK;
         }
         else if (FAILED(result))
@@ -912,25 +1199,35 @@ namespace
             return result;
         }
 
-        result = ValidateVirtualCamera(camera.Get());
-        if (FAILED(result))
+        if (!cameraWasAlreadyActive)
         {
-            return result;
+            result = ValidateVirtualCamera(camera.Get());
+            if (FAILED(result))
+            {
+                return result;
+            }
         }
 
-        result = ProbeRegisteredDirectShowCamera();
+        // Register DirectShow last. Removing/replacing the Windows virtual camera
+        // can clear a same-named capture-category instance, which previously made a
+        // successful install lose its legacy DirectShow entry immediately.
+        result = InvokeRegisteredBinary(kDirectShowDllName, "DllRegisterServer", true);
         if (FAILED(result))
         {
-            return result;
+            LogInfo(
+                L"Legacy DirectShow registration failed; the Media Foundation camera remains available. " +
+                FormatHResult(result));
         }
 
-        result = ProbeRegisteredWindowsSource();
-        if (FAILED(result))
+        const HRESULT directShowProbeResult = ProbeRegisteredDirectShowCamera();
+        if (FAILED(directShowProbeResult))
         {
-            return result;
+            LogInfo(
+                L"Legacy DirectShow camera was not found after registration; continuing with Media Foundation. " +
+                FormatHResult(directShowProbeResult));
         }
 
-        return ProbeEnumeratedWindowsVirtualCamera();
+        return ProbeRegisteredWindowsVirtualCamera();
     }
 
     HRESULT RegisterDirectShowCameraOnly()
@@ -1075,14 +1372,28 @@ int wmain(int argc, wchar_t** argv)
     }
     else if (command == L"probe")
     {
-        result = ProbeRegisteredDirectShowCamera();
+        // Media Foundation is the primary camera path used by WhatsApp, browsers,
+        // Teams and other modern applications. DirectShow and immediate device
+        // enumeration are useful diagnostics, but neither is an authoritative
+        // health check for the MF virtual camera.
+        result = ProbeRegisteredWindowsVirtualCamera();
         if (SUCCEEDED(result))
         {
-            result = ProbeRegisteredWindowsSource();
-        }
-        if (SUCCEEDED(result))
-        {
-            result = ProbeEnumeratedWindowsVirtualCamera();
+            const HRESULT directShowResult = ProbeRegisteredDirectShowCamera();
+            if (FAILED(directShowResult))
+            {
+                LogInfo(
+                    L"Legacy DirectShow camera is unavailable; Media Foundation remains healthy. " +
+                    FormatHResult(directShowResult));
+            }
+
+            const HRESULT enumerationResult = ProbeEnumeratedWindowsVirtualCamera();
+            if (FAILED(enumerationResult))
+            {
+                LogInfo(
+                    L"Media Foundation enumeration has not refreshed yet; registration remains healthy. " +
+                    FormatHResult(enumerationResult));
+            }
         }
     }
     else if (command == L"register")

@@ -985,6 +985,7 @@ namespace morphly::virtualcam
             HRESULT Start(IMFMediaType* mediaType, bool sendEvents);
             HRESULT Stop(bool sendEvents);
             HRESULT ShutdownStream();
+            HRESULT SetSampleAllocator(IMFVideoSampleAllocator* allocator);
             bool IsSelected() const noexcept;
             DWORD StreamIdentifier() const noexcept;
             HRESULT CopyAttributes(IMFAttributes** attributes);
@@ -1001,7 +1002,10 @@ namespace morphly::virtualcam
             IFACEMETHODIMP GetStreamState(MF_STREAM_STATE* value) override;
 
         private:
-            HRESULT CreateNextSample(IMFMediaType* mediaType, IMFSample** sample);
+            HRESULT CreateNextSample(
+                IMFMediaType* mediaType,
+                IMFVideoSampleAllocator* sampleAllocator,
+                IMFSample** sample);
 
             mutable std::mutex lock_;
             MorphlyMediaSource* parent_ = nullptr;
@@ -1009,12 +1013,14 @@ namespace morphly::virtualcam
             ComPtr<IMFAttributes> attributes_;
             ComPtr<IMFStreamDescriptor> streamDescriptor_;
             ComPtr<IMFMediaType> currentMediaType_;
+            ComPtr<IMFVideoSampleAllocator> sampleAllocator_;
             MediaConfig mediaConfig_{};
             SharedFrameReader frameReader_;
             std::vector<uint8_t> cachedBgraFrame_;
             bool isShutdown_ = false;
             bool isSelected_ = false;
             bool hasCachedFrame_ = false;
+            bool sampleAllocatorInitialized_ = false;
             MF_STREAM_STATE streamState_ = MF_STREAM_STATE_STOPPED;
             uint64_t sampleFrameIndex_ = 0;
             uint64_t syntheticFrameIndex_ = 0;
@@ -1268,6 +1274,35 @@ namespace morphly::virtualcam
 
             ComPtr<IMFMediaTypeHandler> handler;
             RETURN_IF_FAILED(streamDescriptor_->GetMediaTypeHandler(&handler));
+
+            BOOL mediaTypeMatches = FALSE;
+            if (currentMediaType_)
+            {
+                (void)currentMediaType_->Compare(
+                    mediaType,
+                    MF_ATTRIBUTES_MATCH_ALL_ITEMS,
+                    &mediaTypeMatches);
+            }
+
+            if (!sampleAllocator_)
+            {
+                AppendMfVirtualCameraLogLine(
+                    L"[Stream::Start] The camera pipeline did not provide a sample allocator.");
+                return MF_E_NOT_INITIALIZED;
+            }
+
+            if (!sampleAllocatorInitialized_ || !mediaTypeMatches)
+            {
+                if (sampleAllocatorInitialized_)
+                {
+                    RETURN_IF_FAILED(sampleAllocator_->UninitializeSampleAllocator());
+                    sampleAllocatorInitialized_ = false;
+                }
+
+                RETURN_IF_FAILED(sampleAllocator_->InitializeSampleAllocator(10, mediaType));
+                sampleAllocatorInitialized_ = true;
+            }
+
             RETURN_IF_FAILED(handler->SetCurrentMediaType(mediaType));
             currentMediaType_ = mediaType;
             streamState_ = MF_STREAM_STATE_RUNNING;
@@ -1320,8 +1355,42 @@ namespace morphly::virtualcam
             attributes_.Reset();
             currentMediaType_.Reset();
             streamDescriptor_.Reset();
+            if (sampleAllocator_ && sampleAllocatorInitialized_)
+            {
+                (void)sampleAllocator_->UninitializeSampleAllocator();
+            }
+            sampleAllocatorInitialized_ = false;
+            sampleAllocator_.Reset();
             frameReader_.Close();
             parent_ = nullptr;
+            return S_OK;
+        }
+
+        HRESULT MorphlyMediaStream::SetSampleAllocator(IMFVideoSampleAllocator* allocator)
+        {
+            if (allocator == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            std::lock_guard<std::mutex> guard(lock_);
+            if (isShutdown_)
+            {
+                return MF_E_SHUTDOWN;
+            }
+
+            if (streamState_ == MF_STREAM_STATE_RUNNING)
+            {
+                return MF_E_INVALIDREQUEST;
+            }
+
+            if (sampleAllocator_ && sampleAllocatorInitialized_)
+            {
+                RETURN_IF_FAILED(sampleAllocator_->UninitializeSampleAllocator());
+            }
+
+            sampleAllocatorInitialized_ = false;
+            sampleAllocator_ = allocator;
             return S_OK;
         }
 
@@ -1433,6 +1502,7 @@ namespace morphly::virtualcam
             AppendMfVirtualCameraLogLine(L"[Stream::RequestSample] called.");
             ComPtr<IMFMediaEventQueue> eventQueue;
             ComPtr<IMFMediaType> mediaType;
+            ComPtr<IMFVideoSampleAllocator> sampleAllocator;
 
             {
                 std::lock_guard<std::mutex> guard(lock_);
@@ -1448,10 +1518,11 @@ namespace morphly::virtualcam
 
                 eventQueue = eventQueue_;
                 mediaType = currentMediaType_;
+                sampleAllocator = sampleAllocator_;
             }
 
             ComPtr<IMFSample> sample;
-            RETURN_IF_FAILED(CreateNextSample(mediaType.Get(), &sample));
+            RETURN_IF_FAILED(CreateNextSample(mediaType.Get(), sampleAllocator.Get(), &sample));
 
             if (token != nullptr)
             {
@@ -1467,6 +1538,19 @@ namespace morphly::virtualcam
             if (isShutdown_)
             {
                 return MF_E_SHUTDOWN;
+            }
+
+            if (value == MF_STREAM_STATE_RUNNING && !sampleAllocatorInitialized_)
+            {
+                if (!sampleAllocator_ || !currentMediaType_)
+                {
+                    return MF_E_NOT_INITIALIZED;
+                }
+
+                RETURN_IF_FAILED(sampleAllocator_->InitializeSampleAllocator(
+                    10,
+                    currentMediaType_.Get()));
+                sampleAllocatorInitialized_ = true;
             }
 
             streamState_ = value;
@@ -1491,9 +1575,12 @@ namespace morphly::virtualcam
             return S_OK;
         }
 
-        HRESULT MorphlyMediaStream::CreateNextSample(IMFMediaType* mediaType, IMFSample** sample)
+        HRESULT MorphlyMediaStream::CreateNextSample(
+            IMFMediaType* mediaType,
+            IMFVideoSampleAllocator* sampleAllocator,
+            IMFSample** sample)
         {
-            if (sample == nullptr || mediaType == nullptr)
+            if (sample == nullptr || mediaType == nullptr || sampleAllocator == nullptr)
             {
                 return E_POINTER;
             }
@@ -1620,17 +1707,41 @@ namespace morphly::virtualcam
                 ApplyYuy2Heartbeat(outputBytes.data(), outputBytes.size(), sampleFrameIndex_);
             }
 
-            RETURN_IF_FAILED(MFCreateMemoryBuffer(static_cast<DWORD>(outputBytes.size()), &buffer));
+            RETURN_IF_FAILED(sampleAllocator->AllocateSample(&value));
+            RETURN_IF_FAILED(value->GetBufferByIndex(0, &buffer));
 
-            BYTE* destination = nullptr;
-            DWORD maxLength = 0;
-            RETURN_IF_FAILED(buffer->Lock(&destination, nullptr, &maxLength));
-            std::memcpy(destination, outputBytes.data(), outputBytes.size());
+            ComPtr<IMF2DBuffer> buffer2D;
+            if (SUCCEEDED(buffer.As(&buffer2D)))
+            {
+                DWORD contiguousLength = 0;
+                RETURN_IF_FAILED(buffer2D->GetContiguousLength(&contiguousLength));
+                if (contiguousLength < outputBytes.size())
+                {
+                    return MF_E_BUFFERTOOSMALL;
+                }
+
+                // The camera pipeline allocator can return a padded surface.
+                // ContiguousCopyFrom handles its native pitch and plane layout.
+                RETURN_IF_FAILED(buffer2D->ContiguousCopyFrom(
+                    outputBytes.data(),
+                    static_cast<DWORD>(outputBytes.size())));
+            }
+            else
+            {
+                BYTE* destination = nullptr;
+                DWORD maxLength = 0;
+                RETURN_IF_FAILED(buffer->Lock(&destination, nullptr, &maxLength));
+                if (maxLength < outputBytes.size())
+                {
+                    (void)buffer->Unlock();
+                    return MF_E_BUFFERTOOSMALL;
+                }
+
+                std::memcpy(destination, outputBytes.data(), outputBytes.size());
+                RETURN_IF_FAILED(buffer->Unlock());
+            }
+
             RETURN_IF_FAILED(buffer->SetCurrentLength(static_cast<DWORD>(outputBytes.size())));
-            RETURN_IF_FAILED(buffer->Unlock());
-
-            RETURN_IF_FAILED(MFCreateSample(&value));
-            RETURN_IF_FAILED(value->AddBuffer(buffer.Get()));
 
             const LONGLONG duration = (kHundredsOfNsPerSecond * fpsDen) / fpsNum;
             ++sampleFrameIndex_;
@@ -2097,30 +2208,33 @@ namespace morphly::virtualcam
 
             state_ = SourceState::Started;
 
-            // When starting (not seeking) and the requested position is VT_EMPTY,
-            // the spec requires MF_EVENT_SOURCE_ACTUAL_START to be set on the event.
-            if (sourceEventType == MESourceStarted &&
-                (startPosition == nullptr || startPosition->vt == VT_EMPTY))
+            PROPVARIANT actualStart{};
+            PropVariantInit(&actualStart);
+            const PROPVARIANT* eventStartPosition = startPosition;
+            if (sourceEventType == MESourceStarted)
             {
-                PROPVARIANT zeroStart{};
-                PropVariantInit(&zeroStart);
-                zeroStart.vt = VT_I8;
-                zeroStart.hVal.QuadPart = 0;
-                ComPtr<IMFMediaEvent> startEvent;
-                RETURN_IF_FAILED(MFCreateMediaEvent(MESourceStarted, GUID_NULL, S_OK,
-                    &zeroStart, &startEvent));
-                RETURN_IF_FAILED(startEvent->SetUINT64(MF_EVENT_SOURCE_ACTUAL_START, 0));
-                RETURN_IF_FAILED(eventQueue_->QueueEvent(startEvent.Get()));
+                // This live source timestamps samples with MFGetSystemTime. Announce
+                // the same QPC-based time when starting so clients do not discard
+                // every frame as being outside the presentation timeline.
+                RETURN_IF_FAILED(InitPropVariantFromInt64(
+                    static_cast<LONGLONG>(MFGetSystemTime()),
+                    &actualStart));
+                eventStartPosition = &actualStart;
             }
-            else
-            {
-                RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(sourceEventType, GUID_NULL,
-                    S_OK, startPosition));
-            }
+
+            RETURN_IF_FAILED(eventQueue_->QueueEventParamVar(
+                sourceEventType,
+                GUID_NULL,
+                S_OK,
+                eventStartPosition));
 
             if (selected)
             {
-                RETURN_IF_FAILED(stream_->QueueEvent(streamEventType, GUID_NULL, S_OK, startPosition));
+                RETURN_IF_FAILED(stream_->QueueEvent(
+                    streamEventType,
+                    GUID_NULL,
+                    S_OK,
+                    eventStartPosition));
             }
 
             return S_OK;
@@ -2270,14 +2384,29 @@ namespace morphly::virtualcam
             return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
         }
 
-        IFACEMETHODIMP MorphlyMediaSource::SetDefaultAllocator(DWORD outputStreamId, IUnknown* /*allocator*/)
+        IFACEMETHODIMP MorphlyMediaSource::SetDefaultAllocator(DWORD outputStreamId, IUnknown* allocator)
         {
+            if (allocator == nullptr)
+            {
+                return E_POINTER;
+            }
+
+            std::lock_guard<std::mutex> guard(lock_);
+            if (state_ == SourceState::Shutdown)
+            {
+                return MF_E_SHUTDOWN;
+            }
+
             if (outputStreamId != kStreamId)
             {
                 return MF_E_INVALIDSTREAMNUMBER;
             }
 
-            return S_OK;
+            ComPtr<IMFVideoSampleAllocator> videoAllocator;
+            RETURN_IF_FAILED(allocator->QueryInterface(IID_PPV_ARGS(&videoAllocator)));
+            AppendMfVirtualCameraLogLine(
+                L"[Source::SetDefaultAllocator] Using the camera pipeline allocator.");
+            return stream_->SetSampleAllocator(videoAllocator.Get());
         }
 
         IFACEMETHODIMP MorphlyMediaSource::GetAllocatorUsage(DWORD outputStreamId, DWORD* inputStreamId, MFSampleAllocatorUsage* usage)
@@ -2287,13 +2416,19 @@ namespace morphly::virtualcam
                 return E_POINTER;
             }
 
+            std::lock_guard<std::mutex> guard(lock_);
+            if (state_ == SourceState::Shutdown)
+            {
+                return MF_E_SHUTDOWN;
+            }
+
             if (outputStreamId != kStreamId)
             {
                 return MF_E_INVALIDSTREAMNUMBER;
             }
 
             *inputStreamId = kStreamId;
-            *usage = MFSampleAllocatorUsage_UsesCustomAllocator;
+            *usage = MFSampleAllocatorUsage_UsesProvidedAllocator;
             return S_OK;
         }
     }

@@ -129,6 +129,7 @@ add_executable(morphly_cam_registrar
 target_link_libraries(morphly_cam_registrar PRIVATE
     mf
     mfplat
+    mfreadwrite
     mfsensorgroup
     mfuuid
     morphly_common
