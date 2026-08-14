@@ -4,13 +4,11 @@ import {
   Briefcase,
   Home,
   Trees,
-  Sun,
-  Sparkles,
-  Building2,
   Camera,
   VideoOff,
   Loader2,
   Send,
+  Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetchWithAuth } from '@/lib/api-client';
@@ -21,65 +19,46 @@ export interface BackgroundPreset {
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   prompt: string;
+  avatarPrompt?: string;
   snippet?: string;
 }
 
 export const BACKGROUND_PRESETS: BackgroundPreset[] = [
   {
     id: 'original',
-    label: 'Original Room',
-    description: 'Keep your natural background',
+    label: 'Original Room (Natural Camera)',
+    description: 'Keep your real camera background',
     icon: Camera,
     prompt: '',
+    avatarPrompt: 'Substitute the character in the video with the person in the reference image.',
     snippet: '',
   },
   {
     id: 'office',
-    label: 'Modern Office',
-    description: 'Executive office with floor-to-ceiling windows & bookshelves',
+    label: 'Executive Office (Sitting at Desk)',
+    description: 'Sitting in black leather chair at wooden desk with laptop & paperwork',
     icon: Briefcase,
-    prompt: 'Change the background to a modern luxury corporate office with floor-to-ceiling windows, bookshelves, and soft warm ambient lighting.',
-    snippet: 'a modern luxury corporate office with floor-to-ceiling windows, bookshelves, and soft warm ambient lighting.',
+    prompt: 'Change the background to a realistic executive office with a black leather desk chair, wooden desk with laptop and paperwork, window blinds, and natural warm indoor lighting, photorealistic real photo camera shot.',
+    avatarPrompt: 'Substitute the character in the video with the person in the reference image sitting naturally upright in a black leather executive office chair behind a wooden desk with an open laptop, notebooks, pen, window blinds, and natural warm indoor lighting, photorealistic candid webcam shot.',
+    snippet: 'a realistic executive office with a black leather desk chair, wooden desk with laptop and paperwork, window blinds, and natural warm indoor lighting, photorealistic real photo.',
   },
   {
-    id: 'living-room',
-    label: 'Cozy Living Room',
-    description: 'Warm modern living room with houseplants & natural light',
+    id: 'room',
+    label: 'Modern Living Room (Sunlit Interior)',
+    description: 'Inside a bright modern home with wooden staircase and sunlit glass doors',
     icon: Home,
-    prompt: 'Change the background to a warm, cozy modern living room with indoor houseplants, soft interior lighting, and minimalist wooden furniture.',
-    snippet: 'a warm, cozy modern living room with indoor houseplants, soft interior lighting, and minimalist wooden furniture.',
+    prompt: 'Change the background to a bright modern home interior with an open wooden staircase, tall glass patio doors, clean architecture, indoor potted plants, and natural soft daylight, photorealistic real photo camera shot.',
+    avatarPrompt: 'Substitute the character in the video with the person in the reference image naturally inside a clean modern home interior with an open wooden staircase, tall sunlit glass doors, indoor potted plants, and soft natural daylight, photorealistic candid home webcam shot.',
+    snippet: 'a bright modern home interior with an open wooden staircase, tall glass patio doors, clean architecture, and natural soft daylight, photorealistic real photo.',
   },
   {
     id: 'garden',
-    label: 'Lush Garden',
-    description: 'Vibrant botanical garden with blooming flowers',
+    label: 'Sunny Garden (Outdoor Lawn)',
+    description: 'Sitting outdoors in a lush green backyard garden with trees and sunlight',
     icon: Trees,
-    prompt: 'Change the background to a beautiful lush outdoor botanical garden with vibrant green foliage, blooming flowers, and natural daylight.',
-    snippet: 'a beautiful lush outdoor botanical garden with vibrant green foliage, blooming flowers, and natural daylight.',
-  },
-  {
-    id: 'outdoor',
-    label: 'Mountain Vista',
-    description: 'Scenic outdoor landscape during golden hour',
-    icon: Sun,
-    prompt: 'Change the background to a scenic outdoor mountain vista during golden hour with a gentle warm sunset glow.',
-    snippet: 'a scenic outdoor mountain vista during golden hour with a gentle warm sunset glow.',
-  },
-  {
-    id: 'studio',
-    label: 'Minimalist Studio',
-    description: 'Architectural studio with concrete & spotlights',
-    icon: Building2,
-    prompt: 'Change the background to a clean architectural studio with textured concrete walls, soft spotlights, and minimalist decor.',
-    snippet: 'a clean architectural studio with textured concrete walls, soft spotlights, and minimalist decor.',
-  },
-  {
-    id: 'cyberpunk',
-    label: 'Neon Cyberpunk',
-    description: 'Futuristic studio with cyan & purple neon lighting',
-    icon: Sparkles,
-    prompt: 'Change the background to a futuristic cyberpunk studio with subtle purple and cyan neon lighting and high-tech holographic displays.',
-    snippet: 'a futuristic cyberpunk studio with subtle purple and cyan neon lighting and high-tech holographic displays.',
+    prompt: 'Change the background to a lush green backyard garden with leafy trees, blooming flowers, manicured green grass lawn, low wall, and warm natural outdoor sunlight, photorealistic real photo camera shot.',
+    avatarPrompt: 'Substitute the character in the video with the person in the reference image sitting comfortably outdoors in a lush green backyard garden with leafy green trees, grass lawn, low wall, and warm natural outdoor sunlight, photorealistic candid outdoor shot.',
+    snippet: 'a lush green backyard garden with leafy trees, blooming flowers, manicured green grass lawn, and warm natural outdoor sunlight, photorealistic real photo.',
   },
 ];
 
@@ -89,34 +68,30 @@ export function buildDecartTransformPrompt(
   customText: string = '',
 ): string {
   const customTrimmed = customText.trim();
-  let bgDescription = '';
-
   if (customTrimmed) {
-    bgDescription = customTrimmed.toLowerCase().startsWith('change the background to')
-      ? customTrimmed.replace(/^change the background to\s+/i, '')
-      : customTrimmed;
-  } else if (presetId && presetId !== 'original') {
-    const preset = BACKGROUND_PRESETS.find((p) => p.id === presetId);
-    if (preset?.snippet) {
-      bgDescription = preset.snippet;
-    } else if (preset?.prompt) {
-      bgDescription = preset.prompt.replace(/^change the background to\s+/i, '');
+    const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
+    if (hasReferenceImage) {
+      return `Substitute the character in the video with the person in the reference image, and change the background to ${cleanCustom}, natural room lighting, photorealistic candid shot.`;
     }
+    return `Change the background to ${cleanCustom}, natural room lighting, photorealistic candid shot.`;
   }
 
-  if (hasReferenceImage && bgDescription) {
-    return `Substitute the character in the video with the person in the reference image, and change the background to ${bgDescription}`;
+  const preset = BACKGROUND_PRESETS.find((p) => p.id === presetId) || BACKGROUND_PRESETS[0];
+  if (preset.id === 'original' || !preset.prompt) {
+    return hasReferenceImage
+      ? 'Substitute the character in the video with the person in the reference image.'
+      : '';
   }
 
-  if (hasReferenceImage) {
-    return 'Substitute the character in the video with the person in the reference image.';
+  if (hasReferenceImage && preset.avatarPrompt) {
+    return preset.avatarPrompt;
   }
 
-  if (bgDescription) {
-    return `Change the background to ${bgDescription}`;
+  if (hasReferenceImage && preset.snippet) {
+    return `Substitute the character in the video with the person in the reference image naturally fitting into ${preset.snippet}`;
   }
 
-  return 'Substitute the character in the video with the person in the reference image.';
+  return preset.prompt;
 }
 
 export interface BackgroundReplacerProps {

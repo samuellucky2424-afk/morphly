@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Sparkles,
   User,
-  Send,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BACKGROUND_PRESETS, buildDecartTransformPrompt } from '@/components/BackgroundReplacer';
@@ -2680,95 +2679,8 @@ function Dashboard() {
         </div>
       </main>
 
-      <footer className="relative z-10 flex max-h-[32vh] flex-col gap-1.5 overflow-y-auto border-t border-white/5 bg-[#0A0A0A] px-3 py-1.5">
-        <div className="flex flex-col gap-1 rounded-lg border border-[#222222] bg-[#111111] px-2.5 py-1.5">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-                AI Background Presets
-              </span>
-              {isBlendedMode ? (
-                <span className="text-[10px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
-                  ⚡ Avatar + BG Active (4 cr/s)
-                </span>
-              ) : referenceImage ? (
-                <span className="text-[10px] text-blue-400 font-medium">
-                  • Avatar Mode (2 cr/s)
-                </span>
-              ) : (
-                <span className="text-[10px] text-zinc-400 font-medium">
-                  • Background Mode (2 cr/s)
-                </span>
-              )}
-            </div>
-            <span className="text-[9px] text-zinc-500">Live Realtime Transformation</span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {BACKGROUND_PRESETS.map((preset) => {
-              const Icon = preset.icon;
-              const isSelected = activeBgPreset === preset.id;
-              return (
-                <button
-                  key={preset.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveBgPreset(preset.id);
-                    setCustomBgPrompt('');
-                    if (isStreaming) {
-                      toast.info(`Switching background to ${preset.label}...`);
-                    }
-                  }}
-                  className={`inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-all ${
-                    isSelected
-                      ? 'border-emerald-500 bg-emerald-950/80 text-emerald-300 shadow-sm'
-                      : 'border-[#2A2A2A] bg-[#1A1A1A] text-zinc-300 hover:border-zinc-500 hover:bg-[#242424]'
-                  }`}
-                >
-                  <Icon className={`h-3.5 w-3.5 ${isSelected ? 'text-emerald-400' : 'text-zinc-400'}`} />
-                  <span>{preset.label}</span>
-                </button>
-              );
-            })}
-            <div className="flex flex-1 min-w-[220px] items-center gap-1">
-              <input
-                type="text"
-                placeholder="Custom background (e.g. library with rain)..."
-                value={customBgPrompt}
-                onChange={(e) => setCustomBgPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (customBgPrompt.trim()) {
-                      setActiveBgPreset('custom');
-                      if (isStreaming) {
-                        toast.info('Applying custom background...');
-                      }
-                    }
-                  }
-                }}
-                className="h-[28px] flex-1 rounded-sm border border-[#2A2A2A] bg-[#161616] px-2 text-[11px] text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  if (customBgPrompt.trim()) {
-                    setActiveBgPreset('custom');
-                    if (isStreaming) {
-                      toast.info('Applying custom background...');
-                    }
-                  }
-                }}
-                disabled={!customBgPrompt.trim()}
-                className="flex h-[28px] items-center gap-1 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-40"
-              >
-                <Send className="h-3 w-3" />
-                <span>Apply</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
+      <footer className="relative z-10 flex flex-col gap-1.5 border-t border-white/5 bg-[#0A0A0A] px-3 py-2">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
           <button
             data-tour="start-stream"
@@ -2824,7 +2736,7 @@ function Dashboard() {
             onChange={(event) => handleModeChange(event.target.value)}
             title="Select performance mode"
             aria-label="Select performance mode"
-            className="h-[30px] min-w-[128px] rounded-sm border border-[#2A2A2A] bg-[#1A1A1A] px-2 text-[11px] font-medium text-[#D4D4D8] transition-colors focus:border-[#3A3A3A] focus:outline-none"
+            className="h-[30px] min-w-[110px] rounded-sm border border-[#2A2A2A] bg-[#1A1A1A] px-2 text-[11px] font-medium text-[#D4D4D8] transition-colors focus:border-[#3A3A3A] focus:outline-none"
           >
             <option value="fast">Fast Mode</option>
             <option value="balanced">Balanced Mode</option>
@@ -2833,7 +2745,7 @@ function Dashboard() {
 
           <div
             data-tour="camera-selector"
-            className="min-w-[260px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
+            className="min-w-[240px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
           >
             <div className="mb-0.5 flex items-center justify-between gap-3">
               <label htmlFor="physical-camera-selector" className="text-[10px] font-bold uppercase tracking-wider text-[#d4d4d8]">
@@ -2875,6 +2787,56 @@ function Dashboard() {
             </select>
             <p className="mt-0.5 text-[9px] leading-3 text-[#71717A]">
               Morphly Virtual Camera is the output camera. Do not select it here.
+            </p>
+          </div>
+
+          {/* AI Background Dropdown Selector */}
+          <div
+            data-tour="background-selector"
+            className="min-w-[240px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
+          >
+            <div className="mb-0.5 flex items-center justify-between gap-3">
+              <label htmlFor="background-preset-selector" className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                AI Background
+              </label>
+              {isBlendedMode ? (
+                <span className="text-[9px] font-bold text-amber-300">
+                  ⚡ Avatar + BG (4 cr/s)
+                </span>
+              ) : (
+                <span className="text-[9px] font-medium text-zinc-400">
+                  2 cr/s
+                </span>
+              )}
+            </div>
+            <select
+              id="background-preset-selector"
+              value={activeBgPreset}
+              onChange={(event) => {
+                const newPreset = event.target.value;
+                setActiveBgPreset(newPreset);
+                setCustomBgPrompt('');
+                if (isStreaming) {
+                  const p = BACKGROUND_PRESETS.find((item) => item.id === newPreset);
+                  toast.info(`Switching background to ${p?.label || 'Original Room'}...`);
+                }
+              }}
+              title="Select AI background"
+              aria-label="Select AI background"
+              className="h-[30px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] text-[#D4D4D8] transition-colors focus:border-emerald-400 focus:outline-none"
+            >
+              {BACKGROUND_PRESETS.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-0.5 text-[9px] leading-3 text-[#71717A]">
+              {activeBgPreset === 'original'
+                ? 'Using natural room camera background.'
+                : isBlendedMode
+                  ? 'Avatar seated naturally in photorealistic background (4 cr/s).'
+                  : 'Photorealistic background (2 cr/s).'}
             </p>
           </div>
         </div>
