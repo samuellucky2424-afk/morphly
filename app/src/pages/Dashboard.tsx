@@ -12,8 +12,6 @@ import {
   Coins,
   LoaderCircle,
   RefreshCw,
-  Sparkles,
-  User,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { BACKGROUND_PRESETS, buildDecartTransformPrompt } from '@/components/BackgroundReplacer';
@@ -2629,42 +2627,15 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Active Transform Status Pill */}
-        <div className="absolute left-6 top-6 z-20 flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-3.5 py-1.5 backdrop-blur-md shadow-lg shadow-black/50 text-xs">
-          <div className="flex items-center gap-1.5">
-            <User className={`h-3.5 w-3.5 ${referenceImage ? 'text-blue-400' : 'text-zinc-500'}`} />
-            <span className={referenceImage ? 'text-blue-200 font-medium' : 'text-zinc-400'}>
-              {referenceImage ? 'Avatar Active' : 'No Avatar'}
-            </span>
-          </div>
-          <span className="text-zinc-600">•</span>
-          <div className="flex items-center gap-1.5">
-            <Sparkles className={`h-3.5 w-3.5 ${activeBgPreset !== 'original' || customBgPrompt ? 'text-emerald-400' : 'text-zinc-500'}`} />
-            <span className={activeBgPreset !== 'original' || customBgPrompt ? 'text-emerald-200 font-medium' : 'text-zinc-400'}>
-              {activeBgPreset === 'original' && !customBgPrompt
-                ? 'Real Background'
-                : BACKGROUND_PRESETS.find((p) => p.id === activeBgPreset)?.label || 'Custom Background'}
-            </span>
-          </div>
-          <span className="text-zinc-600">•</span>
-          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
-            isBlendedMode
-              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-              : 'bg-zinc-800 text-zinc-300'
-          }`}>
-            {currentCreditRate} cr/s
-          </span>
-        </div>
-
         <div className="absolute right-6 top-6 z-20 flex items-center gap-2">
           <button
             type="button"
             title={isFullScreen ? 'Exit full screen' : 'Full screen'}
             aria-label={isFullScreen ? 'Exit full screen' : 'Switch to full screen'}
             onClick={() => void handleFullScreenToggle()}
-            className="inline-flex h-10 items-center gap-2 rounded-full border border-white/5 bg-black/40 px-3 text-xs font-semibold text-[#A1A1AA] backdrop-blur-md transition-all hover:scale-105 hover:text-white"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/5 bg-black/40 px-3 text-xs font-semibold text-[#A1A1AA] backdrop-blur-md transition-all hover:scale-105 hover:text-white"
           >
-            {isFullScreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+            {isFullScreen ? <Minimize className="h-3.5 w-3.5" /> : <Maximize className="h-3.5 w-3.5" />}
             <span>{isFullScreen ? 'Exit Full Screen' : 'Full Screen'}</span>
           </button>
           <button
@@ -2672,200 +2643,184 @@ function Dashboard() {
             title="Settings"
             aria-label="Open Settings"
             onClick={() => navigate('/settings')}
-            className="rounded-full border border-white/5 bg-black/40 p-2.5 text-[#71717A] backdrop-blur-md transition-all hover:scale-110 hover:text-white"
+            className="rounded-full border border-white/5 bg-black/40 p-2 text-[#71717A] backdrop-blur-md transition-all hover:scale-110 hover:text-white"
           >
-            <Settings className="h-5 w-5" />
+            <Settings className="h-4 w-4" />
           </button>
         </div>
       </main>
 
-      <footer className="relative z-10 flex flex-col gap-1.5 border-t border-white/5 bg-[#0A0A0A] px-3 py-2">
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            data-tour="start-stream"
-            onClick={handleStart}
-            disabled={Boolean(startBlockReason)}
-            className={`flex h-[30px] items-center gap-2 rounded-sm border px-3 transition-all ${
-              startBlockReason
-                ? 'border-[#133C29] bg-[#122A1F] text-[#22C55E] opacity-50'
-                : 'border-[#133C29] bg-[#122A1F] text-[#22C55E] hover:bg-[#153828]'
-            }`}
-          >
-            <Play className="h-3.5 w-3.5 fill-current" />
-            <span className="text-[13px] font-semibold tracking-wide">{isLoading ? 'STARTING' : 'Start'}</span>
-          </button>
-
-          <button
-            data-tour="stop-stream"
-            onClick={() => void handleStop()}
-            disabled={!isStreaming}
-            className="flex h-[30px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3 text-[#737373] transition-all hover:text-[#A3A3A3]"
-          >
-            <Square className="h-3.5 w-3.5 fill-current opacity-70" />
-            <span className="text-[13px] font-medium">Stop</span>
-          </button>
-
-          <button
-            data-tour="upload-image"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex h-[30px] items-center gap-2 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-3 text-[#737373] transition-all hover:text-[#A3A3A3]"
-          >
-            <Upload className="h-3.5 w-3.5 opacity-80" />
-            <span className="text-[13px] font-medium">{referenceImage ? 'Change Image' : 'Upload Image'}</span>
-          </button>
-
-          {referenceImage && (
+      <footer className="relative z-10 flex flex-col gap-1 border-t border-white/5 bg-[#0A0A0A] px-2.5 py-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
-              type="button"
-              onClick={() => {
-                setReferenceImage(null);
-                if (fileInputRef.current) {
-                  fileInputRef.current.value = '';
-                }
-                toast.info('Avatar removed');
-              }}
-              className="flex h-[30px] items-center gap-1.5 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] font-medium text-zinc-400 hover:text-red-400 hover:bg-[#242424] transition-colors"
+              data-tour="start-stream"
+              onClick={handleStart}
+              disabled={Boolean(startBlockReason)}
+              className={`flex h-[28px] items-center gap-1.5 rounded border px-2.5 text-xs font-semibold tracking-wide transition-all ${
+                startBlockReason
+                  ? 'border-[#133C29] bg-[#122A1F] text-[#22C55E] opacity-50'
+                  : 'border-[#133C29] bg-[#122A1F] text-[#22C55E] hover:bg-[#153828]'
+              }`}
             >
-              <span>Clear Avatar</span>
+              <Play className="h-3 w-3 fill-current" />
+              <span>{isLoading ? 'STARTING' : 'Start'}</span>
             </button>
-          )}
 
-          <select
-            value={preferredMode}
-            onChange={(event) => handleModeChange(event.target.value)}
-            title="Select performance mode"
-            aria-label="Select performance mode"
-            className="h-[30px] min-w-[110px] rounded-sm border border-[#2A2A2A] bg-[#1A1A1A] px-2 text-[11px] font-medium text-[#D4D4D8] transition-colors focus:border-[#3A3A3A] focus:outline-none"
-          >
-            <option value="fast">Fast Mode</option>
-            <option value="balanced">Balanced Mode</option>
-            <option value="hd">HD Mode</option>
-          </select>
+            <button
+              data-tour="stop-stream"
+              onClick={() => void handleStop()}
+              disabled={!isStreaming}
+              className="flex h-[28px] items-center gap-1.5 rounded border border-[#2A2A2A] bg-[#1E1E1E] px-2.5 text-xs font-medium text-[#737373] transition-all hover:text-[#A3A3A3]"
+            >
+              <Square className="h-3 w-3 fill-current opacity-70" />
+              <span>Stop</span>
+            </button>
 
-          <div
-            data-tour="camera-selector"
-            className="min-w-[240px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
-          >
-            <div className="mb-0.5 flex items-center justify-between gap-3">
-              <label htmlFor="physical-camera-selector" className="text-[10px] font-bold uppercase tracking-wider text-[#d4d4d8]">
-                Input camera
-              </label>
+            <button
+              data-tour="upload-image"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-[28px] items-center gap-1.5 rounded border border-[#2A2A2A] bg-[#1E1E1E] px-2.5 text-xs font-medium text-[#737373] transition-all hover:text-[#A3A3A3]"
+            >
+              <Upload className="h-3 w-3 opacity-80" />
+              <span>{referenceImage ? 'Change Image' : 'Upload Image'}</span>
+            </button>
+
+            {referenceImage && (
               <button
                 type="button"
-                onClick={() => void refreshCameras({ requestPermission: true })}
-                disabled={isRefreshingCameras || isStreaming || isLoading}
-                className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-300 transition-colors hover:text-amber-200 disabled:opacity-50"
+                onClick={() => {
+                  setReferenceImage(null);
+                  if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                  }
+                  toast.info('Avatar removed');
+                }}
+                className="flex h-[28px] items-center rounded border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[10.5px] font-medium text-zinc-400 hover:text-red-400 hover:bg-[#242424] transition-colors"
               >
-                <RefreshCw className={`h-3 w-3 ${isRefreshingCameras ? 'animate-spin' : ''}`} />
-                Refresh Cameras
+                <span>Clear Avatar</span>
               </button>
-            </div>
-            <select
-              id="physical-camera-selector"
-              value={selectedCameraId}
-              onChange={(event) => handleCameraChange(event.target.value)}
-              title="Select your physical laptop or USB camera"
-              aria-label="Input camera: select your physical laptop or USB camera"
-              className="h-[30px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] text-[#D4D4D8] transition-colors focus:border-amber-400 focus:outline-none"
-            >
-              <option value="">Select your physical laptop or USB camera</option>
-              {cameraDevices.map((device, index) => (
-                <option key={device.deviceId} value={device.deviceId}>
-                  {device.label || `Physical camera ${index + 1}`}
-                </option>
-              ))}
-              {virtualCameraDevices.length > 0 && (
-                <optgroup label="Virtual cameras cannot be used as input">
-                  {virtualCameraDevices.map((device, index) => (
-                    <option key={device.deviceId} value="" disabled>
-                      {device.label || `Blocked virtual camera ${index + 1}`}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-            <p className="mt-0.5 text-[9px] leading-3 text-[#71717A]">
-              Morphly Virtual Camera is the output camera. Do not select it here.
-            </p>
-          </div>
+            )}
 
-          {/* AI Background Dropdown Selector */}
-          <div
-            data-tour="background-selector"
-            className="min-w-[240px] rounded-lg border border-[#2A2A2A] bg-[#111111] px-2.5 py-1"
-          >
-            <div className="mb-0.5 flex items-center justify-between gap-3">
-              <label htmlFor="background-preset-selector" className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
-                AI Background
-              </label>
-              {isBlendedMode ? (
-                <span className="text-[9px] font-bold text-amber-300">
-                  ⚡ Avatar + BG (4 cr/s)
-                </span>
-              ) : (
-                <span className="text-[9px] font-medium text-zinc-400">
-                  2 cr/s
-                </span>
-              )}
-            </div>
             <select
-              id="background-preset-selector"
-              value={activeBgPreset}
-              onChange={(event) => {
-                const newPreset = event.target.value;
-                setActiveBgPreset(newPreset);
-                setCustomBgPrompt('');
-                if (isStreaming) {
-                  const p = BACKGROUND_PRESETS.find((item) => item.id === newPreset);
-                  toast.info(`Switching background to ${p?.label || 'Original Room'}...`);
-                }
-              }}
-              title="Select AI background"
-              aria-label="Select AI background"
-              className="h-[30px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] text-[#D4D4D8] transition-colors focus:border-emerald-400 focus:outline-none"
+              value={preferredMode}
+              onChange={(event) => handleModeChange(event.target.value)}
+              title="Select performance mode"
+              aria-label="Select performance mode"
+              className="h-[28px] min-w-[95px] rounded border border-[#2A2A2A] bg-[#1A1A1A] px-1.5 text-[10.5px] font-medium text-[#D4D4D8] transition-colors focus:border-[#3A3A3A] focus:outline-none"
             >
-              {BACKGROUND_PRESETS.map((preset) => (
-                <option key={preset.id} value={preset.id}>
-                  {preset.label}
-                </option>
-              ))}
+              <option value="fast">Fast Mode</option>
+              <option value="balanced">Balanced Mode</option>
+              <option value="hd">HD Mode</option>
             </select>
-            <p className="mt-0.5 text-[9px] leading-3 text-[#71717A]">
-              {activeBgPreset === 'original'
-                ? 'Using natural room camera background.'
-                : isBlendedMode
-                  ? 'Avatar seated naturally in photorealistic background (4 cr/s).'
-                  : 'Photorealistic background (2 cr/s).'}
-            </p>
-          </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <div className="flex items-center gap-3 rounded-xl border border-[#222222] bg-[#111111] px-3 py-1.5">
-            <div className="flex flex-col gap-[2px]">
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[8px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
-                <span className={`text-[8px] font-bold ${isBlendedMode ? 'text-amber-300' : 'text-[#A1A1AA]'}`}>
+            {/* Input Camera Dropdown */}
+            <div
+              data-tour="camera-selector"
+              className="flex min-w-[170px] max-w-[210px] flex-col rounded border border-[#2A2A2A] bg-[#111111] px-2 py-0.5"
+            >
+              <div className="flex items-center justify-between gap-1 leading-none mb-0.5">
+                <label htmlFor="physical-camera-selector" className="text-[9px] font-bold uppercase tracking-wider text-[#d4d4d8]">
+                  Input camera
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void refreshCameras({ requestPermission: true })}
+                  disabled={isRefreshingCameras || isStreaming || isLoading}
+                  title="Refresh cameras"
+                  className="inline-flex items-center text-[9px] font-semibold text-amber-300 transition-colors hover:text-amber-200 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-2.5 w-2.5 ${isRefreshingCameras ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+              <select
+                id="physical-camera-selector"
+                value={selectedCameraId}
+                onChange={(event) => handleCameraChange(event.target.value)}
+                title="Select your physical laptop or USB camera"
+                aria-label="Input camera: select your physical laptop or USB camera"
+                className="h-[22px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-1 text-[10.5px] text-[#D4D4D8] transition-colors focus:border-amber-400 focus:outline-none"
+              >
+                <option value="">Select camera</option>
+                {cameraDevices.map((device, index) => (
+                  <option key={device.deviceId} value={device.deviceId}>
+                    {device.label || `Physical camera ${index + 1}`}
+                  </option>
+                ))}
+                {virtualCameraDevices.length > 0 && (
+                  <optgroup label="Virtual cameras (blocked)">
+                    {virtualCameraDevices.map((device, index) => (
+                      <option key={device.deviceId} value="" disabled>
+                        {device.label || `Blocked virtual camera ${index + 1}`}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+
+            {/* AI Background Dropdown Selector */}
+            <div
+              data-tour="background-selector"
+              className="flex min-w-[170px] max-w-[210px] flex-col rounded border border-[#2A2A2A] bg-[#111111] px-2 py-0.5"
+            >
+              <div className="flex items-center justify-between gap-1 leading-none mb-0.5">
+                <label htmlFor="background-preset-selector" className="text-[9px] font-bold uppercase tracking-wider text-emerald-400">
+                  Background
+                </label>
+                <span className={`text-[8.5px] font-bold ${isBlendedMode ? 'text-amber-300' : 'text-zinc-400'}`}>
                   {currentCreditRate} cr/s
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Coins className="h-3.5 w-3.5 text-blue-400" />
-                <span className="text-xs font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
-              </div>
+              <select
+                id="background-preset-selector"
+                value={activeBgPreset}
+                onChange={(event) => {
+                  const newPreset = event.target.value;
+                  setActiveBgPreset(newPreset);
+                  setCustomBgPrompt('');
+                  if (isStreaming) {
+                    const p = BACKGROUND_PRESETS.find((item) => item.id === newPreset);
+                    toast.info(`Switching background to ${p?.label || 'Original Room'}...`);
+                  }
+                }}
+                title="Select AI background"
+                aria-label="Select AI background"
+                className="h-[22px] w-full rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-1 text-[10.5px] text-[#D4D4D8] transition-colors focus:border-emerald-400 focus:outline-none"
+              >
+                {BACKGROUND_PRESETS.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
             </div>
-            <button
-              data-tour="buy-credits"
-              onClick={() => navigate('/subscription')}
-              className="ml-1 flex h-[28px] items-center gap-1 rounded-sm bg-[#FFFFFF] px-2.5 text-[11px] font-bold text-[#000000] shadow-sm transition-colors hover:bg-[#E5E5E5]"
-            >
-              <Plus className="h-3.5 w-3.5 stroke-[3]" />
-              Buy Credits
-            </button>
           </div>
 
-        </div>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 rounded border border-[#222222] bg-[#111111] px-2 py-1">
+              <div className="flex flex-col gap-[1px]">
+                <div className="flex items-center justify-between gap-1">
+                  <span className="text-[7.5px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
+                  <span className={`text-[7.5px] font-bold ${isBlendedMode ? 'text-amber-300' : 'text-[#A1A1AA]'}`}>
+                    ({currentCreditRate} cr/s)
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Coins className="h-3 w-3 text-blue-400" />
+                  <span className="text-[11px] font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
+                </div>
+              </div>
+              <button
+                data-tour="buy-credits"
+                onClick={() => navigate('/subscription')}
+                className="ml-0.5 flex h-[24px] items-center gap-1 rounded-sm bg-[#FFFFFF] px-2 text-[10px] font-bold text-[#000000] shadow-sm transition-colors hover:bg-[#E5E5E5]"
+              >
+                <Plus className="h-3 w-3 stroke-[3]" />
+                Buy
+              </button>
+            </div>
+          </div>
         </div>
         <div
           className={`rounded-md border px-3 py-1 text-[11px] leading-4 ${
