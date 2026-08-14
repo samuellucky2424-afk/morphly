@@ -30,6 +30,7 @@ export interface DesktopUpdateState {
   sourceHost: string | null;
   downloadUrl: string | null;
   checksum: string | null;
+  expectedSize: number | null;
   releaseNotes: string | null;
   assetName: string | null;
   downloadedFileName: string | null;
@@ -85,6 +86,7 @@ export const DEFAULT_DESKTOP_UPDATE_STATE: DesktopUpdateState = {
   sourceHost: null,
   downloadUrl: null,
   checksum: null,
+  expectedSize: null,
   releaseNotes: null,
   assetName: null,
   downloadedFileName: null,

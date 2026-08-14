@@ -3,6 +3,13 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { once } from 'events';
+import {
+  checksumMatches,
+  getDownloadSizeError,
+  normalizeChecksum,
+  normalizeExpectedSize,
+  verifyUpdateFile
+} from './update-integrity.js';
 
 const GITHUB_RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
 
@@ -47,10 +54,6 @@ function normalizeText(value, fallback = null) {
   return trimmed || fallback;
 }
 
-function normalizeNumber(value, fallback = null) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
 function parseVersionParts(version) {
   if (typeof version !== 'string') return null;
   const clean = version.split('-')[0]?.split('+')[0] ?? version;
@@ -85,13 +88,6 @@ function formatHost(url) {
   }
 }
 
-function normalizeChecksum(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/^sha256[:=]\s*/i, '');
-}
-
 function ensureDirectory(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
@@ -114,6 +110,7 @@ function createInitialState(currentVersion, manifestUrl, releasePageUrl) {
     sourceHost: formatHost(manifestUrl) ?? formatHost(releasePageUrl) ?? 'github.com',
     downloadUrl: null,
     checksum: null,
+    expectedSize: null,
     releaseNotes: null,
     assetName: null,
     downloadedFileName: null,
@@ -184,6 +181,7 @@ export function createDesktopUpdater(options = {}) {
       sourceHost: state.sourceHost,
       downloadUrl: state.downloadUrl,
       checksum: state.checksum,
+      expectedSize: state.expectedSize,
       releaseNotes: state.releaseNotes,
       assetName: state.assetName,
       downloadedFileName: state.downloadedFileName,
@@ -266,6 +264,7 @@ export function createDesktopUpdater(options = {}) {
       downloadUrl,
       packageType,
       checksum: normalizeText(manifest.checksum ?? manifest.sha256, null),
+      expectedSize: normalizeExpectedSize(manifest.expectedSize ?? manifest.size ?? manifest.assetSize),
       releaseNotes: normalizeText(manifest.releaseNotes, null),
       releasePageUrl: releasePage,
       sourceLabel,
@@ -318,6 +317,7 @@ export function createDesktopUpdater(options = {}) {
       installMode,
       downloadUrl: manifest.downloadUrl,
       checksum: manifest.checksum,
+      expectedSize: manifest.expectedSize,
       releaseNotes: manifest.releaseNotes,
       releasePageUrl: manifest.releasePageUrl,
       sourceLabel: manifest.sourceLabel,
@@ -354,26 +354,28 @@ export function createDesktopUpdater(options = {}) {
       return snapshot();
     }
 
-    if (state.readyToInstall && state.latestVersion === manifest.latestVersion && state.downloadedPath) {
-      log('Using cached downloaded update.', { reason, version: manifest.latestVersion });
-      return snapshot();
-    }
-
     if (downloadPromise) {
       log('Waiting for existing update download.', { reason, version: manifest.latestVersion });
       return downloadPromise;
     }
 
     const destination = buildDownloadCachePath(manifest.latestVersion, manifest.assetName);
+    const partialDestination = `${destination}.part`;
     const destinationDir = path.dirname(destination);
     const expectedChecksum = normalizeChecksum(manifest.checksum);
+    const expectedSize = normalizeExpectedSize(manifest.expectedSize);
     const sourceUrl = manifest.downloadUrl;
 
     ensureDirectory(destinationDir);
 
-    if (fs.existsSync(destination) && fs.statSync(destination).size > 0) {
+    if (fs.existsSync(destination)) {
       log('Existing update file found; verifying before re-downloading.', { reason, destination });
-      if (!expectedChecksum) {
+      const cachedIntegrity = await verifyUpdateFile(destination, {
+        checksum: expectedChecksum,
+        expectedSize
+      });
+
+      if (cachedIntegrity.valid) {
         patchState({
           downloadedPath: destination,
           downloadedFileName: path.basename(destination),
@@ -382,19 +384,30 @@ export function createDesktopUpdater(options = {}) {
           readyToInstall: true,
           status: 'downloaded',
           lastDownloadedAt: new Date().toISOString(),
-          checksumVerified: null,
+          checksumVerified: cachedIntegrity.checksumVerified,
           progress: 100,
           downloadProgress: {
             percent: 100,
-            transferredBytes: fs.statSync(destination).size,
-            totalBytes: fs.statSync(destination).size,
+            transferredBytes: cachedIntegrity.size,
+            totalBytes: expectedSize ?? cachedIntegrity.size,
             bytesPerSecond: null,
             etaSeconds: 0
           }
         }, reason);
         return snapshot();
       }
+
+      log('Discarding invalid cached update file.', {
+        reason,
+        destination,
+        integrityFailure: cachedIntegrity.reason,
+        actualSize: cachedIntegrity.size,
+        expectedSize
+      });
+      fs.rmSync(destination, { force: true });
     }
+
+    fs.rmSync(partialDestination, { force: true });
 
     const downloadTask = (async () => {
       // If the download URL points to a web page rather than a binary asset,
@@ -443,8 +456,13 @@ export function createDesktopUpdater(options = {}) {
           throw new Error(`Download request failed with HTTP ${response.status}.`);
         }
 
-        const totalBytes = normalizeNumber(Number(response.headers.get('content-length')), null);
-        const fileStream = fs.createWriteStream(destination, { flags: 'w' });
+        const responseContentLength = normalizeExpectedSize(response.headers.get('content-length'));
+        if (expectedSize && responseContentLength && expectedSize !== responseContentLength) {
+          throw new Error(getDownloadSizeError(0, expectedSize, responseContentLength));
+        }
+
+        const totalBytes = expectedSize ?? responseContentLength;
+        const fileStream = fs.createWriteStream(partialDestination, { flags: 'wx' });
         const reader = response.body.getReader();
         const hexHash = crypto.createHash('sha256');
         const base64Hash = crypto.createHash('sha256');
@@ -488,14 +506,25 @@ export function createDesktopUpdater(options = {}) {
 
         const hexDigest = hexHash.digest('hex');
         const base64Digest = base64Hash.digest('base64');
-        const checksumMatches = !expectedChecksum
-          || expectedChecksum.toLowerCase() === hexDigest.toLowerCase()
-          || expectedChecksum === base64Digest;
+        const sizeError = getDownloadSizeError(
+          transferredBytes,
+          expectedSize,
+          responseContentLength
+        );
 
-        if (!checksumMatches) {
-          fs.rmSync(destination, { force: true });
+        if (sizeError) {
+          throw new Error(sizeError);
+        }
+
+        if (!expectedChecksum && !totalBytes) {
+          throw new Error('Update server did not provide checksum or size metadata. The installer was not trusted.');
+        }
+
+        if (expectedChecksum && !checksumMatches(expectedChecksum, hexDigest, base64Digest)) {
           throw new Error(`Downloaded update checksum mismatch for ${manifest.latestVersion}.`);
         }
+
+        fs.renameSync(partialDestination, destination);
 
         patchState({
           downloadedPath: destination,
@@ -527,7 +556,7 @@ export function createDesktopUpdater(options = {}) {
         return snapshot();
       } catch (error) {
         try {
-          fs.rmSync(destination, { force: true });
+          fs.rmSync(partialDestination, { force: true });
         } catch {
           // Ignore cleanup failures.
         }
@@ -639,15 +668,6 @@ export function createDesktopUpdater(options = {}) {
       };
     }
 
-    if (state.readyToInstall && state.latestVersion && state.downloadedPath) {
-      log('Download request satisfied by cached installer.', { source, version: state.latestVersion });
-      return {
-        success: true,
-        readyToInstall: true,
-        ...snapshot()
-      };
-    }
-
     if (!manifestCache || !state.latestVersion) {
       const checkResult = await checkForUpdates(`${source}:precheck`);
       if (checkResult.status === 'error') {
@@ -698,6 +718,46 @@ export function createDesktopUpdater(options = {}) {
         error: 'No downloaded update is ready to install.',
         readyToInstall: false,
         ...snapshot()
+      };
+    }
+
+    const downloadedPath = state.downloadedPath;
+    const integrity = await verifyUpdateFile(downloadedPath, {
+      checksum: state.checksum,
+      expectedSize: state.expectedSize
+    });
+
+    if (!integrity.valid) {
+      try {
+        fs.rmSync(downloadedPath, { force: true });
+      } catch {
+        // Ignore cleanup failures; the file will still never be launched.
+      }
+
+      const error = `Downloaded update failed integrity verification (${integrity.reason}). Please download it again.`;
+      const stateSnapshot = patchState({
+        status: 'update-available',
+        readyToInstall: false,
+        installInProgress: false,
+        downloadedPath: null,
+        downloadedFileName: null,
+        checksumVerified: false,
+        error
+      }, `${source}:install-integrity-failed`);
+
+      log('Blocked installer launch after integrity verification failed.', {
+        source,
+        downloadedPath,
+        integrityFailure: integrity.reason,
+        actualSize: integrity.size,
+        expectedSize: state.expectedSize
+      });
+
+      return {
+        success: false,
+        error,
+        readyToInstall: false,
+        ...stateSnapshot
       };
     }
 

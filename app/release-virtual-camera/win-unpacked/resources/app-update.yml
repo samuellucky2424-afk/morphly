@@ -1,0 +1,6 @@
+owner: samuellucky2424-afk
+repo: morphly
+provider: github
+releaseType: release
+tagNamePrefix: v
+updaterCacheDirName: morphly-desktop-updater

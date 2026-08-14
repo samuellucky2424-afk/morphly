@@ -8,6 +8,7 @@ export interface VersionManifest {
   downloadUrl: string;
   packageType: UpdatePackageType;
   checksum: string | null;
+  expectedSize: number | null;
   releaseNotes: string | null;
   releasePageUrl: string;
   sourceLabel: string;
@@ -20,6 +21,7 @@ export interface ManifestBuildOptions {
   packageType?: UpdatePackageType;
   releaseNotes?: string | null;
   checksum?: string | null;
+  expectedSize?: number | null;
 }
 
 export const GITHUB_OWNER = 'samuellucky2424-afk';
@@ -100,6 +102,7 @@ export function createVersionManifest(options: ManifestBuildOptions): VersionMan
     downloadUrl: buildDownloadUrl(version, packageType),
     packageType,
     checksum: options.checksum ?? null,
+    expectedSize: options.expectedSize ?? null,
     releaseNotes: options.releaseNotes ?? null,
     releasePageUrl: buildReleasePageUrl(version),
     sourceLabel: 'GitHub Releases',

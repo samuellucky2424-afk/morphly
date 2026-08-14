@@ -7,7 +7,7 @@ import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 const CREDITS_PER_SECOND = 2;
 const DECART_API_BASE_URL = 'https://api.decart.ai';
 const DECART_REALTIME_MODEL = 'lucy-2.5';
-const CLIENT_TOKEN_TTL_SECONDS = 60;
+const CLIENT_TOKEN_TTL_SECONDS = 300;
 const DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS = 1800;
 const DEFAULT_UNVERIFIED_WALLET_LIMIT = 5000;
 const TOKEN_MINT_WINDOW_MINUTES = 10;

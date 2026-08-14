@@ -43,6 +43,9 @@ function createVersionManifest(options) {
     downloadUrl: buildDownloadUrl(version, packageType),
     packageType,
     checksum: options.checksum || null,
+    expectedSize: Number.isSafeInteger(options.expectedSize) && options.expectedSize > 0
+      ? options.expectedSize
+      : null,
     releaseNotes: options.releaseNotes || null,
     releasePageUrl: buildReleasePageUrl(version),
     sourceLabel: 'GitHub Releases',
@@ -120,9 +123,14 @@ async function fetchLatestRelease(options = {}) {
     throw new Error('GitHub API returned an empty tag_name');
   }
 
-  const uploadedAssets = new Set(
+  const uploadedAssets = new Map(
     Array.isArray(data.assets)
-      ? data.assets.map((asset) => asset.name)
+      ? data.assets
+        .filter((asset) => normalizeText(asset?.name))
+        .map((asset) => [asset.name, {
+          checksum: normalizeText(asset.digest),
+          expectedSize: Number.isSafeInteger(asset.size) && asset.size > 0 ? asset.size : null,
+        }])
       : [],
   );
 
@@ -140,15 +148,17 @@ export async function resolveVersionManifest(req, options = {}) {
 
   try {
     const { version, releaseNotes, uploadedAssets, usedToken } = await fetchLatestRelease({ env });
+    const assetName = buildAssetName(version, packageType);
+    const releaseAsset = uploadedAssets.get(assetName);
     const manifest = createVersionManifest({
       version,
       packageType,
       releaseNotes,
-      checksum: null,
+      checksum: releaseAsset?.checksum ?? null,
+      expectedSize: releaseAsset?.expectedSize ?? null,
     });
 
-    const assetName = buildAssetName(version, packageType);
-    if (!uploadedAssets.has(assetName)) {
+    if (!releaseAsset) {
       manifest.downloadUrl = manifest.releasePageUrl;
       manifest.assetName = null;
     }
@@ -170,6 +180,7 @@ export async function resolveVersionManifest(req, options = {}) {
       packageType,
       releaseNotes: null,
       checksum: null,
+      expectedSize: null,
     });
 
     manifest.downloadUrl = GITHUB_RELEASES_URL;

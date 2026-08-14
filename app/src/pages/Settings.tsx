@@ -46,6 +46,7 @@ function Settings() {
     sourceHost: null,
     downloadUrl: null,
     checksum: null,
+    expectedSize: null,
     releaseNotes: null,
     assetName: null,
     downloadedFileName: null,

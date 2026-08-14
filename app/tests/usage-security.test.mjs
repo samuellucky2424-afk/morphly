@@ -54,8 +54,8 @@ test('AI billing RPCs are restricted to the service role', () => {
   assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.sessions FROM anon, authenticated/);
 });
 
-test('Decart client tokens are short-lived, scoped, rate-limited and attributable', () => {
-  assert.match(startSession, /CLIENT_TOKEN_TTL_SECONDS = 60/);
+test('Decart client tokens are scoped, rate-limited and attributable', () => {
+  assert.match(startSession, /CLIENT_TOKEN_TTL_SECONDS = 300/);
   assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
   assert.match(startSession, /maxSessionDuration/);
   assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);

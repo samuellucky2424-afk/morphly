@@ -7,13 +7,11 @@ app/.env.local
 dist/
 dist-ssr/
 *.local
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
 
 # Build outputs
 release/
 *.exe
+*.zip
 *.dmg
 *.AppImage
 *.deb
