@@ -17,7 +17,7 @@ import {
   Send,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { BACKGROUND_PRESETS } from '@/components/BackgroundReplacer';
+import { BACKGROUND_PRESETS, buildDecartTransformPrompt } from '@/components/BackgroundReplacer';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
@@ -377,13 +377,15 @@ function Dashboard() {
   const [isTourRunning, setIsTourRunning] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isValidatingImage, setIsValidatingImage] = useState(false);
-  const [featureMode, setFeatureMode] = useState<'avatar' | 'background'>('avatar');
-  const [activeBgPreset, setActiveBgPreset] = useState<string>('office');
+  const [activeBgPreset, setActiveBgPreset] = useState<string>('original');
   const [customBgPrompt, setCustomBgPrompt] = useState<string>('');
   const [prompt] = useState(BASE_PROMPT);
 
-  const currentBgPreset = BACKGROUND_PRESETS.find((p) => p.id === activeBgPreset) || BACKGROUND_PRESETS[0];
-  const backgroundPrompt = customBgPrompt.trim() || currentBgPreset.prompt;
+  const activePrompt = buildDecartTransformPrompt(
+    Boolean(referenceImage),
+    activeBgPreset,
+    customBgPrompt,
+  );
   const [preferredMode, setPreferredMode] = useState<QualityMode>('hd');
   const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
@@ -440,8 +442,9 @@ function Dashboard() {
   const mainVirtualCamLastFrameSentAtRef = useRef(0);
 
   const promptRef = useRef(prompt);
-  const featureModeRef = useRef(featureMode);
-  const backgroundPromptRef = useRef(backgroundPrompt);
+  const activePromptRef = useRef(activePrompt);
+  const activeBgPresetRef = useRef(activeBgPreset);
+  const customBgPromptRef = useRef(customBgPrompt);
   const referenceImageRef = useRef(referenceImage);
   const isStreamingRef = useRef(isStreaming);
   const hasRemoteFrameRef = useRef(hasRemoteFrame);
@@ -455,12 +458,16 @@ function Dashboard() {
   }, [prompt]);
 
   useEffect(() => {
-    featureModeRef.current = featureMode;
-  }, [featureMode]);
+    activePromptRef.current = activePrompt;
+  }, [activePrompt]);
 
   useEffect(() => {
-    backgroundPromptRef.current = backgroundPrompt;
-  }, [backgroundPrompt]);
+    activeBgPresetRef.current = activeBgPreset;
+  }, [activeBgPreset]);
+
+  useEffect(() => {
+    customBgPromptRef.current = customBgPrompt;
+  }, [customBgPrompt]);
 
   useEffect(() => {
     referenceImageRef.current = referenceImage;
@@ -1215,23 +1222,12 @@ function Dashboard() {
     }
   }, [cancelRemoteFrameMonitor, cleanupClientSubscriptions, clearFrameWatchdog, clearSoftReconnectTimer, closeMorphlyCamWindow]);
 
-  const getDesiredTransformState = useCallback((): TransformState => {
-    if (featureModeRef.current === 'background') {
-      return {
-        prompt: backgroundPromptRef.current,
-        enhance: DEFAULT_ENHANCE,
-        image: null,
-        imageSignature: null,
-      };
-    }
-
-    return {
-      prompt: promptRef.current,
-      enhance: DEFAULT_ENHANCE,
-      image: referenceImageRef.current?.file ?? null,
-      imageSignature: referenceImageRef.current?.signature ?? null,
-    };
-  }, []);
+  const getDesiredTransformState = useCallback((): TransformState => ({
+    prompt: activePromptRef.current,
+    enhance: DEFAULT_ENHANCE,
+    image: referenceImageRef.current?.file ?? null,
+    imageSignature: referenceImageRef.current?.signature ?? null,
+  }), []);
 
   const applyTrackProfileWithFallback = useCallback(async (
     track: MediaStreamTrack,
@@ -2157,9 +2153,7 @@ function Dashboard() {
     queueTransformSync(getDesiredTransformState());
   }, [
     isStreaming,
-    featureMode,
-    backgroundPrompt,
-    prompt,
+    activePrompt,
     getDesiredTransformState,
     queueTransformSync,
     referenceImage?.file,
@@ -2223,8 +2217,10 @@ function Dashboard() {
     if (cameraPermission === 'denied') {
       return 'Camera permission is required. Allow access, then refresh the camera list.';
     }
-    if (featureMode === 'avatar' && !referenceImage) return 'Upload a reference image before starting.';
-    if (featureMode === 'avatar' && isValidatingImage) return 'Morphly is checking the reference image.';
+    if (!referenceImage && activeBgPreset === 'original' && !customBgPrompt.trim()) {
+      return 'Upload a reference image before starting.';
+    }
+    if (isValidatingImage) return 'Morphly is checking the reference image.';
     if (credits < CREDITS_PER_SECOND) {
       return 'You do not have enough credits. Buy credits to continue.';
     }
@@ -2244,7 +2240,7 @@ function Dashboard() {
       latestCameras.allVideoInputs,
     );
 
-    if (featureModeRef.current === 'avatar' && !referenceImageRef.current) {
+    if (!referenceImageRef.current && activeBgPresetRef.current === 'original' && !customBgPromptRef.current.trim()) {
       throw new Error('Upload a reference image before starting.');
     }
     if (!isEngineReady) {
@@ -2613,32 +2609,23 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Mode Switcher */}
-        <div className="absolute left-6 top-6 z-20 flex items-center gap-1 rounded-full border border-white/10 bg-black/60 p-1 backdrop-blur-md shadow-lg shadow-black/50">
-          <button
-            type="button"
-            onClick={() => setFeatureMode('avatar')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
-              featureMode === 'avatar'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-zinc-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <User className="h-3.5 w-3.5" />
-            <span>Avatar Morph</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setFeatureMode('background')}
-            className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all ${
-              featureMode === 'background'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-zinc-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>AI Background</span>
-          </button>
+        {/* Active Transform Status Pill */}
+        <div className="absolute left-6 top-6 z-20 flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-3.5 py-1.5 backdrop-blur-md shadow-lg shadow-black/50 text-xs">
+          <div className="flex items-center gap-1.5">
+            <User className={`h-3.5 w-3.5 ${referenceImage ? 'text-blue-400' : 'text-zinc-500'}`} />
+            <span className={referenceImage ? 'text-blue-200 font-medium' : 'text-zinc-400'}>
+              {referenceImage ? 'Avatar Active' : 'No Avatar'}
+            </span>
+          </div>
+          <span className="text-zinc-600">•</span>
+          <div className="flex items-center gap-1.5">
+            <Sparkles className={`h-3.5 w-3.5 ${activeBgPreset !== 'original' || customBgPrompt ? 'text-emerald-400' : 'text-zinc-500'}`} />
+            <span className={activeBgPreset !== 'original' || customBgPrompt ? 'text-emerald-200 font-medium' : 'text-zinc-400'}>
+              {activeBgPreset === 'original' && !customBgPrompt
+                ? 'Real Background'
+                : BACKGROUND_PRESETS.find((p) => p.id === activeBgPreset)?.label || 'Custom Background'}
+            </span>
+          </div>
         </div>
 
         <div className="absolute right-6 top-6 z-20 flex items-center gap-2">
@@ -2664,80 +2651,85 @@ function Dashboard() {
         </div>
       </main>
 
-      <footer className="relative z-10 flex max-h-[30vh] flex-col gap-1.5 overflow-y-auto border-t border-white/5 bg-[#0A0A0A] px-3 py-1.5">
-        {featureMode === 'background' && (
-          <div className="flex flex-col gap-1 rounded-lg border border-[#222222] bg-[#111111] px-2.5 py-1.5">
-            <div className="flex items-center justify-between">
+      <footer className="relative z-10 flex max-h-[32vh] flex-col gap-1.5 overflow-y-auto border-t border-white/5 bg-[#0A0A0A] px-3 py-1.5">
+        <div className="flex flex-col gap-1 rounded-lg border border-[#222222] bg-[#111111] px-2.5 py-1.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
                 AI Background Presets
               </span>
-              <span className="text-[9px] text-zinc-500">Live Realtime Transformation</span>
+              {referenceImage && (
+                <span className="text-[10px] text-blue-400 font-medium">
+                  • Blending with Avatar
+                </span>
+              )}
             </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {BACKGROUND_PRESETS.map((preset) => {
-                const Icon = preset.icon;
-                const isSelected = activeBgPreset === preset.id;
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => {
-                      setActiveBgPreset(preset.id);
-                      setCustomBgPrompt('');
-                      if (isStreaming) {
-                        toast.info(`Switching background to ${preset.label}...`);
-                      }
-                    }}
-                    className={`inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-all ${
-                      isSelected
-                        ? 'border-emerald-500 bg-emerald-950/80 text-emerald-300 shadow-sm'
-                        : 'border-[#2A2A2A] bg-[#1A1A1A] text-zinc-300 hover:border-zinc-500 hover:bg-[#242424]'
-                    }`}
-                  >
-                    <Icon className={`h-3.5 w-3.5 ${isSelected ? 'text-emerald-400' : 'text-zinc-400'}`} />
-                    <span>{preset.label}</span>
-                  </button>
-                );
-              })}
-              <div className="flex flex-1 min-w-[220px] items-center gap-1">
-                <input
-                  type="text"
-                  placeholder="Custom background (e.g. library with rain)..."
-                  value={customBgPrompt}
-                  onChange={(e) => setCustomBgPrompt(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      if (customBgPrompt.trim()) {
-                        setActiveBgPreset('custom');
-                        if (isStreaming) {
-                          toast.info('Applying custom background...');
-                        }
-                      }
-                    }
-                  }}
-                  className="h-[28px] flex-1 rounded-sm border border-[#2A2A2A] bg-[#161616] px-2 text-[11px] text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none"
-                />
+            <span className="text-[9px] text-zinc-500">Live Realtime Transformation</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {BACKGROUND_PRESETS.map((preset) => {
+              const Icon = preset.icon;
+              const isSelected = activeBgPreset === preset.id;
+              return (
                 <button
+                  key={preset.id}
                   type="button"
                   onClick={() => {
+                    setActiveBgPreset(preset.id);
+                    setCustomBgPrompt('');
+                    if (isStreaming) {
+                      toast.info(`Switching background to ${preset.label}...`);
+                    }
+                  }}
+                  className={`inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-all ${
+                    isSelected
+                      ? 'border-emerald-500 bg-emerald-950/80 text-emerald-300 shadow-sm'
+                      : 'border-[#2A2A2A] bg-[#1A1A1A] text-zinc-300 hover:border-zinc-500 hover:bg-[#242424]'
+                  }`}
+                >
+                  <Icon className={`h-3.5 w-3.5 ${isSelected ? 'text-emerald-400' : 'text-zinc-400'}`} />
+                  <span>{preset.label}</span>
+                </button>
+              );
+            })}
+            <div className="flex flex-1 min-w-[220px] items-center gap-1">
+              <input
+                type="text"
+                placeholder="Custom background (e.g. library with rain)..."
+                value={customBgPrompt}
+                onChange={(e) => setCustomBgPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
                     if (customBgPrompt.trim()) {
                       setActiveBgPreset('custom');
                       if (isStreaming) {
                         toast.info('Applying custom background...');
                       }
                     }
-                  }}
-                  disabled={!customBgPrompt.trim()}
-                  className="flex h-[28px] items-center gap-1 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-40"
-                >
-                  <Send className="h-3 w-3" />
-                  <span>Apply</span>
-                </button>
-              </div>
+                  }
+                }}
+                className="h-[28px] flex-1 rounded-sm border border-[#2A2A2A] bg-[#161616] px-2 text-[11px] text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (customBgPrompt.trim()) {
+                    setActiveBgPreset('custom');
+                    if (isStreaming) {
+                      toast.info('Applying custom background...');
+                    }
+                  }
+                }}
+                disabled={!customBgPrompt.trim()}
+                className="flex h-[28px] items-center gap-1 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2.5 text-[11px] font-semibold text-white transition-colors hover:bg-[#2A2A2A] disabled:opacity-40"
+              >
+                <Send className="h-3 w-3" />
+                <span>Apply</span>
+              </button>
             </div>
           </div>
-        )}
+        </div>
 
         <div className="flex flex-col gap-1.5 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex flex-wrap items-center gap-2">
@@ -2773,6 +2765,22 @@ function Dashboard() {
             <Upload className="h-3.5 w-3.5 opacity-80" />
             <span className="text-[13px] font-medium">{referenceImage ? 'Change Image' : 'Upload Image'}</span>
           </button>
+
+          {referenceImage && (
+            <button
+              type="button"
+              onClick={() => {
+                setReferenceImage(null);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                }
+                toast.info('Avatar removed');
+              }}
+              className="flex h-[30px] items-center gap-1.5 rounded-sm border border-[#2A2A2A] bg-[#1E1E1E] px-2 text-[11px] font-medium text-zinc-400 hover:text-red-400 hover:bg-[#242424] transition-colors"
+            >
+              <span>Clear Avatar</span>
+            </button>
+          )}
 
           <select
             value={preferredMode}

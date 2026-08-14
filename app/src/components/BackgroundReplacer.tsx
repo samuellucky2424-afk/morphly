@@ -21,15 +21,25 @@ export interface BackgroundPreset {
   description: string;
   icon: React.ComponentType<{ className?: string }>;
   prompt: string;
+  snippet?: string;
 }
 
 export const BACKGROUND_PRESETS: BackgroundPreset[] = [
+  {
+    id: 'original',
+    label: 'Original Room',
+    description: 'Keep your natural background',
+    icon: Camera,
+    prompt: '',
+    snippet: '',
+  },
   {
     id: 'office',
     label: 'Modern Office',
     description: 'Executive office with floor-to-ceiling windows & bookshelves',
     icon: Briefcase,
     prompt: 'Change the background to a modern luxury corporate office with floor-to-ceiling windows, bookshelves, and soft warm ambient lighting.',
+    snippet: 'a modern luxury corporate office with floor-to-ceiling windows, bookshelves, and soft warm ambient lighting.',
   },
   {
     id: 'living-room',
@@ -37,6 +47,7 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
     description: 'Warm modern living room with houseplants & natural light',
     icon: Home,
     prompt: 'Change the background to a warm, cozy modern living room with indoor houseplants, soft interior lighting, and minimalist wooden furniture.',
+    snippet: 'a warm, cozy modern living room with indoor houseplants, soft interior lighting, and minimalist wooden furniture.',
   },
   {
     id: 'garden',
@@ -44,6 +55,7 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
     description: 'Vibrant botanical garden with blooming flowers',
     icon: Trees,
     prompt: 'Change the background to a beautiful lush outdoor botanical garden with vibrant green foliage, blooming flowers, and natural daylight.',
+    snippet: 'a beautiful lush outdoor botanical garden with vibrant green foliage, blooming flowers, and natural daylight.',
   },
   {
     id: 'outdoor',
@@ -51,6 +63,7 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
     description: 'Scenic outdoor landscape during golden hour',
     icon: Sun,
     prompt: 'Change the background to a scenic outdoor mountain vista during golden hour with a gentle warm sunset glow.',
+    snippet: 'a scenic outdoor mountain vista during golden hour with a gentle warm sunset glow.',
   },
   {
     id: 'studio',
@@ -58,6 +71,7 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
     description: 'Architectural studio with concrete & spotlights',
     icon: Building2,
     prompt: 'Change the background to a clean architectural studio with textured concrete walls, soft spotlights, and minimalist decor.',
+    snippet: 'a clean architectural studio with textured concrete walls, soft spotlights, and minimalist decor.',
   },
   {
     id: 'cyberpunk',
@@ -65,8 +79,45 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
     description: 'Futuristic studio with cyan & purple neon lighting',
     icon: Sparkles,
     prompt: 'Change the background to a futuristic cyberpunk studio with subtle purple and cyan neon lighting and high-tech holographic displays.',
+    snippet: 'a futuristic cyberpunk studio with subtle purple and cyan neon lighting and high-tech holographic displays.',
   },
 ];
+
+export function buildDecartTransformPrompt(
+  hasReferenceImage: boolean,
+  presetId: string,
+  customText: string = '',
+): string {
+  const customTrimmed = customText.trim();
+  let bgDescription = '';
+
+  if (customTrimmed) {
+    bgDescription = customTrimmed.toLowerCase().startsWith('change the background to')
+      ? customTrimmed.replace(/^change the background to\s+/i, '')
+      : customTrimmed;
+  } else if (presetId && presetId !== 'original') {
+    const preset = BACKGROUND_PRESETS.find((p) => p.id === presetId);
+    if (preset?.snippet) {
+      bgDescription = preset.snippet;
+    } else if (preset?.prompt) {
+      bgDescription = preset.prompt.replace(/^change the background to\s+/i, '');
+    }
+  }
+
+  if (hasReferenceImage && bgDescription) {
+    return `Substitute the character in the video with the person in the reference image, and change the background to ${bgDescription}`;
+  }
+
+  if (hasReferenceImage) {
+    return 'Substitute the character in the video with the person in the reference image.';
+  }
+
+  if (bgDescription) {
+    return `Change the background to ${bgDescription}`;
+  }
+
+  return 'Substitute the character in the video with the person in the reference image.';
+}
 
 export interface BackgroundReplacerProps {
   onStreamStateChange?: (isStreaming: boolean) => void;
