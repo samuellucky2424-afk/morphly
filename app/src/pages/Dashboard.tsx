@@ -21,7 +21,12 @@ import { BACKGROUND_PRESETS, buildDecartTransformPrompt } from '@/components/Bac
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
-import { CREDITS_PER_SECOND } from '@/lib/billing';
+import {
+  CREDITS_PER_SECOND,
+  CREDITS_PER_SECOND_BLENDED,
+  CREDITS_PER_SECOND_STANDARD,
+  getCreditRatePerSecond,
+} from '@/lib/billing';
 import {
   getInstallationId,
   trackConnectionStarted,
@@ -381,6 +386,12 @@ function Dashboard() {
   const [customBgPrompt, setCustomBgPrompt] = useState<string>('');
   const [prompt] = useState(BASE_PROMPT);
 
+  const isBlendedMode = Boolean(referenceImage) && (activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()));
+  const currentCreditRate = getCreditRatePerSecond(
+    Boolean(referenceImage),
+    activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
+  );
+
   const activePrompt = buildDecartTransformPrompt(
     Boolean(referenceImage),
     activeBgPreset,
@@ -445,6 +456,7 @@ function Dashboard() {
   const activePromptRef = useRef(activePrompt);
   const activeBgPresetRef = useRef(activeBgPreset);
   const customBgPromptRef = useRef(customBgPrompt);
+  const isBlendedModeRef = useRef(isBlendedMode);
   const referenceImageRef = useRef(referenceImage);
   const isStreamingRef = useRef(isStreaming);
   const hasRemoteFrameRef = useRef(hasRemoteFrame);
@@ -468,6 +480,10 @@ function Dashboard() {
   useEffect(() => {
     customBgPromptRef.current = customBgPrompt;
   }, [customBgPrompt]);
+
+  useEffect(() => {
+    isBlendedModeRef.current = isBlendedMode;
+  }, [isBlendedMode]);
 
   useEffect(() => {
     referenceImageRef.current = referenceImage;
@@ -686,12 +702,17 @@ function Dashboard() {
 
     if (secondsDelta > 0) {
       // Decart reports cumulative generation time and may emit ticks in
-      // intervals larger than 10 seconds. Capping every tick at 10 silently
-      // discarded real provider usage and made the admin totals too low.
+      // intervals larger than 10 seconds. Capping every tick at 60.
+      // In simultaneous Avatar + Background blending mode, users are charged 4 credits/sec
+      // (2x multiplier on 2 credits/sec base unit).
+      // In single mode (Avatar only or Background only), charge normal 2 credits/sec.
+      const billingMultiplier = isBlendedModeRef.current
+        ? CREDITS_PER_SECOND_BLENDED / CREDITS_PER_SECOND_STANDARD
+        : 1;
       pendingBillableSecondsRef.current += Math.min(
         secondsDelta,
         MAX_GENERATION_TICK_DELTA_SECONDS,
-      );
+      ) * billingMultiplier;
     }
   }, []);
 
@@ -2626,6 +2647,14 @@ function Dashboard() {
                 : BACKGROUND_PRESETS.find((p) => p.id === activeBgPreset)?.label || 'Custom Background'}
             </span>
           </div>
+          <span className="text-zinc-600">•</span>
+          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold ${
+            isBlendedMode
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+              : 'bg-zinc-800 text-zinc-300'
+          }`}>
+            {currentCreditRate} cr/s
+          </span>
         </div>
 
         <div className="absolute right-6 top-6 z-20 flex items-center gap-2">
@@ -2658,9 +2687,17 @@ function Dashboard() {
               <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
                 AI Background Presets
               </span>
-              {referenceImage && (
+              {isBlendedMode ? (
+                <span className="text-[10px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">
+                  ⚡ Avatar + BG Active (4 cr/s)
+                </span>
+              ) : referenceImage ? (
                 <span className="text-[10px] text-blue-400 font-medium">
-                  • Blending with Avatar
+                  • Avatar Mode (2 cr/s)
+                </span>
+              ) : (
+                <span className="text-[10px] text-zinc-400 font-medium">
+                  • Background Mode (2 cr/s)
                 </span>
               )}
             </div>
@@ -2845,7 +2882,12 @@ function Dashboard() {
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <div className="flex items-center gap-3 rounded-xl border border-[#222222] bg-[#111111] px-3 py-1.5">
             <div className="flex flex-col gap-[2px]">
-              <span className="text-[8px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[8px] font-bold uppercase tracking-widest text-[#A1A1AA]">Credits</span>
+                <span className={`text-[8px] font-bold ${isBlendedMode ? 'text-amber-300' : 'text-[#A1A1AA]'}`}>
+                  {currentCreditRate} cr/s
+                </span>
+              </div>
               <div className="flex items-center gap-1.5">
                 <Coins className="h-3.5 w-3.5 text-blue-400" />
                 <span className="text-xs font-bold text-[#22C55E]">{Math.round(credits).toLocaleString()}</span>
