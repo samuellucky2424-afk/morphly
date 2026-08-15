@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, CheckCircle2, Coins, Copy, CreditCard, ExternalLink, Loader2, ShieldCheck, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+import QRCode from 'qrcode';
 
 import { Button } from '@/components/ui/button';
 import { useApp } from '@/context/AppContext';
@@ -107,6 +108,7 @@ function Subscription() {
     };
   } | null>(null);
   const [isCheckingCrypto, setIsCheckingCrypto] = useState(false);
+  const [cryptoPaymentQrCode, setCryptoPaymentQrCode] = useState<string | null>(null);
 
   const flutterwavePublicKey = runtimeFlutterwavePublicKey;
   const hasValidFlutterwavePublicKey = isValidFlutterwavePublicKey(flutterwavePublicKey);
@@ -215,6 +217,33 @@ function Subscription() {
 
     fetchCreditPackages();
   }, []);
+
+  useEffect(() => {
+    const address = activeCryptoSession?.paymentInstructions?.address;
+    if (!address) {
+      setCryptoPaymentQrCode(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    void QRCode.toDataURL(address, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 240,
+      color: { dark: '#18181b', light: '#ffffff' },
+    })
+      .then((dataUrl) => {
+        if (!cancelled) setCryptoPaymentQrCode(dataUrl);
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to generate crypto payment QR code:', error);
+        if (!cancelled) setCryptoPaymentQrCode(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCryptoSession?.paymentInstructions?.address]);
 
   const handleSelectPlan = (plan: CreditPlan) => {
     setSelectedPlan(plan);
@@ -509,6 +538,18 @@ function Subscription() {
                       Send exactly {activeCryptoSession.paymentInstructions.amount} {activeCryptoSession.paymentInstructions.currency}
                     </p>
                     <p className="mt-1 text-[#a1a1aa]">Network: {activeCryptoSession.paymentInstructions.chain}</p>
+                    {cryptoPaymentQrCode && (
+                      <div className="mt-3 flex items-center gap-3 rounded-lg bg-white p-2.5">
+                        <img
+                          src={cryptoPaymentQrCode}
+                          alt={`QR code for the ${activeCryptoSession.paymentInstructions.currency} payment address`}
+                          className="h-28 w-28 rounded"
+                        />
+                        <p className="text-xs leading-relaxed text-[#3f3f46]">
+                          Scan to copy the wallet address. Confirm the network and send the exact amount shown above before paying.
+                        </p>
+                      </div>
+                    )}
                     <div className="mt-2 flex items-center gap-2">
                       <code className="min-w-0 flex-1 break-all rounded bg-black/30 px-2 py-1.5 text-[#e4e4e7]">
                         {activeCryptoSession.paymentInstructions.address}
