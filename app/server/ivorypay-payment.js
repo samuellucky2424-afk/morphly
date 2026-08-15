@@ -4,7 +4,34 @@ import { supabaseAdmin } from './supabase-admin.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
-const IVORYPAY_API_BASE_URL = process.env.IVORYPAY_API_BASE_URL || 'https://api.ivorypay.io/api';
+const IVORYPAY_API_BASE_URL = String(
+  process.env.IVORYPAY_API_BASE_URL || 'https://api.ivorypay.io/api',
+).replace(/\/+$/, '').replace(/\/v1$/, '');
+
+function getProviderErrorMessage(data, status) {
+  const message = data?.message || data?.error || data?.errors?.[0]?.message;
+  return message ? String(message) : `HTTP ${status}`;
+}
+
+function getIvoryPayCryptoChain() {
+  return String(process.env.IVORYPAY_CRYPTO_CHAIN || 'BSC_MAINNET').trim().toUpperCase();
+}
+
+function getIvoryPayCryptoToken() {
+  return String(process.env.IVORYPAY_CRYPTO_TOKEN || 'USDT').trim().toUpperCase();
+}
+
+function parseMetadata(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {};
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 export function isIvoryPayTestKey(value) {
   return /(?:^|_)test(?:-|_|$)/i.test(String(value || '').trim());
@@ -47,7 +74,6 @@ export async function initiateIvoryPayTransaction({
   credits,
   packageId,
   reference,
-  redirectUrl,
   secretKey,
 }) {
   const effectiveSecretKey = (secretKey || process.env.IVORYPAY_SECRET_KEY || '').trim().replace(/^["']|["']$/g, '');
@@ -60,129 +86,82 @@ export async function initiateIvoryPayTransaction({
     throw new Error(environmentValidation.message);
   }
 
-  const effectiveReference = String(reference || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+  const effectiveReference = String(reference || '').trim();
+  if (!crypto.randomUUID || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(effectiveReference)) {
+    throw new Error('IvoryPay requires a UUID payment reference');
+  }
+
   const normalizedEmail = String(email || 'user@morphly.app').trim().toLowerCase();
   const numUSD = Number(Number(amountUSD).toFixed(2));
   const numNGN = Number(priceNGN || Math.round(numUSD * 1500));
+  if (!Number.isFinite(numNGN) || numNGN <= 0) {
+    throw new Error('A positive Naira amount is required for an IvoryPay payment');
+  }
 
   const firstName = normalizedEmail.split('@')[0].split(/[._-]/)[0] || 'Morphly';
   const lastName = 'User';
 
-  const authHeader = effectiveSecretKey.startsWith('Bearer ') ? effectiveSecretKey : effectiveSecretKey;
   const headers = {
-    Authorization: authHeader,
-    'x-api-key': effectiveSecretKey.replace(/^Bearer\s+/i, ''),
+    Authorization: effectiveSecretKey,
     'Content-Type': 'application/json',
   };
 
-  // Attempt strategies in sequence
-  const strategies = [
-    {
-      firstName,
-      lastName,
-      name: `${firstName} ${lastName}`,
-      email: normalizedEmail,
-      amount: numUSD,
-      crypto: 'USDT',
-      baseFiat: 'USD',
-      currency: 'USD',
-      reference: effectiveReference,
-    },
-    {
-      firstName,
-      lastName,
-      email: normalizedEmail,
-      amount: numUSD,
-      crypto: 'USDT',
-      baseFiat: 'USD',
-      reference: effectiveReference,
-    },
-    {
-      firstName,
-      lastName,
-      email: normalizedEmail,
-      amount: numNGN,
-      crypto: 'USDT',
-      baseFiat: 'NGN',
-      reference: effectiveReference,
-    },
-    {
-      email: normalizedEmail,
-      amount: numUSD,
-      crypto: 'USDT',
-      baseFiat: 'USD',
-      reference: effectiveReference,
-    },
-    {
-      email: normalizedEmail,
-      amount: numUSD,
-      currency: 'USDT',
-      crypto: 'USDT',
-      reference: effectiveReference,
-    },
-    {
-      customer: {
-        email: normalizedEmail,
-        firstName,
-        lastName,
-      },
-      amount: numUSD,
-      crypto: 'USDT',
-      baseFiat: 'USD',
-      reference: effectiveReference,
-    },
-  ];
+  // IvoryPay's API flow provides the wallet address and amount to show in our UI;
+  // it does not return a hosted checkout link for an API-mode crypto collection.
+  const payload = {
+    amount: numNGN,
+    type: 'CRYPTO',
+    chain: getIvoryPayCryptoChain(),
+    firstName,
+    lastName,
+    email: normalizedEmail,
+    reference: effectiveReference,
+    baseFiat: 'NGN',
+    mode: 'API',
+    crypto: getIvoryPayCryptoToken(),
+    metadata: JSON.stringify({
+      userId: String(userId),
+      packageId: String(packageId),
+      credits: Number(credits),
+      priceUSD: numUSD,
+      priceNGN: numNGN,
+    }),
+  };
 
-  let lastError = null;
-  let successData = null;
+  const response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  });
+  const successData = await response.json().catch(() => ({}));
 
-  for (const strategy of strategies) {
-    try {
-      const response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          ...strategy,
-          ...(redirectUrl ? { redirectUrl, callbackUrl: redirectUrl } : {}),
-          metadata: {
-            userId: String(userId),
-            packageId: String(packageId),
-            credits: Number(credits),
-            priceUSD: numUSD,
-            priceNGN: numNGN,
-          },
-        }),
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && (data?.status === true || data?.data || data?.checkoutUrl || data?.link)) {
-        successData = data;
-        break;
-      }
-
-      lastError = data?.message || data?.error || `HTTP ${response.status}: ${JSON.stringify(data)}`;
-    } catch (err) {
-      lastError = err?.message || String(err);
-    }
+  if (!response.ok || successData?.status === false || !successData?.data) {
+    throw new Error(`IvoryPay rejected the payment request: ${getProviderErrorMessage(successData, response.status)}`);
   }
 
-  if (!successData) {
-    throw new Error(lastError || 'IvoryPay payment initiation failed');
+  const transaction = successData.data;
+  const collectionDetails = transaction.collectionDetails || {};
+  if (!collectionDetails.address || !transaction.amountInCrypto) {
+    throw new Error('IvoryPay did not return crypto payment instructions');
   }
 
-  const checkoutUrl = successData?.data?.checkoutUrl
-    || successData?.data?.link
-    || successData?.data?.url
-    || successData?.data?.paymentLink
-    || successData?.checkoutUrl
-    || successData?.link
-    || successData?.paymentLink;
+  const checkoutUrl = transaction.checkoutUrl
+    || transaction.link
+    || transaction.url
+    || transaction.paymentLink;
 
   return {
     status: 'success',
     reference: effectiveReference,
     checkoutUrl,
-    data: successData?.data || successData,
+    paymentInstructions: {
+      address: collectionDetails.address,
+      chain: collectionDetails.network || payload.chain,
+      amount: transaction.amountInCrypto,
+      currency: transaction.currency || payload.crypto,
+      expiresAt: transaction.expiresAt || null,
+    },
+    data: transaction,
   };
 }
 
@@ -208,25 +187,12 @@ export async function verifyIvoryPayTransaction(reference, secretKey) {
     };
   }
 
-  // Try standard reference lookup endpoint first
-  let response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions/${encodeURIComponent(String(reference))}`, {
-    method: 'GET',
-    headers: {
-      Authorization: effectiveSecretKey,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  // Fallback to /verify/:reference if needed
-  if (response.status === 404) {
-    response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions/verify/${encodeURIComponent(String(reference))}`, {
-      method: 'GET',
-      headers: {
-        Authorization: effectiveSecretKey,
-        'Content-Type': 'application/json',
-      },
-    });
-  }
+  // This is IvoryPay's documented status endpoint. It is public, but the
+  // server—not the browser—calls it before crediting a wallet.
+  const response = await fetch(
+    `${IVORYPAY_API_BASE_URL}/v1/transactions/${encodeURIComponent(String(reference))}/verify`,
+    { method: 'GET' },
+  );
 
   const data = await response.json().catch(() => ({}));
   const transaction = data?.data || data?.transaction || data;
@@ -244,9 +210,7 @@ export async function verifyIvoryPayTransaction(reference, secretKey) {
 }
 
 export function extractIvoryPayPaymentContext(transaction, fallback = {}) {
-  const meta = transaction?.metadata && typeof transaction.metadata === 'object'
-    ? transaction.metadata
-    : (transaction?.meta && typeof transaction.meta === 'object' ? transaction.meta : {});
+  const meta = parseMetadata(transaction?.metadata || transaction?.meta);
 
   const reference = transaction?.reference || transaction?.tx_ref || fallback.reference || null;
 
@@ -291,12 +255,20 @@ export function validateIvoryPayTransaction(transaction, expectedReference) {
     return { ok: false, message: 'Payment reference mismatch' };
   }
 
-  const amountPaid = Number(transaction?.amount || transaction?.amountPaid || 0);
+  // The package amount is stored in NGN, so only accept IvoryPay's fiat/base
+  // amount here—not the on-chain token amount.
+  const amountPaid = Number(
+    transaction?.amountInBaseFiat
+      || transaction?.amountInFiat
+      || transaction?.amount
+      || transaction?.amountPaid
+      || 0,
+  );
   if (!(amountPaid > 0)) {
     return { ok: false, message: 'Invalid verified crypto amount' };
   }
 
-  return { ok: true, reference: reference || expectedReference, amountPaidUSD: amountPaid };
+  return { ok: true, reference: reference || expectedReference, amountPaidNGN: amountPaid };
 }
 
 export async function applyVerifiedIvoryPayPayment({
@@ -304,8 +276,8 @@ export async function applyVerifiedIvoryPayPayment({
   userId,
   packageId,
   transactionId,
-  amountPaidUSD,
-  gatewayFeeUSD = 0,
+  amountPaidNGN,
+  gatewayFeeNGN = 0,
 }) {
   if (!reference || !userId || !packageId || !transactionId) {
     throw new Error('Missing verified crypto payment context');
@@ -338,13 +310,13 @@ export async function applyVerifiedIvoryPayPayment({
     throw new Error('Account suspended');
   }
 
-  const { data, error } = await supabaseAdmin.rpc('apply_verified_package_payment', {
+  const { data, error } = await supabaseAdmin.rpc('apply_verified_ivorypay_payment', {
     p_user: userId,
     p_package: packageId,
     p_reference: reference,
     p_gateway_id: String(transactionId),
-    p_amount: amountPaidUSD,
-    p_fee: gatewayFeeUSD,
+    p_amount: amountPaidNGN,
+    p_fee: gatewayFeeNGN,
   });
 
   if (error && error.code !== '23505') throw error;
@@ -386,7 +358,7 @@ export async function applyVerifiedIvoryPayPayment({
     reference,
     transactionId,
     packageId,
-    amountUSD: amountPaidUSD,
+    amountNGN: amountPaidNGN,
     duplicate: Boolean(normalizedData.duplicate),
     creditsAdded: normalizedData.creditsAdded,
     newCredits: normalizedData.newCredits,
@@ -396,30 +368,24 @@ export async function applyVerifiedIvoryPayPayment({
   return normalizedData;
 }
 
-export function hasValidIvoryPaySignature(rawBody, signature, secret) {
+export function hasValidIvoryPaySignature(rawBody, signature, secret, signedData = '') {
   if (!signature || !secret || !rawBody) return false;
 
-  const hexSignature = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
-  const base64Signature = crypto.createHmac('sha256', secret).update(rawBody).digest('base64');
-
   const incomingSig = String(signature).trim();
+  const candidateSignatures = [
+    // IvoryPay signs JSON.stringify(payload.data) with HMAC SHA-512.
+    signedData ? crypto.createHmac('sha512', secret).update(signedData).digest('hex') : '',
+    // Support the historic full-body SHA-256 variants while old webhooks drain.
+    crypto.createHmac('sha256', secret).update(rawBody).digest('hex'),
+    crypto.createHmac('sha256', secret).update(rawBody).digest('base64'),
+  ].filter(Boolean);
 
-  // Support hex or base64 signature formats
-  if (incomingSig.length === hexSignature.length) {
+  return candidateSignatures.some((expectedSignature) => {
+    if (incomingSig.length !== expectedSignature.length) return false;
     try {
-      return crypto.timingSafeEqual(Buffer.from(hexSignature), Buffer.from(incomingSig));
+      return crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(incomingSig));
     } catch {
       return false;
     }
-  }
-
-  if (incomingSig.length === base64Signature.length) {
-    try {
-      return crypto.timingSafeEqual(Buffer.from(base64Signature), Buffer.from(incomingSig));
-    } catch {
-      return false;
-    }
-  }
-
-  return incomingSig === secret;
+  });
 }

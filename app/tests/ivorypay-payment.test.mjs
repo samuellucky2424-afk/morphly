@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   isIvoryPayTestKey,
+  initiateIvoryPayTransaction,
   validateIvoryPayEnvironment,
   validateIvoryPayTransaction,
   extractIvoryPayPaymentContext,
@@ -87,6 +88,105 @@ test('extractIvoryPayPaymentContext extracts and validates metadata', () => {
   assert.equal(context.credits, 1000);
 });
 
+test('IvoryPay metadata is parsed when its API returns the documented JSON string', () => {
+  const context = extractIvoryPayPaymentContext({
+    reference: '550e8400-e29b-41d4-a716-446655440000',
+    metadata: JSON.stringify({
+      userId: '11111111-1111-1111-1111-111111111111',
+      packageId: '22222222-2222-2222-2222-222222222222',
+      credits: 1000,
+    }),
+  });
+
+  assert.equal(context.userId, '11111111-1111-1111-1111-111111111111');
+  assert.equal(context.packageId, '22222222-2222-2222-2222-222222222222');
+  assert.equal(context.credits, 1000);
+});
+
+test('IvoryPay validates the paid base-fiat amount, not the crypto token amount', () => {
+  const result = validateIvoryPayTransaction({
+    reference: '550e8400-e29b-41d4-a716-446655440000',
+    amountInBaseFiat: 29000,
+    amountInCrypto: 19.93,
+  }, '550e8400-e29b-41d4-a716-446655440000');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.amountPaidNGN, 29000);
+});
+
+test('IvoryPay initiation uses the canonical crypto collection payload', async () => {
+  const originalSecret = process.env.IVORYPAY_SECRET_KEY;
+  const originalChain = process.env.IVORYPAY_CRYPTO_CHAIN;
+  const originalToken = process.env.IVORYPAY_CRYPTO_TOKEN;
+  const originalFetch = globalThis.fetch;
+  let receivedRequest;
+
+  process.env.IVORYPAY_SECRET_KEY = 'sk_test_example';
+  process.env.IVORYPAY_CRYPTO_CHAIN = 'BSC_MAINNET';
+  process.env.IVORYPAY_CRYPTO_TOKEN = 'USDT';
+  globalThis.fetch = async (url, options) => {
+    receivedRequest = { url, headers: options.headers, body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({
+      status: true,
+      data: {
+        reference: '550e8400-e29b-41d4-a716-446655440000',
+        collectionDetails: { network: 'BSC_MAINNET', address: '0x1234' },
+        amountInCrypto: 20.14,
+        currency: 'USDT',
+      },
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const result = await initiateIvoryPayTransaction({
+      userId: '11111111-1111-1111-1111-111111111111',
+      email: 'customer@example.com',
+      amountUSD: 21.34,
+      priceNGN: 29000,
+      credits: 1000,
+      packageId: '22222222-2222-2222-2222-222222222222',
+      reference: '550e8400-e29b-41d4-a716-446655440000',
+    });
+
+    assert.equal(receivedRequest.url, 'https://api.ivorypay.io/api/v1/transactions');
+    assert.equal(receivedRequest.headers.Authorization, 'sk_test_example');
+    assert.deepEqual(receivedRequest.body, {
+      amount: 29000,
+      type: 'CRYPTO',
+      chain: 'BSC_MAINNET',
+      firstName: 'customer',
+      lastName: 'User',
+      email: 'customer@example.com',
+      reference: '550e8400-e29b-41d4-a716-446655440000',
+      baseFiat: 'NGN',
+      mode: 'API',
+      crypto: 'USDT',
+      metadata: JSON.stringify({
+        userId: '11111111-1111-1111-1111-111111111111',
+        packageId: '22222222-2222-2222-2222-222222222222',
+        credits: 1000,
+        priceUSD: 21.34,
+        priceNGN: 29000,
+      }),
+    });
+    assert.deepEqual(result.paymentInstructions, {
+      address: '0x1234',
+      chain: 'BSC_MAINNET',
+      amount: 20.14,
+      currency: 'USDT',
+      expiresAt: null,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalSecret === undefined) delete process.env.IVORYPAY_SECRET_KEY;
+    else process.env.IVORYPAY_SECRET_KEY = originalSecret;
+    if (originalChain === undefined) delete process.env.IVORYPAY_CRYPTO_CHAIN;
+    else process.env.IVORYPAY_CRYPTO_CHAIN = originalChain;
+    if (originalToken === undefined) delete process.env.IVORYPAY_CRYPTO_TOKEN;
+    else process.env.IVORYPAY_CRYPTO_TOKEN = originalToken;
+  }
+});
+
 test('hasValidIvoryPaySignature validates HMAC-SHA256 signatures accurately', () => {
   const secret = 'test_webhook_secret_key_12345';
   const payload = JSON.stringify({
@@ -102,6 +202,15 @@ test('hasValidIvoryPaySignature validates HMAC-SHA256 signatures accurately', ()
   assert.equal(hasValidIvoryPaySignature(payload, validBase64Sig, secret), true);
   assert.equal(hasValidIvoryPaySignature(payload, invalidSig, secret), false);
   assert.equal(hasValidIvoryPaySignature('', validHexSig, secret), false);
+});
+
+test('hasValidIvoryPaySignature validates IvoryPay HMAC-SHA512 data signatures', () => {
+  const secret = 'test_webhook_secret_key_12345';
+  const payload = JSON.stringify({ event: 'cryptoCollection.success', data: { reference: 'payment-ref' } });
+  const signedData = JSON.stringify({ reference: 'payment-ref' });
+  const signature = crypto.createHmac('sha512', secret).update(signedData).digest('hex');
+
+  assert.equal(hasValidIvoryPaySignature(payload, signature, secret, signedData), true);
 });
 
 test('both deployment roots preserve raw IvoryPay webhook bytes', () => {

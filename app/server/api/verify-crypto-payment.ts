@@ -85,8 +85,8 @@ export default async function handler(req, res) {
       userId: paymentContext.userId,
       packageId: paymentContext.packageId,
       transactionId: transaction.id || transaction.reference || reference,
-      amountPaidUSD: paymentValidation.amountPaidUSD,
-      gatewayFeeUSD: Number(transaction.fee || 0),
+      amountPaidNGN: paymentValidation.amountPaidNGN,
+      gatewayFeeNGN: Number(transaction.platformFeeInFiat || transaction.fee || 0),
     });
 
     return res.status(200).json({

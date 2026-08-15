@@ -44,14 +44,6 @@ export default async function handler(req, res) {
 
   const secret = process.env.IVORYPAY_WEBHOOK_SECRET || process.env.IVORYPAY_SECRET_KEY;
 
-  if (secret && signature && !hasValidIvoryPaySignature(rawBody, signature, secret)) {
-    await logErrorEvent('ivorypay_webhook.invalid_signature', {
-      signatureHeader: Boolean(signature),
-      secretConfigured: Boolean(secret),
-    });
-    return res.status(401).json({ error: 'Invalid webhook signature' });
-  }
-
   let eventPayload;
   try {
     eventPayload = typeof req.body === 'object' && !Buffer.isBuffer(req.body)
@@ -59,6 +51,19 @@ export default async function handler(req, res) {
       : JSON.parse(rawBody || '{}');
   } catch (error) {
     return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+
+  if (secret && (!signature || !hasValidIvoryPaySignature(
+    rawBody,
+    signature,
+    secret,
+    eventPayload?.data ? JSON.stringify(eventPayload.data) : '',
+  ))) {
+    await logErrorEvent('ivorypay_webhook.invalid_signature', {
+      signatureHeader: Boolean(signature),
+      secretConfigured: Boolean(secret),
+    });
+    return res.status(401).json({ error: 'Invalid webhook signature' });
   }
 
   const eventName = String(eventPayload?.event || eventPayload?.type || eventPayload?.status || '').toLowerCase();
@@ -70,7 +75,7 @@ export default async function handler(req, res) {
     status: transactionData?.status,
   });
 
-  const isSuccessEvent = ['successful', 'success', 'payment.success', 'transaction.successful', 'paid'].includes(eventName)
+  const isSuccessEvent = ['successful', 'success', 'payment.success', 'transaction.successful', 'cryptocollection.success', 'fiatcollection.success', 'paid'].includes(eventName)
     || ['successful', 'success', 'paid', 'completed'].includes(String(transactionData?.status || '').toLowerCase());
 
   if (!isSuccessEvent) {
@@ -115,8 +120,8 @@ export default async function handler(req, res) {
       userId: paymentContext.userId,
       packageId: paymentContext.packageId,
       transactionId: verifiedTx.id || verifiedTx.reference || reference,
-      amountPaidUSD: paymentValidation.amountPaidUSD,
-      gatewayFeeUSD: Number(verifiedTx.fee || 0),
+      amountPaidNGN: paymentValidation.amountPaidNGN,
+      gatewayFeeNGN: Number(verifiedTx.platformFeeInFiat || verifiedTx.fee || 0),
     });
 
     return res.status(200).json({

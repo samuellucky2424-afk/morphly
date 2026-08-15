@@ -44,8 +44,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: 'Credit package is no longer active' });
     }
 
-    // IvoryPay requires reference to be alphanumeric and maximum 32 characters
-    const reference = `mc_${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}`.slice(0, 32);
+    // IvoryPay requires a UUID reference for idempotency and reconciliation.
+    const reference = crypto.randomUUID();
 
     await logRequestEvent('initiate-crypto-payment.request', {
       userId,
@@ -71,6 +71,7 @@ export default async function handler(req, res) {
       status: 'success',
       reference,
       checkoutUrl: session.checkoutUrl,
+      paymentInstructions: session.paymentInstructions,
       data: session.data,
     });
   } catch (error) {

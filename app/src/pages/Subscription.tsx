@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, CheckCircle2, Coins, CreditCard, ExternalLink, Loader2, ShieldCheck, Wallet } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Coins, Copy, CreditCard, ExternalLink, Loader2, ShieldCheck, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -98,6 +98,13 @@ function Subscription() {
     credits: number;
     packageId?: string;
     priceUSD: number;
+    paymentInstructions?: {
+      address: string;
+      chain: string;
+      amount: number | string;
+      currency: string;
+      expiresAt?: string | null;
+    };
   } | null>(null);
   const [isCheckingCrypto, setIsCheckingCrypto] = useState(false);
 
@@ -269,13 +276,16 @@ function Subscription() {
         credits: selectedPlan.credits,
         packageId: selectedPlan.id,
         priceUSD,
+        paymentInstructions: data.paymentInstructions,
       });
 
       if (checkoutUrl) {
         window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
         toast.info('Crypto checkout opened in a new tab. Complete your transfer and click Verify.');
+      } else if (data.paymentInstructions?.address) {
+        toast.success('Payment instructions are ready. Send the exact amount, then click Verify.');
       } else {
-        toast.info('Crypto checkout session initialized. Click Verify once transferred.');
+        toast.info('Crypto payment session initialized. Click Verify once transferred.');
       }
     } catch (error) {
       console.error(error);
@@ -476,7 +486,7 @@ function Subscription() {
               }`}
             >
               <Wallet className="w-4 h-4" />
-              <span>Pay with Crypto (USDT / USDC)</span>
+              <span>Pay with Crypto</span>
             </button>
           </div>
         )}
@@ -491,8 +501,38 @@ function Subscription() {
                   Crypto Payment in Progress
                 </p>
                 <p className="text-xs text-[#a1a1aa] mb-3">
-                  Purchasing {activeCryptoSession.credits.toLocaleString()} credits for ${activeCryptoSession.priceUSD} USDT/USDC.
+                  Purchasing {activeCryptoSession.credits.toLocaleString()} credits for ${activeCryptoSession.priceUSD} in crypto.
                 </p>
+                {activeCryptoSession.paymentInstructions?.address && (
+                  <div className="mb-4 rounded-xl border border-emerald-500/20 bg-black/20 p-3 text-xs text-[#d4d4d8]">
+                    <p className="font-semibold text-emerald-300">
+                      Send exactly {activeCryptoSession.paymentInstructions.amount} {activeCryptoSession.paymentInstructions.currency}
+                    </p>
+                    <p className="mt-1 text-[#a1a1aa]">Network: {activeCryptoSession.paymentInstructions.chain}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="min-w-0 flex-1 break-all rounded bg-black/30 px-2 py-1.5 text-[#e4e4e7]">
+                        {activeCryptoSession.paymentInstructions.address}
+                      </code>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-8 w-8 shrink-0 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(activeCryptoSession.paymentInstructions!.address);
+                            toast.success('Wallet address copied');
+                          } catch {
+                            toast.error('Could not copy the wallet address. Please copy it manually.');
+                          }
+                        }}
+                        aria-label="Copy wallet address"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center gap-3">
                   {activeCryptoSession.checkoutUrl && (
                     <Button
@@ -570,7 +610,7 @@ function Subscription() {
                     {paymentMethod === 'crypto' ? (
                       <>
                         <span className="text-xl font-bold text-emerald-400">${priceUSD}</span>
-                        <span className="text-xs text-[#71717a]">USDT / USDC</span>
+                        <span className="text-xs text-[#71717a]">Crypto</span>
                       </>
                     ) : (
                       <>
@@ -593,7 +633,7 @@ function Subscription() {
             <li>- 2 credits are deducted per second of stream time (4 cr/s for dual morph)</li>
             <li>- 500 credits is about 4 minutes 10 seconds</li>
             <li>- 1000 credits is about 8 minutes 20 seconds</li>
-            {isCryptoEnabled && <li>- Instant on-chain confirmation (USDT/USDC on TRC20, SOL, ETH, BSC, Polygon)</li>}
+            {isCryptoEnabled && <li>- Pay the exact USDT amount shown using the displayed supported network.</li>}
             <li>- Credits never expire</li>
           </ul>
         </div>
@@ -638,7 +678,7 @@ function Subscription() {
                 {selectedPlan.credits.toLocaleString()} Credits{' '}
                 <span className="text-blue-500 font-normal mx-1">/</span>{' '}
                 {paymentMethod === 'crypto' ? (
-                  <span className="text-emerald-400">${getPriceUSD(selectedPlan.priceNGN)} USDT/USDC</span>
+                  <span className="text-emerald-400">${getPriceUSD(selectedPlan.priceNGN)} Crypto</span>
                 ) : (
                   <>₦{selectedPlan.priceNGN.toLocaleString()} <span className="text-[#71717a] font-normal text-sm">(${getPriceUSD(selectedPlan.priceNGN)})</span></>
                 )}
