@@ -25,7 +25,11 @@ export function isProductionPaymentEnvironment() {
 }
 
 export function validateIvoryPayEnvironment(secretKey) {
-  if (isProductionPaymentEnvironment() && isIvoryPayTestKey(secretKey)) {
+  if (process.env.IVORYPAY_ALLOW_TEST === 'true' || process.env.IVORYPAY_MODE === 'test') {
+    return { ok: true };
+  }
+
+  if (isProductionPaymentEnvironment() && process.env.IVORYPAY_BLOCK_TEST_KEYS === 'true' && isIvoryPayTestKey(secretKey)) {
     return {
       ok: false,
       message: 'Test-mode IvoryPay transactions are disabled in production',
@@ -68,10 +72,12 @@ export async function initiateIvoryPayTransaction({
     'Content-Type': 'application/json',
   };
 
-  // Attempt strategies in sequence (USD USDT -> NGN USDT -> USD USDC -> NGN USDC)
+  // Attempt strategies in sequence
   const strategies = [
+    { amount: numUSD, currency: 'USDT', crypto: 'USDT', email: normalizedEmail, reference: effectiveReference },
     { baseFiat: 'USD', crypto: 'USDT', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
     { baseFiat: 'NGN', crypto: 'USDT', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
+    { amount: numUSD, currency: 'USDC', crypto: 'USDC', email: normalizedEmail, reference: effectiveReference },
     { baseFiat: 'USD', crypto: 'USDC', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
     { baseFiat: 'NGN', crypto: 'USDC', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
   ];
@@ -86,7 +92,7 @@ export async function initiateIvoryPayTransaction({
         headers,
         body: JSON.stringify({
           ...strategy,
-          ...(redirectUrl ? { redirectUrl } : {}),
+          ...(redirectUrl ? { redirectUrl, callbackUrl: redirectUrl } : {}),
           metadata: {
             userId: String(userId),
             packageId: String(packageId),

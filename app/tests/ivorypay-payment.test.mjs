@@ -49,10 +49,12 @@ test('test IvoryPay keys are identified correctly', () => {
   assert.equal(isIvoryPayTestKey('pk_live_abc123456789'), false);
 });
 
-test('test-mode IvoryPay configuration is rejected in production', () => {
+test('test-mode IvoryPay configuration is rejected in production when strict blocking is enabled', () => {
   const originalNodeEnvironment = process.env.NODE_ENV;
   const originalIvoryPayMode = process.env.IVORYPAY_MODE;
+  const originalBlockKeys = process.env.IVORYPAY_BLOCK_TEST_KEYS;
   process.env.NODE_ENV = 'production';
+  process.env.IVORYPAY_BLOCK_TEST_KEYS = 'true';
   delete process.env.IVORYPAY_MODE;
 
   try {
@@ -64,6 +66,8 @@ test('test-mode IvoryPay configuration is rejected in production', () => {
     else process.env.NODE_ENV = originalNodeEnvironment;
     if (originalIvoryPayMode === undefined) delete process.env.IVORYPAY_MODE;
     else process.env.IVORYPAY_MODE = originalIvoryPayMode;
+    if (originalBlockKeys === undefined) delete process.env.IVORYPAY_BLOCK_TEST_KEYS;
+    else process.env.IVORYPAY_BLOCK_TEST_KEYS = originalBlockKeys;
   }
 });
 
