@@ -39,6 +39,7 @@ export async function initiateIvoryPayTransaction({
   userId,
   email,
   amountUSD,
+  priceNGN,
   credits,
   packageId,
   reference,
@@ -56,76 +57,75 @@ export async function initiateIvoryPayTransaction({
   }
 
   const effectiveReference = String(reference || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+  const normalizedEmail = String(email || 'user@morphly.app').trim().toLowerCase();
+  const numUSD = Number(Number(amountUSD).toFixed(2));
+  const numNGN = Number(priceNGN || Math.round(numUSD * 1500));
 
-  const payload = {
-    baseFiat: 'USD',
-    currency: 'USD',
-    crypto: 'USDT',
-    amount: Number(Number(amountUSD).toFixed(2)),
-    email: String(email || 'user@morphly.app').trim().toLowerCase(),
-    reference: effectiveReference,
-    ...(redirectUrl ? { redirectUrl } : {}),
-    metadata: {
-      userId: String(userId),
-      packageId: String(packageId),
-      credits: Number(credits),
-      priceUSD: Number(amountUSD),
-    },
-  };
-
+  const authHeader = effectiveSecretKey.startsWith('Bearer ') ? effectiveSecretKey : effectiveSecretKey;
   const headers = {
-    Authorization: effectiveSecretKey,
+    Authorization: authHeader,
     'x-api-key': effectiveSecretKey.replace(/^Bearer\s+/i, ''),
     'Content-Type': 'application/json',
   };
 
-  let response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-  });
+  // Attempt strategies in sequence (USD USDT -> NGN USDT -> USD USDC -> NGN USDC)
+  const strategies = [
+    { baseFiat: 'USD', crypto: 'USDT', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
+    { baseFiat: 'NGN', crypto: 'USDT', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
+    { baseFiat: 'USD', crypto: 'USDC', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
+    { baseFiat: 'NGN', crypto: 'USDC', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
+  ];
 
-  let data = await response.json().catch(() => ({}));
+  let lastError = null;
+  let successData = null;
 
-  // If rejected with 400/401, retry with Bearer auth prefix and minimal schema
-  if (!response.ok && (response.status === 400 || response.status === 401)) {
-    const retryHeaders = {
-      Authorization: effectiveSecretKey.startsWith('Bearer ') ? effectiveSecretKey : `Bearer ${effectiveSecretKey}`,
-      'Content-Type': 'application/json',
-    };
-    const retryPayload = {
-      baseFiat: 'USD',
-      crypto: 'USDT',
-      amount: Number(Number(amountUSD).toFixed(2)),
-      email: String(email || 'user@morphly.app').trim().toLowerCase(),
-      reference: effectiveReference,
-    };
-    response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
-      method: 'POST',
-      headers: retryHeaders,
-      body: JSON.stringify(retryPayload),
-    });
-    data = await response.json().catch(() => ({}));
+  for (const strategy of strategies) {
+    try {
+      const response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          ...strategy,
+          ...(redirectUrl ? { redirectUrl } : {}),
+          metadata: {
+            userId: String(userId),
+            packageId: String(packageId),
+            credits: Number(credits),
+            priceUSD: numUSD,
+            priceNGN: numNGN,
+          },
+        }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && (data?.status === true || data?.data || data?.checkoutUrl || data?.link)) {
+        successData = data;
+        break;
+      }
+
+      lastError = data?.message || data?.error || `HTTP ${response.status}`;
+    } catch (err) {
+      lastError = err?.message || String(err);
+    }
   }
 
-  if (!response.ok) {
-    const errorMsg = data?.message || data?.error || `IvoryPay returned HTTP ${response.status}`;
-    throw new Error(errorMsg);
+  if (!successData) {
+    throw new Error(lastError || 'IvoryPay payment initiation failed');
   }
 
-  const checkoutUrl = data?.data?.checkoutUrl
-    || data?.data?.link
-    || data?.data?.url
-    || data?.data?.paymentLink
-    || data?.checkoutUrl
-    || data?.link
-    || data?.paymentLink;
+  const checkoutUrl = successData?.data?.checkoutUrl
+    || successData?.data?.link
+    || successData?.data?.url
+    || successData?.data?.paymentLink
+    || successData?.checkoutUrl
+    || successData?.link
+    || successData?.paymentLink;
 
   return {
     status: 'success',
     reference: effectiveReference,
     checkoutUrl,
-    data: data?.data || data,
+    data: successData?.data || successData,
   };
 }
 

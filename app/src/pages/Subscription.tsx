@@ -273,7 +273,7 @@ function Subscription() {
 
       if (checkoutUrl) {
         window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
-        toast.info('IvoryPay crypto checkout opened in a new tab. Complete your transfer and click Verify.');
+        toast.info('Crypto checkout opened in a new tab. Complete your transfer and click Verify.');
       } else {
         toast.info('Crypto checkout session initialized. Click Verify once transferred.');
       }
@@ -477,9 +477,6 @@ function Subscription() {
             >
               <Wallet className="w-4 h-4" />
               <span>Pay with Crypto (USDT / USDC)</span>
-              <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-300">
-                IvoryPay
-              </span>
             </button>
           </div>
         )}
@@ -596,7 +593,7 @@ function Subscription() {
             <li>- 2 credits are deducted per second of stream time (4 cr/s for dual morph)</li>
             <li>- 500 credits is about 4 minutes 10 seconds</li>
             <li>- 1000 credits is about 8 minutes 20 seconds</li>
-            {isCryptoEnabled && <li>- Instant on-chain confirmation with IvoryPay (USDT/USDC on TRC20, SOL, ETH, BSC, Polygon)</li>}
+            {isCryptoEnabled && <li>- Instant on-chain confirmation (USDT/USDC on TRC20, SOL, ETH, BSC, Polygon)</li>}
             <li>- Credits never expire</li>
           </ul>
         </div>
@@ -605,7 +602,7 @@ function Subscription() {
           <p className="text-sm text-[#71717a] mb-4">All purchases are one-time. No subscriptions or hidden fees.</p>
           {paymentMethod === 'crypto' ? (
             <p className="text-xs text-emerald-400/80">
-              Powered by IvoryPay Crypto Payment Gateway. Safe and instant blockchain settlement.
+              Safe and instant on-chain crypto settlement.
             </p>
           ) : (
             <>

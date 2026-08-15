@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     // Verify package exists in database
     const { data: pkg, error: pkgError } = await supabaseAdmin
       .from('credit_packages')
-      .select('id, credits, is_active')
+      .select('id, credits, price_ngn, is_active')
       .eq('id', packageId)
       .maybeSingle();
 
@@ -52,6 +52,7 @@ export default async function handler(req, res) {
       packageId,
       credits,
       priceUSD,
+      priceNGN: pkg.price_ngn,
       reference,
     });
 
@@ -59,6 +60,7 @@ export default async function handler(req, res) {
       userId,
       email: user.email,
       amountUSD: Number(priceUSD),
+      priceNGN: Number(pkg.price_ngn || 0),
       credits: Number(credits),
       packageId,
       reference,
