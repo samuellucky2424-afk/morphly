@@ -45,21 +45,54 @@ function getRequestFingerprint(req) {
 }
 
 async function createDecartClientToken(apiKey, userId, sessionId, maxSeconds, installationId) {
-  const providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-    body: JSON.stringify({
+  const safeMaxSeconds = Math.max(60, Math.min(Math.floor(Number(maxSeconds) || 1800), 7200));
+
+  const buildTokenPayload = (includeConstraints = true) => {
+    const payload = {
       expiresIn: CLIENT_TOKEN_TTL_SECONDS,
       allowedModels: [DECART_REALTIME_MODEL],
-      constraints: { realtime: { maxSessionDuration: Math.min(maxSeconds, 7200) } },
       metadata: {
         morphlyUserId: userId,
         morphlySessionId: sessionId,
         ...(installationId ? { morphlyInstallationId: installationId } : {}),
       },
-    }),
+    };
+    if (includeConstraints) {
+      payload.constraints = { realtime: { maxSessionDuration: safeMaxSeconds } };
+    }
+    return payload;
+  };
+
+  let providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+    body: JSON.stringify(buildTokenPayload(true)),
   });
-  const providerData = await providerResponse.json().catch(() => ({}));
+  let providerData = await providerResponse.json().catch(() => ({}));
+
+  // Resilient fallback: if Decart API returns 400 (e.g. constraints/metadata schema mismatch), retry without constraints
+  if (!providerResponse.ok && providerResponse.status === 400) {
+    console.warn('[AI_SESSION] Decart rejected token constraints with status 400, retrying with basic token payload:', providerData);
+    providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+      body: JSON.stringify(buildTokenPayload(false)),
+    });
+    providerData = await providerResponse.json().catch(() => ({}));
+  }
+
+  // If still failing with 400 (e.g. model or metadata rejected), retry with minimal payload
+  if (!providerResponse.ok && providerResponse.status === 400) {
+    console.warn('[AI_SESSION] Decart rejected model/metadata payload, retrying with minimal token payload:', providerData);
+    providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+      body: JSON.stringify({
+        expiresIn: CLIENT_TOKEN_TTL_SECONDS,
+      }),
+    });
+    providerData = await providerResponse.json().catch(() => ({}));
+  }
 
   console.log('[AI_SESSION]', {
     providerStatus: providerResponse.status,
@@ -69,10 +102,13 @@ async function createDecartClientToken(apiKey, userId, sessionId, maxSeconds, in
   });
 
   if (!providerResponse.ok || !providerData.apiKey) {
+    const errorDetails = typeof providerData?.error === 'string'
+      ? providerData.error
+      : providerData?.message || providerData?.error?.message || 'Unknown provider error';
     return { error: {
       error: 'AI_SESSION_CREATION_FAILED',
       providerStatus: providerResponse.status,
-      details: providerData?.error || providerData?.message || 'Unknown provider error',
+      details: errorDetails,
     } };
   }
 

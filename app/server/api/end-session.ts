@@ -155,7 +155,7 @@ export default async function handler(req, res) {
       return res.status(authResult.status).json({ success: false, message: authResult.error });
     }
     const userId = authResult.user.id;
-    const { sessionId, secondsDelta } = req.body;
+    const { sessionId, secondsDelta } = req.body || {};
     if (req.body?.userId && req.body.userId !== userId) {
       return res.status(403).json({ success: false, message: 'User mismatch' });
     }

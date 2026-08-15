@@ -69,6 +69,49 @@ function getRouteName(req) {
   return url.pathname.replace(/^\/api\/?/, '').replace(/^\/+|\/+$/g, '');
 }
 
+async function parseRequestBody(req) {
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+    return req.body;
+  }
+
+  if (typeof req.body === 'string' && req.body.trim()) {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+
+  if (Buffer.isBuffer(req.body)) {
+    try {
+      return JSON.parse(req.body.toString('utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  if (req.readable && typeof req.on === 'function' && ['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    try {
+      const chunks = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const rawBuffer = Buffer.concat(chunks);
+      if (!req.rawBody) {
+        req.rawBody = rawBuffer;
+      }
+      const rawText = rawBuffer.toString('utf8');
+      if (rawText.trim()) {
+        return JSON.parse(rawText);
+      }
+    } catch {
+      return {};
+    }
+  }
+
+  return req.body || {};
+}
+
 export async function handleApiRoute(req, res) {
   const routeName = getRouteName(req);
   const routeHandler = routeHandlers[routeName];
@@ -83,6 +126,12 @@ export async function handleApiRoute(req, res) {
     }
 
     return res.status(404).json({ error: 'API route not found' });
+  }
+
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    req.body = await parseRequestBody(req);
+  } else if (!req.body) {
+    req.body = {};
   }
 
   return routeHandler(req, res);

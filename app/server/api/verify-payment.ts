@@ -18,7 +18,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
-  const { reference, transactionId, userId, credits, packageId, priceUSD } = req.body;
+  const { reference, transactionId, userId, credits, packageId, priceUSD } = req.body || {};
   await logRequestEvent('verify-payment.request', {
     method: req.method,
     path: '/api/verify-payment',
