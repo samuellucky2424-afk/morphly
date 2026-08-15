@@ -50,9 +50,9 @@ export async function initiateIvoryPayTransaction({
   redirectUrl,
   secretKey,
 }) {
-  const effectiveSecretKey = (secretKey || process.env.IVORYPAY_SECRET_KEY || '').trim();
+  const effectiveSecretKey = (secretKey || process.env.IVORYPAY_SECRET_KEY || '').trim().replace(/^["']|["']$/g, '');
   if (!effectiveSecretKey) {
-    throw new Error('IVORYPAY_SECRET_KEY is not configured');
+    throw new Error('IVORYPAY_SECRET_KEY is not configured in server environment');
   }
 
   const environmentValidation = validateIvoryPayEnvironment(effectiveSecretKey);
@@ -65,6 +65,9 @@ export async function initiateIvoryPayTransaction({
   const numUSD = Number(Number(amountUSD).toFixed(2));
   const numNGN = Number(priceNGN || Math.round(numUSD * 1500));
 
+  const firstName = normalizedEmail.split('@')[0].split(/[._-]/)[0] || 'Morphly';
+  const lastName = 'User';
+
   const authHeader = effectiveSecretKey.startsWith('Bearer ') ? effectiveSecretKey : effectiveSecretKey;
   const headers = {
     Authorization: authHeader,
@@ -74,12 +77,60 @@ export async function initiateIvoryPayTransaction({
 
   // Attempt strategies in sequence
   const strategies = [
-    { amount: numUSD, currency: 'USDT', crypto: 'USDT', email: normalizedEmail, reference: effectiveReference },
-    { baseFiat: 'USD', crypto: 'USDT', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
-    { baseFiat: 'NGN', crypto: 'USDT', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
-    { amount: numUSD, currency: 'USDC', crypto: 'USDC', email: normalizedEmail, reference: effectiveReference },
-    { baseFiat: 'USD', crypto: 'USDC', amount: numUSD, email: normalizedEmail, reference: effectiveReference },
-    { baseFiat: 'NGN', crypto: 'USDC', amount: numNGN, email: normalizedEmail, reference: effectiveReference },
+    {
+      firstName,
+      lastName,
+      name: `${firstName} ${lastName}`,
+      email: normalizedEmail,
+      amount: numUSD,
+      crypto: 'USDT',
+      baseFiat: 'USD',
+      currency: 'USD',
+      reference: effectiveReference,
+    },
+    {
+      firstName,
+      lastName,
+      email: normalizedEmail,
+      amount: numUSD,
+      crypto: 'USDT',
+      baseFiat: 'USD',
+      reference: effectiveReference,
+    },
+    {
+      firstName,
+      lastName,
+      email: normalizedEmail,
+      amount: numNGN,
+      crypto: 'USDT',
+      baseFiat: 'NGN',
+      reference: effectiveReference,
+    },
+    {
+      email: normalizedEmail,
+      amount: numUSD,
+      crypto: 'USDT',
+      baseFiat: 'USD',
+      reference: effectiveReference,
+    },
+    {
+      email: normalizedEmail,
+      amount: numUSD,
+      currency: 'USDT',
+      crypto: 'USDT',
+      reference: effectiveReference,
+    },
+    {
+      customer: {
+        email: normalizedEmail,
+        firstName,
+        lastName,
+      },
+      amount: numUSD,
+      crypto: 'USDT',
+      baseFiat: 'USD',
+      reference: effectiveReference,
+    },
   ];
 
   let lastError = null;
@@ -109,7 +160,7 @@ export async function initiateIvoryPayTransaction({
         break;
       }
 
-      lastError = data?.message || data?.error || `HTTP ${response.status}`;
+      lastError = data?.message || data?.error || `HTTP ${response.status}: ${JSON.stringify(data)}`;
     } catch (err) {
       lastError = err?.message || String(err);
     }
