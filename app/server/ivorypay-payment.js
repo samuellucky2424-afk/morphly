@@ -45,7 +45,7 @@ export async function initiateIvoryPayTransaction({
   redirectUrl,
   secretKey,
 }) {
-  const effectiveSecretKey = secretKey || process.env.IVORYPAY_SECRET_KEY;
+  const effectiveSecretKey = (secretKey || process.env.IVORYPAY_SECRET_KEY || '').trim();
   if (!effectiveSecretKey) {
     throw new Error('IVORYPAY_SECRET_KEY is not configured');
   }
@@ -55,30 +55,58 @@ export async function initiateIvoryPayTransaction({
     throw new Error(environmentValidation.message);
   }
 
+  const effectiveReference = String(reference || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+
   const payload = {
-    amount: Number(amountUSD),
+    baseFiat: 'USD',
+    currency: 'USD',
     crypto: 'USDT',
-    email: email || 'user@morphly.app',
-    reference: reference,
+    amount: Number(Number(amountUSD).toFixed(2)),
+    email: String(email || 'user@morphly.app').trim().toLowerCase(),
+    reference: effectiveReference,
     ...(redirectUrl ? { redirectUrl } : {}),
     metadata: {
-      userId,
-      packageId,
+      userId: String(userId),
+      packageId: String(packageId),
       credits: Number(credits),
       priceUSD: Number(amountUSD),
     },
   };
 
-  const response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
+  const headers = {
+    Authorization: effectiveSecretKey,
+    'x-api-key': effectiveSecretKey.replace(/^Bearer\s+/i, ''),
+    'Content-Type': 'application/json',
+  };
+
+  let response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
     method: 'POST',
-    headers: {
-      Authorization: effectiveSecretKey,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 
-  const data = await response.json().catch(() => ({}));
+  let data = await response.json().catch(() => ({}));
+
+  // If rejected with 400/401, retry with Bearer auth prefix and minimal schema
+  if (!response.ok && (response.status === 400 || response.status === 401)) {
+    const retryHeaders = {
+      Authorization: effectiveSecretKey.startsWith('Bearer ') ? effectiveSecretKey : `Bearer ${effectiveSecretKey}`,
+      'Content-Type': 'application/json',
+    };
+    const retryPayload = {
+      baseFiat: 'USD',
+      crypto: 'USDT',
+      amount: Number(Number(amountUSD).toFixed(2)),
+      email: String(email || 'user@morphly.app').trim().toLowerCase(),
+      reference: effectiveReference,
+    };
+    response = await fetch(`${IVORYPAY_API_BASE_URL}/v1/transactions`, {
+      method: 'POST',
+      headers: retryHeaders,
+      body: JSON.stringify(retryPayload),
+    });
+    data = await response.json().catch(() => ({}));
+  }
 
   if (!response.ok) {
     const errorMsg = data?.message || data?.error || `IvoryPay returned HTTP ${response.status}`;
@@ -88,12 +116,14 @@ export async function initiateIvoryPayTransaction({
   const checkoutUrl = data?.data?.checkoutUrl
     || data?.data?.link
     || data?.data?.url
+    || data?.data?.paymentLink
     || data?.checkoutUrl
-    || data?.link;
+    || data?.link
+    || data?.paymentLink;
 
   return {
     status: 'success',
-    reference,
+    reference: effectiveReference,
     checkoutUrl,
     data: data?.data || data,
   };

@@ -44,7 +44,8 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: 'Credit package is no longer active' });
     }
 
-    const reference = `morphly_crypto_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+    // IvoryPay requires reference to be alphanumeric and maximum 32 characters
+    const reference = `mc_${Date.now().toString(36)}_${crypto.randomBytes(8).toString('hex')}`.slice(0, 32);
 
     await logRequestEvent('initiate-crypto-payment.request', {
       userId,
