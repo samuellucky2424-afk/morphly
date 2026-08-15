@@ -13,6 +13,9 @@ import referralsHandler from './api/referrals.js';
 import sessionStatusHandler from './api/session-status.js';
 import startSessionHandler from './api/start-session.js';
 import verifyPaymentHandler from './api/verify-payment.js';
+import initiateCryptoPaymentHandler from './api/initiate-crypto-payment.js';
+import verifyCryptoPaymentHandler from './api/verify-crypto-payment.js';
+import ivorypayWebhookHandler from './api/ivorypay-webhook.js';
 import versionHandler from './api/version.js';
 import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
@@ -40,6 +43,9 @@ const routeHandlers = {
   'session-status': sessionStatusHandler,
   'start-session': startSessionHandler,
   'verify-payment': verifyPaymentHandler,
+  'initiate-crypto-payment': initiateCryptoPaymentHandler,
+  'verify-crypto-payment': verifyCryptoPaymentHandler,
+  'ivorypay-webhook': ivorypayWebhookHandler,
   version: versionHandler,
   wallet: walletHandler,
   telemetry: telemetryHandler,

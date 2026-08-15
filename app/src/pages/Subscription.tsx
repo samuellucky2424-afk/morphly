@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Coins, Loader2 } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Coins, CreditCard, ExternalLink, Loader2, ShieldCheck, Wallet } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -24,6 +24,8 @@ interface CreditPlan {
   isActive?: boolean;
   sortOrder?: number;
 }
+
+type PaymentMethod = 'flutterwave' | 'crypto';
 
 const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
 
@@ -80,6 +82,7 @@ function Subscription() {
   const { setBalance, setCredits } = useApp();
   const [creditPlans, setCreditPlans] = useState<CreditPlan[]>(DEFAULT_CREDIT_PLANS);
   const [selectedPlan, setSelectedPlan] = useState<CreditPlan | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('flutterwave');
   const [isProcessing, setIsProcessing] = useState(false);
   const [ngnRate, setNgnRate] = useState<number>(1500);
   const [isLoadingRate, setIsLoadingRate] = useState(true);
@@ -88,17 +91,30 @@ function Subscription() {
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
   const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
   const [runtimeFlutterwavePublicKey, setRuntimeFlutterwavePublicKey] = useState('');
+  const [isCryptoEnabled, setIsCryptoEnabled] = useState(true);
+  const [activeCryptoSession, setActiveCryptoSession] = useState<{
+    reference: string;
+    checkoutUrl: string;
+    credits: number;
+    packageId?: string;
+    priceUSD: number;
+  } | null>(null);
+  const [isCheckingCrypto, setIsCheckingCrypto] = useState(false);
+
   const flutterwavePublicKey = runtimeFlutterwavePublicKey;
   const hasValidFlutterwavePublicKey = isValidFlutterwavePublicKey(flutterwavePublicKey);
   const paymentCompletedRef = useRef(false);
 
   useEffect(() => {
     let isCancelled = false;
-    const applyRuntimeFlutterwavePublicKey = (key: unknown) => {
-      const normalizedKey = typeof key === 'string' ? key.trim() : '';
-
-      if (!isCancelled && normalizedKey) {
+    const applyRuntimeConfig = (config: any) => {
+      if (isCancelled) return;
+      const normalizedKey = typeof config?.flutterwavePublicKey === 'string' ? config.flutterwavePublicKey.trim() : '';
+      if (normalizedKey) {
         setRuntimeFlutterwavePublicKey(normalizedKey);
+      }
+      if (typeof config?.isCryptoPaymentEnabled === 'boolean') {
+        setIsCryptoEnabled(config.isCryptoPaymentEnabled);
       }
     };
 
@@ -107,9 +123,8 @@ function Subscription() {
         if (!res.ok) {
           throw new Error(`HTTP ${res.status}`);
         }
-
         const config = await res.json();
-        applyRuntimeFlutterwavePublicKey(config?.flutterwavePublicKey);
+        applyRuntimeConfig(config);
       })
       .catch((error) => {
         console.warn('Failed to load runtime payment configuration:', error);
@@ -178,75 +193,169 @@ function Subscription() {
                 sortOrder: Number(pkg.sortOrder || pkg.sort_order || 0),
               }))
               .filter((pkg: CreditPlan) => pkg.credits > 0 && pkg.priceNGN >= 0)
+              .sort((a: CreditPlan, b: CreditPlan) => (a.sortOrder || 0) - (b.sortOrder || 0))
           : [];
 
         if (packages.length > 0) {
           setCreditPlans(packages);
         }
       } catch (error) {
-        console.warn('Failed to fetch credit packages:', error, 'using default plans');
-        setCreditPlans(DEFAULT_CREDIT_PLANS);
+        console.warn('Failed to fetch live credit packages:', error, 'using fallback plans');
       } finally {
         setIsLoadingPlans(false);
       }
     };
 
-    void fetchCreditPackages();
+    fetchCreditPackages();
   }, []);
 
   const handleSelectPlan = (plan: CreditPlan) => {
     setSelectedPlan(plan);
   };
 
-  const handleProceedToPayment = async () => {
-    if (!selectedPlan) return;
+  const getPriceUSDNumber = (priceNGN: number) => {
+    return Number((priceNGN / ngnRate).toFixed(2));
+  };
 
-    if (!user) {
-      toast.error('Please log in to purchase credits.');
+  const getPriceUSD = (priceNGN: number) => (priceNGN / ngnRate).toFixed(2);
+  const hasLiveRate = !isLoadingRate && !isFallbackRate;
+
+  const handleProceedToPayment = async () => {
+    if (!selectedPlan) {
+      toast.error('Please select a plan');
+      return;
+    }
+
+    if (!user?.id || !user?.email) {
+      toast.error('Please log in to purchase credits');
       navigate('/login');
       return;
     }
 
-    if (!selectedPlan.id) {
-      toast.error('Live credit packages are unavailable. Please try again later.');
-      return;
+    if (paymentMethod === 'crypto') {
+      await handleCryptoPayment();
+    } else {
+      handleFlutterwavePayment();
     }
+  };
 
-    if (!user.email) {
-      toast.error('Your account is missing an email address.');
-      return;
+  const handleCryptoPayment = async () => {
+    if (!selectedPlan || !user) return;
+    const priceUSD = getPriceUSDNumber(selectedPlan.priceNGN);
+
+    try {
+      setIsProcessing(true);
+      trackPaymentStarted({ packageId: selectedPlan.id!, amount: priceUSD, currency: 'USD' });
+
+      const res = await apiFetchWithAuth('/initiate-crypto-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          packageId: selectedPlan.id,
+          credits: selectedPlan.credits,
+          priceUSD,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.reference) {
+        throw new Error(data.message || 'Failed to create crypto checkout session');
+      }
+
+      const checkoutUrl = data.checkoutUrl;
+      setActiveCryptoSession({
+        reference: data.reference,
+        checkoutUrl: checkoutUrl || '',
+        credits: selectedPlan.credits,
+        packageId: selectedPlan.id,
+        priceUSD,
+      });
+
+      if (checkoutUrl) {
+        window.open(checkoutUrl, '_blank', 'noopener,noreferrer');
+        toast.info('IvoryPay crypto checkout opened in a new tab. Complete your transfer and click Verify.');
+      } else {
+        toast.info('Crypto checkout session initialized. Click Verify once transferred.');
+      }
+    } catch (error) {
+      console.error(error);
+      trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'crypto_init_failed', message: error instanceof Error ? error.message : 'Unknown' });
+      toast.error(error instanceof Error ? error.message : 'Failed to initialize crypto checkout');
+    } finally {
+      setIsProcessing(false);
     }
+  };
 
-    if (!window.FlutterwaveCheckout) {
-      try {
-        await loadFlutterwaveScript();
-        setIsFlutterwaveReady(true);
-      } catch (error) {
-        console.error(error);
-        toast.error('Payment gateway not loaded. Check your network and try again.');
+  const handleVerifyCryptoPayment = async () => {
+    if (!activeCryptoSession || !user) return;
+
+    try {
+      setIsCheckingCrypto(true);
+      const res = await apiFetchWithAuth('/verify-crypto-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reference: activeCryptoSession.reference,
+          userId: user.id,
+          credits: activeCryptoSession.credits,
+          packageId: activeCryptoSession.packageId,
+          priceUSD: activeCryptoSession.priceUSD,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.status === 202 || data.status === 'pending') {
+        toast.info('Transaction is pending blockchain confirmation. Please check back in 1-2 minutes.');
         return;
       }
-    }
 
+      if (!res.ok || data.status !== 'success') {
+        throw new Error(data.message || 'Crypto payment could not be verified yet.');
+      }
+
+      if (typeof data.newBalance === 'number') {
+        setBalance(data.newBalance);
+      }
+      if (typeof data.newCredits === 'number') {
+        setCredits(data.newCredits);
+      }
+
+      trackPaymentSucceeded({ packageId: activeCryptoSession.packageId!, transactionId: data.transactionId });
+      toast.success(`Crypto payment verified! ${activeCryptoSession.credits} credits added to your wallet.`);
+      setActiveCryptoSession(null);
+      navigate('/wallet');
+    } catch (error) {
+      console.error(error);
+      toast.error(error instanceof Error ? error.message : 'Payment verification failed');
+    } finally {
+      setIsCheckingCrypto(false);
+    }
+  };
+
+  const handleFlutterwavePayment = () => {
+    if (!selectedPlan || !user) return;
     if (!hasValidFlutterwavePublicKey) {
-      toast.error('Payment is unavailable. Flutterwave public key is missing or invalid.');
-      setIsProcessing(false);
+      toast.error('Payment configuration is invalid. Please contact support.');
       return;
     }
 
-    const txRef = `morphly_${user.id}_${Date.now()}`;
-    const amountNGN = selectedPlan.priceNGN;
-    const priceUSD = Number((selectedPlan.priceNGN / ngnRate).toFixed(2));
+    if (!isFlutterwaveReady || !window.FlutterwaveCheckout) {
+      toast.error('Payment gateway is still loading. Please try again.');
+      return;
+    }
 
-    paymentCompletedRef.current = false;
+    const priceUSD = Number(getPriceUSD(selectedPlan.priceNGN));
     setIsProcessing(true);
-    trackPaymentStarted({ packageId: selectedPlan.id!, priceNGN: amountNGN });
+    paymentCompletedRef.current = false;
+    trackPaymentStarted({ packageId: selectedPlan.id!, amount: selectedPlan.priceNGN, currency: 'NGN' });
+
+    const txRef = `morphly_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     try {
       window.FlutterwaveCheckout?.({
         public_key: flutterwavePublicKey,
         tx_ref: txRef,
-        amount: amountNGN,
+        amount: selectedPlan.priceNGN,
         currency: 'NGN',
         payment_options: 'card,banktransfer,ussd',
         customer: {
@@ -264,10 +373,7 @@ function Subscription() {
           description: `Purchase ${selectedPlan.credits} credits`,
         },
         callback: function (response: any) {
-          if (paymentCompletedRef.current) {
-            return;
-          }
-
+          if (paymentCompletedRef.current) return;
           if (!response?.transaction_id) {
             setIsProcessing(false);
             trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'missing_transaction_id' });
@@ -276,14 +382,11 @@ function Subscription() {
           }
 
           paymentCompletedRef.current = true;
-
           (async () => {
             try {
               const res = await apiFetchWithAuth('/verify-payment', {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   reference: response.tx_ref || txRef,
                   transactionId: response.transaction_id,
@@ -295,23 +398,12 @@ function Subscription() {
               });
 
               const data = await res.json();
-              if (!res.ok) {
-                throw new Error(data.message || `Server returned ${res.status}`);
-              }
-
+              if (!res.ok) throw new Error(data.message || `Server returned ${res.status}`);
               if (data.status === 'success') {
-                if (typeof data.newBalance === 'number') {
-                  setBalance(data.newBalance);
-                }
-                if (typeof data.newCredits === 'number') {
-                  setCredits(data.newCredits);
-                }
+                if (typeof data.newBalance === 'number') setBalance(data.newBalance);
+                if (typeof data.newCredits === 'number') setCredits(data.newCredits);
                 trackPaymentSucceeded({ packageId: selectedPlan.id!, transactionId: data.transactionId });
                 toast.success(`Successfully purchased ${selectedPlan.credits} credits!`);
-                navigate('/wallet');
-              } else if (data.status === 'pending') {
-                trackPaymentSucceeded({ packageId: selectedPlan.id!, transactionId: data.transactionId, pending: true });
-                toast.success('Payment received. Credits will appear after secure webhook confirmation.');
                 navigate('/wallet');
               } else {
                 trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'verification_failed' });
@@ -319,8 +411,8 @@ function Subscription() {
               }
             } catch (error) {
               console.error(error);
-              trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'verification_error', message: error instanceof Error ? error.message : 'Unknown error' });
-              toast.error(error instanceof Error ? error.message : 'Payment could not be verified, so credits were not added.');
+              trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'verification_error', message: error instanceof Error ? error.message : 'Unknown' });
+              toast.error(error instanceof Error ? error.message : 'Payment could not be verified.');
             } finally {
               setIsProcessing(false);
             }
@@ -342,9 +434,6 @@ function Subscription() {
     }
   };
 
-  const getPriceUSD = (priceNGN: number) => (priceNGN / ngnRate).toFixed(2);
-  const hasLiveRate = !isLoadingRate && !isFallbackRate;
-
   return (
     <div className="min-h-screen bg-[#0f0f10] p-6 lg:p-12 flex flex-col items-center">
       <div className="w-full max-w-[800px] pb-32">
@@ -357,30 +446,88 @@ function Subscription() {
           Back
         </Button>
 
-        <div className="mb-12">
+        <div className="mb-8">
           <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">Purchase Credits</h1>
           <p className="text-sm text-[#a1a1aa]">Select credits to power your AI transformations</p>
         </div>
 
-        <div className="mb-6 rounded-2xl border border-[#27272a] bg-[#131316] p-5 shadow-xl shadow-black/20">
-          <p className="text-sm text-white font-semibold mb-2">Need the latest version?</p>
-          <p className="text-sm text-[#a1a1aa] mb-4">
-            Click Recharge from the wallet page to go to Settings, then use the "Check for New Version" button to download and install updates immediately.
-          </p>
-          <Button
-            onClick={() => navigate('/settings')}
-            className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
-          >
-            Go to Settings
-          </Button>
-        </div>
+        {/* Payment Method Selector */}
+        {isCryptoEnabled && (
+          <div className="mb-8 p-1.5 bg-[#131316] border border-[#27272a] rounded-2xl flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPaymentMethod('flutterwave')}
+              className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all ${
+                paymentMethod === 'flutterwave'
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
+                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#1f1f23]'
+              }`}
+            >
+              <CreditCard className="w-4 h-4" />
+              <span>Card / Bank (NGN)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentMethod('crypto')}
+              className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all ${
+                paymentMethod === 'crypto'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-500/20'
+                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#1f1f23]'
+              }`}
+            >
+              <Wallet className="w-4 h-4" />
+              <span>Pay with Crypto (USDT / USDC)</span>
+              <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded-full bg-emerald-400/20 text-emerald-300">
+                IvoryPay
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* Active Crypto Session Alert */}
+        {activeCryptoSession && (
+          <div className="mb-6 rounded-2xl border border-emerald-500/40 bg-emerald-950/20 p-5 shadow-xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm text-emerald-400 font-bold mb-1 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Crypto Payment in Progress
+                </p>
+                <p className="text-xs text-[#a1a1aa] mb-3">
+                  Purchasing {activeCryptoSession.credits.toLocaleString()} credits for ${activeCryptoSession.priceUSD} USDT/USDC.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  {activeCryptoSession.checkoutUrl && (
+                    <Button
+                      size="sm"
+                      onClick={() => window.open(activeCryptoSession.checkoutUrl, '_blank')}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs h-8"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
+                      Reopen Checkout
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={handleVerifyCryptoPayment}
+                    disabled={isCheckingCrypto}
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs h-8"
+                  >
+                    {isCheckingCrypto ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
+                    Verify & Claim Credits
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="mb-8">
-          <label className="block text-sm font-medium text-[#a1a1aa] mb-3">Select Credits</label>
+          <label className="block text-sm font-medium text-[#a1a1aa] mb-3">Select Credits Package</label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {creditPlans.map((plan) => {
               const isSelected = selectedPlan?.credits === plan.credits;
-              const priceUSD = hasLiveRate ? getPriceUSD(plan.priceNGN) : null;
+              const priceUSD = getPriceUSD(plan.priceNGN);
 
               return (
                 <button
@@ -388,17 +535,31 @@ function Subscription() {
                   onClick={() => handleSelectPlan(plan)}
                   className={`p-5 rounded-xl border text-left transition-all duration-200 ${
                     isSelected
-                      ? 'bg-gradient-to-br from-blue-600/15 via-blue-600/5 to-transparent border-blue-500 shadow-xl shadow-blue-500/20 ring-2 ring-blue-500/50'
+                      ? paymentMethod === 'crypto'
+                        ? 'bg-gradient-to-br from-emerald-600/15 via-emerald-600/5 to-transparent border-emerald-500 shadow-xl shadow-emerald-500/20 ring-2 ring-emerald-500/50'
+                        : 'bg-gradient-to-br from-blue-600/15 via-blue-600/5 to-transparent border-blue-500 shadow-xl shadow-blue-500/20 ring-2 ring-blue-500/50'
                       : 'bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#27272a] hover:border-[#3f3f46] hover:bg-[#1a1a1f]'
                   }`}
                 >
                   <div className="flex items-center gap-3 mb-3">
                     <div
                       className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                        isSelected ? 'bg-blue-500/20' : 'bg-[#27272a]'
+                        isSelected
+                          ? paymentMethod === 'crypto'
+                            ? 'bg-emerald-500/20'
+                            : 'bg-blue-500/20'
+                          : 'bg-[#27272a]'
                       }`}
                     >
-                      <Coins className={`w-5 h-5 ${isSelected ? 'text-blue-400' : 'text-[#71717a]'}`} />
+                      <Coins
+                        className={`w-5 h-5 ${
+                          isSelected
+                            ? paymentMethod === 'crypto'
+                              ? 'text-emerald-400'
+                              : 'text-blue-400'
+                            : 'text-[#71717a]'
+                        }`}
+                      />
                     </div>
                     <div>
                       <span className="text-lg font-bold text-white">{plan.credits.toLocaleString()} Credits</span>
@@ -409,9 +570,18 @@ function Subscription() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xl font-bold text-white">₦{plan.priceNGN.toLocaleString()}</span>
-                    {priceUSD !== null && (
-                      <span className="text-sm text-[#71717a]">(${priceUSD})</span>
+                    {paymentMethod === 'crypto' ? (
+                      <>
+                        <span className="text-xl font-bold text-emerald-400">${priceUSD}</span>
+                        <span className="text-xs text-[#71717a]">USDT / USDC</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-xl font-bold text-white">₦{plan.priceNGN.toLocaleString()}</span>
+                        {hasLiveRate && (
+                          <span className="text-sm text-[#71717a]">(${priceUSD})</span>
+                        )}
+                      </>
                     )}
                   </div>
                 </button>
@@ -423,41 +593,41 @@ function Subscription() {
         <div className="bg-[#131316] border border-[#27272a] rounded-xl p-5 mb-8">
           <h3 className="text-sm font-semibold text-white mb-2">How credits work</h3>
           <ul className="text-sm text-[#a1a1aa] space-y-1">
-            <li>- 2 credits are deducted per second of stream time</li>
+            <li>- 2 credits are deducted per second of stream time (4 cr/s for dual morph)</li>
             <li>- 500 credits is about 4 minutes 10 seconds</li>
             <li>- 1000 credits is about 8 minutes 20 seconds</li>
+            {isCryptoEnabled && <li>- Instant on-chain confirmation with IvoryPay (USDT/USDC on TRC20, SOL, ETH, BSC, Polygon)</li>}
             <li>- Credits never expire</li>
           </ul>
         </div>
+
         <div className="text-center">
           <p className="text-sm text-[#71717a] mb-4">All purchases are one-time. No subscriptions or hidden fees.</p>
-          {hasLiveRate && (
-            <p className="text-xs text-[#52525b]">
-              Exchange rate: 1 USD = NGN {ngnRate.toLocaleString()}
+          {paymentMethod === 'crypto' ? (
+            <p className="text-xs text-emerald-400/80">
+              Powered by IvoryPay Crypto Payment Gateway. Safe and instant blockchain settlement.
             </p>
-          )}
-          {isLoadingRate && (
-            <p className="text-xs text-[#52525b]">
-                {isFlutterwaveReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
-            </p>
+          ) : (
+            <>
+              {hasLiveRate && (
+                <p className="text-xs text-[#52525b]">
+                  Exchange rate: 1 USD = NGN {ngnRate.toLocaleString()}
+                  {rateUpdatedAt && (
+                    <span className="ml-1 text-[#3f3f46]">
+                      (updated {new Date(rateUpdatedAt).toLocaleTimeString()})
+                    </span>
+                  )}
+                </p>
+              )}
+              {isLoadingRate && (
+                <p className="text-xs text-[#52525b]">
+                  {isFlutterwaveReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
+                </p>
+              )}
+            </>
           )}
           {isLoadingPlans && (
             <p className="text-xs text-[#52525b] mt-2">Loading live credit packages...</p>
-          )}
-          {isFallbackRate && (
-            <p className="text-xs text-amber-400 mt-2">
-              Showing fallback pricing. Configure `EXCHANGE_RATE_API_KEY` in the active API environment for live USD to NGN rates.
-            </p>
-          )}
-          {!hasValidFlutterwavePublicKey && (
-            <p className="text-xs text-red-400 mt-2">
-              Payments are temporarily unavailable due to invalid Flutterwave configuration.
-            </p>
-          )}
-          {!isFallbackRate && rateUpdatedAt && (
-            <p className="text-xs text-[#52525b] mt-2">
-              Last updated: {new Date(rateUpdatedAt).toLocaleString()}
-            </p>
           )}
         </div>
       </div>
@@ -468,24 +638,26 @@ function Subscription() {
             <div className="flex flex-col">
               <span className="text-sm text-[#a1a1aa] font-medium">Selected Plan</span>
               <span className="text-xl font-bold text-white tracking-tight">
-                {selectedPlan.credits.toLocaleString()} Credits <span className="text-blue-500 font-normal mx-1">/</span> ₦{selectedPlan.priceNGN.toLocaleString()}
-                {hasLiveRate && (
-                  <>
-                    {' '}
-                    <span className="text-[#71717a] font-normal">
-                      (${getPriceUSD(selectedPlan.priceNGN)})
-                    </span>
-                  </>
+                {selectedPlan.credits.toLocaleString()} Credits{' '}
+                <span className="text-blue-500 font-normal mx-1">/</span>{' '}
+                {paymentMethod === 'crypto' ? (
+                  <span className="text-emerald-400">${getPriceUSD(selectedPlan.priceNGN)} USDT/USDC</span>
+                ) : (
+                  <>₦{selectedPlan.priceNGN.toLocaleString()} <span className="text-[#71717a] font-normal text-sm">(${getPriceUSD(selectedPlan.priceNGN)})</span></>
                 )}
               </span>
               <span className="text-xs text-[#71717a] mt-1">{formatTime(selectedPlan.credits)} estimated time</span>
             </div>
             <Button
               onClick={handleProceedToPayment}
-              disabled={isProcessing || !isFlutterwaveReady || !hasValidFlutterwavePublicKey}
-              className="h-12 px-8 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-xl shadow-lg shadow-blue-500/30 hover:scale-105 transition-all"
+              disabled={isProcessing || (paymentMethod === 'flutterwave' && (!isFlutterwaveReady || !hasValidFlutterwavePublicKey))}
+              className={`h-12 px-8 font-bold rounded-xl shadow-lg hover:scale-105 transition-all text-white ${
+                paymentMethod === 'crypto'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/30'
+                  : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/30'
+              }`}
             >
-              {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : 'Pay Now'}
+              {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : (paymentMethod === 'crypto' ? 'Pay with Crypto' : 'Pay Now')}
               {!isProcessing && <ArrowRight className="w-5 h-5 ml-2" />}
             </Button>
           </div>
