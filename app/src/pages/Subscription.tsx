@@ -474,8 +474,8 @@ function Subscription() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0c] p-4 sm:p-6 flex flex-col items-center">
-      <div className="w-full max-w-[540px] pb-24">
+    <div className="min-h-screen bg-[#0a0a0c] p-6 lg:p-10 flex flex-col items-start">
+      <div className="w-full max-w-[560px] pb-24">
         {/* Navigation & Header */}
         <div className="flex items-center justify-between mb-4">
           <Button
@@ -683,7 +683,7 @@ function Subscription() {
         </div>
 
         {/* Info & Rates */}
-        <div className="text-center text-[11px] text-zinc-500">
+        <div className="text-left text-[11px] text-zinc-500">
           <p>All purchases are one-time. No recurring fees or hidden charges.</p>
           {paymentMethod === 'crypto' ? (
             <p className="text-emerald-500/80 text-[10px] mt-0.5">
@@ -711,8 +711,8 @@ function Subscription() {
 
       {/* Floating Bottom Checkout Bar */}
       {selectedPlan && (
-        <div className="fixed bottom-0 left-0 w-full bg-zinc-950/95 backdrop-blur-md border-t border-zinc-800 py-2.5 px-4 z-50 shadow-2xl">
-          <div className="max-w-[540px] mx-auto w-full flex items-center justify-between gap-3">
+        <div className="fixed bottom-0 left-0 w-full bg-zinc-950/95 backdrop-blur-md border-t border-zinc-800 py-2.5 px-6 lg:px-10 z-50 shadow-2xl">
+          <div className="max-w-[560px] w-full flex items-center justify-between gap-3">
             <div className="flex flex-col min-w-0">
               <span className="text-[10px] uppercase font-semibold text-zinc-400 tracking-wider">Selected</span>
               <div className="flex items-baseline gap-1.5">
