@@ -474,125 +474,131 @@ function Subscription() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0f0f10] p-6 lg:p-12 flex flex-col items-center">
-      <div className="w-full max-w-[800px] pb-32">
-        <Button
-          variant="ghost"
-          onClick={() => navigate(-1)}
-          className="mb-8 text-[#a1a1aa] hover:text-white"
-        >
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back
-        </Button>
+    <div className="min-h-screen bg-[#0a0a0c] p-4 sm:p-6 flex flex-col items-center">
+      <div className="w-full max-w-[540px] pb-24">
+        {/* Navigation & Header */}
+        <div className="flex items-center justify-between mb-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate(-1)}
+            className="h-7 px-2.5 text-xs text-zinc-400 hover:text-white bg-zinc-900/60 border border-zinc-800 rounded-md"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 mr-1.5" />
+            Back
+          </Button>
+          <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded bg-zinc-800/80 text-zinc-400 border border-zinc-750">
+            Compute Credits
+          </span>
+        </div>
 
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">Purchase Credits</h1>
-          <p className="text-sm text-[#a1a1aa]">Select credits to power your AI transformations</p>
+        <div className="mb-4">
+          <h1 className="text-xl font-bold text-white tracking-tight">Purchase Credits</h1>
+          <p className="text-xs text-zinc-400 mt-0.5">Select a credit package for real-time AI transformations</p>
         </div>
 
         {/* Payment Method Selector */}
         {isCryptoEnabled && (
-          <div className="mb-8 p-1.5 bg-[#131316] border border-[#27272a] rounded-2xl flex items-center gap-2">
+          <div className="grid grid-cols-2 p-1 bg-zinc-900/90 border border-zinc-800 rounded-lg gap-1 mb-4">
             <button
               type="button"
               onClick={() => setPaymentMethod('flutterwave')}
-              className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all ${
+              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
                 paymentMethod === 'flutterwave'
-                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20'
-                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#1f1f23]'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
               }`}
             >
-              <CreditCard className="w-4 h-4" />
+              <CreditCard className="w-3.5 h-3.5" />
               <span>Card / Bank (NGN)</span>
             </button>
             <button
               type="button"
               onClick={() => setPaymentMethod('crypto')}
-              className={`flex-1 py-3 px-4 rounded-xl flex items-center justify-center gap-2 text-sm font-semibold transition-all ${
+              className={`py-2 px-3 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
                 paymentMethod === 'crypto'
-                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg shadow-emerald-500/20'
-                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#1f1f23]'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
               }`}
             >
-              <Wallet className="w-4 h-4" />
-              <span>Pay with Crypto</span>
+              <Wallet className="w-3.5 h-3.5" />
+              <span>Crypto (USDT / USDC)</span>
             </button>
           </div>
         )}
 
         {/* Active Crypto Session Alert */}
         {activeCryptoSession && (
-          <div className="mb-6 rounded-2xl border border-emerald-500/40 bg-emerald-950/20 p-5 shadow-xl">
+          <div className="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-3 text-xs shadow-md">
             <div className="flex items-start justify-between">
-              <div>
-                <p className="text-sm text-emerald-400 font-bold mb-1 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Crypto Payment in Progress
-                </p>
-                <p className="text-xs text-[#a1a1aa] mb-3">
-                  Purchasing {activeCryptoSession.credits.toLocaleString()} credits for ${activeCryptoSession.priceUSD} in crypto.
+              <div className="w-full">
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-400 mb-0.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Payment in Progress</span>
+                </div>
+                <p className="text-[11px] text-zinc-400 mb-2">
+                  {activeCryptoSession.credits.toLocaleString()} credits for ${activeCryptoSession.priceUSD}
                 </p>
                 {activeCryptoSession.paymentInstructions?.address && (
-                  <div className="mb-4 rounded-xl border border-emerald-500/20 bg-black/20 p-3 text-xs text-[#d4d4d8]">
+                  <div className="mb-2.5 rounded-md border border-emerald-500/20 bg-black/40 p-2.5 text-[11px] text-zinc-300">
                     <p className="font-semibold text-emerald-300">
-                      Send exactly {activeCryptoSession.paymentInstructions.amount} {activeCryptoSession.paymentInstructions.currency}
+                      Send {activeCryptoSession.paymentInstructions.amount} {activeCryptoSession.paymentInstructions.currency} ({activeCryptoSession.paymentInstructions.chain})
                     </p>
-                    <p className="mt-1 text-[#a1a1aa]">Network: {activeCryptoSession.paymentInstructions.chain}</p>
                     {cryptoPaymentQrCode && (
-                      <div className="mt-3 flex items-center gap-3 rounded-lg bg-white p-2.5">
+                      <div className="mt-2 flex items-center gap-2.5 rounded bg-white p-2">
                         <img
                           src={cryptoPaymentQrCode}
-                          alt={`QR code for the ${activeCryptoSession.paymentInstructions.currency} payment address`}
-                          className="h-28 w-28 rounded"
+                          alt="QR Code"
+                          className="h-20 w-20 rounded"
                         />
-                        <p className="text-xs leading-relaxed text-[#3f3f46]">
-                          Scan to copy the wallet address. Confirm the network and send the exact amount shown above before paying.
+                        <p className="text-[10px] leading-tight text-zinc-700">
+                          Scan to copy the wallet address. Confirm the network and amount before transferring.
                         </p>
                       </div>
                     )}
-                    <div className="mt-2 flex items-center gap-2">
-                      <code className="min-w-0 flex-1 break-all rounded bg-black/30 px-2 py-1.5 text-[#e4e4e7]">
+                    <div className="mt-2 flex items-center gap-1.5">
+                      <code className="min-w-0 flex-1 break-all rounded bg-black/50 px-2 py-1 text-[10px] font-mono text-zinc-300">
                         {activeCryptoSession.paymentInstructions.address}
                       </code>
                       <Button
                         type="button"
                         size="icon"
                         variant="outline"
-                        className="h-8 w-8 shrink-0 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10 hover:text-emerald-200"
+                        className="h-7 w-7 shrink-0 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
                         onClick={async () => {
                           try {
                             await navigator.clipboard.writeText(activeCryptoSession.paymentInstructions!.address);
                             toast.success('Wallet address copied');
                           } catch {
-                            toast.error('Could not copy the wallet address. Please copy it manually.');
+                            toast.error('Could not copy wallet address');
                           }
                         }}
                         aria-label="Copy wallet address"
                       >
-                        <Copy className="h-3.5 w-3.5" />
+                        <Copy className="h-3 w-3" />
                       </Button>
                     </div>
                   </div>
                 )}
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
                   {activeCryptoSession.checkoutUrl && (
                     <Button
                       size="sm"
                       onClick={() => window.open(activeCryptoSession.checkoutUrl, '_blank')}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs h-8"
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs h-7 px-3 rounded"
                     >
-                      <ExternalLink className="w-3.5 h-3.5 mr-1.5" />
-                      Reopen Checkout
+                      <ExternalLink className="w-3 h-3 mr-1" />
+                      Reopen
                     </Button>
                   )}
                   <Button
                     size="sm"
                     onClick={handleVerifyCryptoPayment}
                     disabled={isCheckingCrypto}
-                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs h-8"
+                    className="bg-blue-600 hover:bg-blue-500 text-white text-xs h-7 px-3 rounded"
                   >
-                    {isCheckingCrypto ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <ShieldCheck className="w-3.5 h-3.5 mr-1.5" />}
-                    Verify & Claim Credits
+                    {isCheckingCrypto ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <ShieldCheck className="w-3 h-3 mr-1" />}
+                    Verify & Claim
                   </Button>
                 </div>
               </div>
@@ -600,9 +606,12 @@ function Subscription() {
           </div>
         )}
 
-        <div className="mb-8">
-          <label className="block text-sm font-medium text-[#a1a1aa] mb-3">Select Credits Package</label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Credit Plans Selection Grid */}
+        <div className="mb-4">
+          <label className="block text-[11px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+            Select Package
+          </label>
+          <div className="grid grid-cols-2 gap-2">
             {creditPlans.map((plan) => {
               const isSelected = selectedPlan?.credits === plan.credits;
               const priceUSD = getPriceUSD(plan.priceNGN);
@@ -611,53 +620,47 @@ function Subscription() {
                 <button
                   key={plan.id || plan.credits}
                   onClick={() => handleSelectPlan(plan)}
-                  className={`p-5 rounded-xl border text-left transition-all duration-200 ${
+                  className={`p-3 rounded-lg border text-left transition-all duration-150 flex flex-col justify-between ${
                     isSelected
                       ? paymentMethod === 'crypto'
-                        ? 'bg-gradient-to-br from-emerald-600/15 via-emerald-600/5 to-transparent border-emerald-500 shadow-xl shadow-emerald-500/20 ring-2 ring-emerald-500/50'
-                        : 'bg-gradient-to-br from-blue-600/15 via-blue-600/5 to-transparent border-blue-500 shadow-xl shadow-blue-500/20 ring-2 ring-blue-500/50'
-                      : 'bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#27272a] hover:border-[#3f3f46] hover:bg-[#1a1a1f]'
+                        ? 'bg-zinc-900 border-emerald-500 shadow-sm ring-1 ring-emerald-500/40'
+                        : 'bg-zinc-900 border-blue-500 shadow-sm ring-1 ring-blue-500/40'
+                      : 'bg-zinc-900/40 border-zinc-800/80 hover:border-zinc-700 hover:bg-zinc-900/80'
                   }`}
                 >
-                  <div className="flex items-center gap-3 mb-3">
+                  <div className="flex items-center gap-2 mb-2">
                     <div
-                      className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                      className={`w-7 h-7 rounded flex items-center justify-center shrink-0 ${
                         isSelected
                           ? paymentMethod === 'crypto'
-                            ? 'bg-emerald-500/20'
-                            : 'bg-blue-500/20'
-                          : 'bg-[#27272a]'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-blue-500/20 text-blue-400'
+                          : 'bg-zinc-800 text-zinc-400'
                       }`}
                     >
-                      <Coins
-                        className={`w-5 h-5 ${
-                          isSelected
-                            ? paymentMethod === 'crypto'
-                              ? 'text-emerald-400'
-                              : 'text-blue-400'
-                            : 'text-[#71717a]'
-                        }`}
-                      />
+                      <Coins className="w-3.5 h-3.5" />
                     </div>
-                    <div>
-                      <span className="text-lg font-bold text-white">{plan.credits.toLocaleString()} Credits</span>
-                      <span className="text-xs text-[#71717a] ml-2">{formatTime(plan.credits)}</span>
-                      {plan.name && (
-                        <p className="text-xs text-[#71717a] mt-1">{plan.name}</p>
-                      )}
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-white truncate leading-tight">
+                        {plan.credits.toLocaleString()} Cr
+                      </p>
+                      <p className="text-[10px] text-zinc-400 font-mono leading-tight">
+                        {formatTime(plan.credits)}
+                      </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+
+                  <div className="mt-1 pt-1.5 border-t border-zinc-800/60 flex items-baseline justify-between">
                     {paymentMethod === 'crypto' ? (
                       <>
-                        <span className="text-xl font-bold text-emerald-400">${priceUSD}</span>
-                        <span className="text-xs text-[#71717a]">Crypto</span>
+                        <span className="text-sm font-bold text-emerald-400">${priceUSD}</span>
+                        <span className="text-[10px] text-zinc-500">USDT</span>
                       </>
                     ) : (
                       <>
-                        <span className="text-xl font-bold text-white">₦{plan.priceNGN.toLocaleString()}</span>
+                        <span className="text-sm font-bold text-white">₦{plan.priceNGN.toLocaleString()}</span>
                         {hasLiveRate && (
-                          <span className="text-sm text-[#71717a]">(${priceUSD})</span>
+                          <span className="text-[10px] text-zinc-500">(${priceUSD})</span>
                         )}
                       </>
                     )}
@@ -668,75 +671,77 @@ function Subscription() {
           </div>
         </div>
 
-        <div className="bg-[#131316] border border-[#27272a] rounded-xl p-5 mb-8">
-          <h3 className="text-sm font-semibold text-white mb-2">How credits work</h3>
-          <ul className="text-sm text-[#a1a1aa] space-y-1">
-            <li>- 2 credits are deducted per second of stream time (4 cr/s for dual morph)</li>
-            <li>- 500 credits is about 4 minutes 10 seconds</li>
-            <li>- 1000 credits is about 8 minutes 20 seconds</li>
-            {isCryptoEnabled && <li>- Pay the exact USDT amount shown using the displayed supported network.</li>}
-            <li>- Credits never expire</li>
+        {/* How credits work */}
+        <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-lg p-3 mb-4">
+          <h3 className="text-xs font-semibold text-zinc-300 mb-1.5">Usage & Billing Details</h3>
+          <ul className="text-[11px] text-zinc-400 space-y-1 leading-snug">
+            <li>- 2 credits/sec for standard morph (4 credits/sec for dual background morph)</li>
+            <li>- 500 credits &asymp; 4m 10s &bull; 1,000 credits &asymp; 8m 20s</li>
+            {isCryptoEnabled && <li>- Instant on-chain confirmation across USDT/USDC networks</li>}
+            <li>- Credits do not expire</li>
           </ul>
         </div>
 
-        <div className="text-center">
-          <p className="text-sm text-[#71717a] mb-4">All purchases are one-time. No subscriptions or hidden fees.</p>
+        {/* Info & Rates */}
+        <div className="text-center text-[11px] text-zinc-500">
+          <p>All purchases are one-time. No recurring fees or hidden charges.</p>
           {paymentMethod === 'crypto' ? (
-            <p className="text-xs text-emerald-400/80">
-              Safe and instant on-chain crypto settlement.
+            <p className="text-emerald-500/80 text-[10px] mt-0.5">
+              Secure blockchain settlement
             </p>
           ) : (
             <>
               {hasLiveRate && (
-                <p className="text-xs text-[#52525b]">
-                  Exchange rate: 1 USD = NGN {ngnRate.toLocaleString()}
+                <p className="text-zinc-500 text-[10px] mt-0.5">
+                  Live Rate: 1 USD = ₦{ngnRate.toLocaleString()}
                   {rateUpdatedAt && (
-                    <span className="ml-1 text-[#3f3f46]">
-                      (updated {new Date(rateUpdatedAt).toLocaleTimeString()})
+                    <span className="ml-1 text-zinc-600">
+                      ({new Date(rateUpdatedAt).toLocaleTimeString()})
                     </span>
                   )}
-                </p>
-              )}
-              {isLoadingRate && (
-                <p className="text-xs text-[#52525b]">
-                  {isFlutterwaveReady ? 'Proceed to Payment' : 'Loading payment gateway...'}
                 </p>
               )}
             </>
           )}
           {isLoadingPlans && (
-            <p className="text-xs text-[#52525b] mt-2">Loading live credit packages...</p>
+            <p className="text-[10px] text-zinc-600 mt-1">Refreshing credit plans...</p>
           )}
         </div>
       </div>
 
+      {/* Floating Bottom Checkout Bar */}
       {selectedPlan && (
-        <div className="fixed bottom-0 left-0 w-full bg-[#0f0f10]/90 backdrop-blur-md border-t border-[#27272a] p-4 flex justify-between items-center z-50 animate-in slide-in-from-bottom shadow-2xl">
-          <div className="max-w-[800px] mx-auto w-full flex items-center justify-between">
-            <div className="flex flex-col">
-              <span className="text-sm text-[#a1a1aa] font-medium">Selected Plan</span>
-              <span className="text-xl font-bold text-white tracking-tight">
-                {selectedPlan.credits.toLocaleString()} Credits{' '}
-                <span className="text-blue-500 font-normal mx-1">/</span>{' '}
+        <div className="fixed bottom-0 left-0 w-full bg-zinc-950/95 backdrop-blur-md border-t border-zinc-800 py-2.5 px-4 z-50 shadow-2xl">
+          <div className="max-w-[540px] mx-auto w-full flex items-center justify-between gap-3">
+            <div className="flex flex-col min-w-0">
+              <span className="text-[10px] uppercase font-semibold text-zinc-400 tracking-wider">Selected</span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-sm font-bold text-white">
+                  {selectedPlan.credits.toLocaleString()} Credits
+                </span>
+                <span className="text-zinc-600 text-xs">/</span>
                 {paymentMethod === 'crypto' ? (
-                  <span className="text-emerald-400">${getPriceUSD(selectedPlan.priceNGN)} Crypto</span>
+                  <span className="text-xs font-bold text-emerald-400">${getPriceUSD(selectedPlan.priceNGN)}</span>
                 ) : (
-                  <>₦{selectedPlan.priceNGN.toLocaleString()} <span className="text-[#71717a] font-normal text-sm">(${getPriceUSD(selectedPlan.priceNGN)})</span></>
+                  <span className="text-xs font-bold text-white">₦{selectedPlan.priceNGN.toLocaleString()}</span>
                 )}
-              </span>
-              <span className="text-xs text-[#71717a] mt-1">{formatTime(selectedPlan.credits)} estimated time</span>
+              </div>
             </div>
             <Button
               onClick={handleProceedToPayment}
               disabled={isProcessing || (paymentMethod === 'flutterwave' && (!isFlutterwaveReady || !hasValidFlutterwavePublicKey))}
-              className={`h-12 px-8 font-bold rounded-xl shadow-lg hover:scale-105 transition-all text-white ${
+              className={`h-9 px-5 text-xs font-semibold rounded-md shadow-sm transition-all text-white ${
                 paymentMethod === 'crypto'
-                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-emerald-500/30'
-                  : 'bg-blue-600 hover:bg-blue-500 shadow-blue-500/30'
+                  ? 'bg-emerald-600 hover:bg-emerald-500'
+                  : 'bg-blue-600 hover:bg-blue-500'
               }`}
             >
-              {isProcessing ? <Loader2 className="w-5 h-5 animate-spin mr-2" /> : (paymentMethod === 'crypto' ? 'Pay with Crypto' : 'Pay Now')}
-              {!isProcessing && <ArrowRight className="w-5 h-5 ml-2" />}
+              {isProcessing ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+              ) : (
+                paymentMethod === 'crypto' ? 'Pay with Crypto' : 'Pay with Card / Bank'
+              )}
+              {!isProcessing && <ArrowRight className="w-3.5 h-3.5 ml-1.5" />}
             </Button>
           </div>
         </div>
