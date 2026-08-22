@@ -1,0 +1,3 @@
+[submodule "third_party/UnityCapture"]
+	path = third_party/UnityCapture
+	url = https://github.com/schellingb/UnityCapture.git

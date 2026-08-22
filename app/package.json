@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.2.0",
+  "version": "2.4.0",
   "description": "Morphly Desktop Electron package with bundled virtual camera install flow.",
   "author": "Morphly",
   "repository": {
@@ -24,9 +24,13 @@
     "electron:dev": "concurrently -k \"npm run dev:api\" \"npm run dev:web\" \"npm run electron:dev:wait\"",
     "electron:dev:wait": "wait-on tcp:127.0.0.1:3000 tcp:127.0.0.1:5173 && node scripts/launch-branded-electron-dev.cjs",
     "clean:build": "node scripts/clean-build.cjs",
-    "electron:build": "npm run clean:build && npm run build:app && electron-builder --win --publish never",
-    "electron:build:dir": "npm run clean:build && npm run build:app && electron-builder --win dir",
-    "electron:release": "npm run clean:build && npm run build:app && electron-builder --win --publish always"
+    "virtual-camera:build": "cmake -S ../unity-capture-bridge -B ../unity-capture-bridge/build -A x64 && cmake --build ../unity-capture-bridge/build --config Release",
+    "virtual-camera:install": "node scripts/unity-capture-registration.cjs install",
+    "virtual-camera:uninstall": "node scripts/unity-capture-registration.cjs uninstall",
+    "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe",
+    "electron:build": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish never",
+    "electron:build:dir": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win dir",
+    "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.morphly.app",

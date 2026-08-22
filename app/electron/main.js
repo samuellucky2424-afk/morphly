@@ -16,9 +16,12 @@ const RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
 const MORPHLY_CAM_WINDOW_NAME = 'Morphly cam';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
-const VIRTUAL_CAM_PUBLISHER_EXE = 'morphly_cam_pipe_publisher.exe';
-const VIRTUAL_CAM_REGISTRAR_EXE = 'morphly_cam_registrar.exe';
-const VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS = 120000;
+const UNITY_CAPTURE_SENDER_EXE = 'morphly_unity_capture_sender.exe';
+const UNITY_CAPTURE_REGISTRY_TIMEOUT_MS = 5000;
+const UNITY_CAPTURE_FILTERS = [
+  { clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70020}', registryView: '32' },
+  { clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70010}', registryView: '64' }
+];
 const VIRTUAL_CAM_FRAME_WIDTH = 1280;
 const VIRTUAL_CAM_FRAME_HEIGHT = 720;
 const VIRTUAL_CAM_FRAME_STRIDE = VIRTUAL_CAM_FRAME_WIDTH * 4;
@@ -84,7 +87,7 @@ function logVirtualCameraStats(controller, reason) {
     `Morphly cam bridge stats (${reason}): frames=${controller.stats.framesSent} fps=${fps.toFixed(2)} ` +
     `rendererFrames=${controller.stats.rendererFramesReceived} captureFallbacks=${controller.stats.captureFallbacks} ` +
     `captureFailures=${controller.stats.captureFailures} publishFailures=${controller.stats.publishFailures} ` +
-    `blackFrames=${controller.stats.blackFrames} size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=BGRA32`
+    `blackFrames=${controller.stats.blackFrames} size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=RGBA8`
   );
   controller.stats.lastLogAt = now;
 }
@@ -120,7 +123,7 @@ function isLikelyBlackFrame(frameBytes) {
   return true;
 }
 
-function convertRgbaToBgra(frameBytes) {
+function swapRedAndBlueChannels(frameBytes) {
   if (!frameBytes || frameBytes.length === 0) {
     return Buffer.alloc(0);
   }
@@ -136,74 +139,40 @@ function convertRgbaToBgra(frameBytes) {
   return bgraBytes;
 }
 
-function getVirtualCameraPublisherCandidates() {
+function getUnityCaptureSenderCandidates() {
   if (app.isPackaged) {
     return [
-      path.join(process.resourcesPath, 'morphly-cam', VIRTUAL_CAM_PUBLISHER_EXE),
-      path.join(process.resourcesPath, VIRTUAL_CAM_PUBLISHER_EXE),
-      path.join(path.dirname(process.execPath), VIRTUAL_CAM_PUBLISHER_EXE)
+      path.join(process.resourcesPath, 'unity-capture', UNITY_CAPTURE_SENDER_EXE),
+      path.join(process.resourcesPath, UNITY_CAPTURE_SENDER_EXE),
+      path.join(path.dirname(process.execPath), UNITY_CAPTURE_SENDER_EXE)
     ];
   }
 
   return [
-    path.resolve(__dirname, '../../native-camera/build/Debug', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../native-camera/build/Release', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../native-camera/build/RelWithDebInfo', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../native-camera/build', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../build/Debug', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../build/Release', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../build/RelWithDebInfo', VIRTUAL_CAM_PUBLISHER_EXE),
-    path.resolve(__dirname, '../../build', VIRTUAL_CAM_PUBLISHER_EXE)
+    path.resolve(__dirname, '../../unity-capture-bridge/build/Debug', UNITY_CAPTURE_SENDER_EXE),
+    path.resolve(__dirname, '../../unity-capture-bridge/build/Release', UNITY_CAPTURE_SENDER_EXE),
+    path.resolve(__dirname, '../../unity-capture-bridge/build/RelWithDebInfo', UNITY_CAPTURE_SENDER_EXE),
+    path.resolve(__dirname, '../../unity-capture-bridge/build', UNITY_CAPTURE_SENDER_EXE)
   ];
 }
 
-function getVirtualCameraRegistrarCandidates() {
-  if (app.isPackaged) {
-    return [
-      path.join(process.resourcesPath, 'morphly-cam', VIRTUAL_CAM_REGISTRAR_EXE),
-      path.join(process.resourcesPath, VIRTUAL_CAM_REGISTRAR_EXE),
-      path.join(path.dirname(process.execPath), VIRTUAL_CAM_REGISTRAR_EXE)
-    ];
-  }
-
-  return [
-    path.resolve(__dirname, '../../native-camera/build/Debug', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../native-camera/build/Release', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../native-camera/build/RelWithDebInfo', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../native-camera/build', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../build/Debug', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../build/Release', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../build/RelWithDebInfo', VIRTUAL_CAM_REGISTRAR_EXE),
-    path.resolve(__dirname, '../../build', VIRTUAL_CAM_REGISTRAR_EXE)
-  ];
-}
-
-function resolveVirtualCameraPublisherPath() {
-  const match = getVirtualCameraPublisherCandidates().find((candidate) => fs.existsSync(candidate));
+function resolveUnityCaptureSenderPath() {
+  const match = getUnityCaptureSenderCandidates().find((candidate) => fs.existsSync(candidate));
   if (!match) {
-    throw new Error(`Unable to locate ${VIRTUAL_CAM_PUBLISHER_EXE}. Build it before starting the Electron app.`);
+    throw new Error(`Unable to locate ${UNITY_CAPTURE_SENDER_EXE}. Run npm run virtual-camera:build first.`);
   }
 
   return match;
 }
 
-function resolveVirtualCameraRegistrarPath() {
-  const match = getVirtualCameraRegistrarCandidates().find((candidate) => fs.existsSync(candidate));
-  if (!match) {
-    throw new Error(`Unable to locate ${VIRTUAL_CAM_REGISTRAR_EXE}. Build it before starting the Electron app.`);
-  }
-
-  return match;
-}
-
-function runVirtualCameraRegistrar(registrarPath, args) {
+function queryUnityCaptureRegistration({ clsid, registryView }) {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
     let timeout = null;
-
-    const child = spawn(registrarPath, args, {
+    const registryKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${clsid}\\InprocServer32`;
+    const child = spawn('reg.exe', ['query', registryKey, '/ve', `/reg:${registryView}`], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -216,19 +185,11 @@ function runVirtualCameraRegistrar(registrarPath, args) {
       settled = true;
       clearTimeout(timeout);
 
-      const normalizedStdout = stdout.trim();
-      const normalizedStderr = stderr.trim();
-      if (normalizedStdout) {
-        console.info(`Morphly cam registrar stdout (${args.join(' ')}):\n${normalizedStdout}`);
-      }
-      if (normalizedStderr) {
-        console.warn(`Morphly cam registrar stderr (${args.join(' ')}):\n${normalizedStderr}`);
-      }
-
       resolve({
         ...result,
-        stdout: normalizedStdout,
-        stderr: normalizedStderr
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        registryView
       });
     };
 
@@ -242,18 +203,13 @@ function runVirtualCameraRegistrar(registrarPath, args) {
     });
 
     child.once('error', (error) => {
-      console.error(`Morphly cam registrar execution failed for "${args.join(' ')}":`, error);
       finish({ ok: false, status: null, error });
     });
 
-    child.once('close', (status, signal) => {
-      if (signal) {
-        console.warn(`Morphly cam registrar was interrupted by signal ${signal} for "${args.join(' ')}".`);
-      }
+    child.once('close', (status) => {
       finish({
-        ok: status === 0 && !signal,
+        ok: status === 0,
         status,
-        signal,
         error: null
       });
     });
@@ -263,56 +219,30 @@ function runVirtualCameraRegistrar(registrarPath, args) {
       finish({
         ok: false,
         status: null,
-        error: new Error(`Virtual camera registrar timed out after ${VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS}ms.`)
+        error: new Error(`UnityCapture registry probe timed out after ${UNITY_CAPTURE_REGISTRY_TIMEOUT_MS}ms.`)
       });
-    }, VIRTUAL_CAM_REGISTRAR_TIMEOUT_MS);
+    }, UNITY_CAPTURE_REGISTRY_TIMEOUT_MS);
     timeout.unref?.();
   });
 }
 
-async function ensureVirtualCameraRegistration({ attemptRepair = false } = {}) {
+async function ensureUnityCaptureRegistration() {
   if (process.platform !== 'win32') {
     return { success: false, error: 'Virtual camera registration is only supported on Windows.' };
   }
 
-  let registrarPath;
-  try {
-    registrarPath = resolveVirtualCameraRegistrarPath();
-  } catch (error) {
-    return { success: false, error: formatErrorMessage(error) };
-  }
-
-  const probeResult = await runVirtualCameraRegistrar(registrarPath, ['probe']);
-  if (probeResult.ok) {
-    return {
-      success: true,
-      message: 'Morphly virtual camera registration is healthy.'
-    };
-  } else if (!attemptRepair) {
+  const probeResults = await Promise.all(UNITY_CAPTURE_FILTERS.map(queryUnityCaptureRegistration));
+  const missingViews = probeResults
+    .filter((result) => !result.ok)
+    .map((result) => `${result.registryView}-bit`);
+  if (missingViews.length > 0) {
     return {
       success: false,
-      error: 'Morphly virtual camera is not registered. Run the installer or morphly_cam_registrar install.'
+      error: `Morphly Virtual Camera is not registered for ${missingViews.join(' and ')} applications. Reinstall Morphly Desktop as Administrator.`
     };
   }
 
-  console.warn('Morphly virtual camera probe failed. Requesting an automatic registration repair...');
-  const installAllUsersResult = await runVirtualCameraRegistrar(registrarPath, ['install', '--all-users']);
-  if (!installAllUsersResult.ok) {
-    return {
-      success: false,
-      error: 'Virtual-camera repair was not completed. Approve the Windows Administrator prompt, then start Morphly again.'
-    };
-  }
-
-  const reprobeResult = await runVirtualCameraRegistrar(registrarPath, ['probe']);
-  if (!reprobeResult.ok) {
-    return {
-      success: false,
-      error: 'Morphly virtual camera still failed its health check after repair. Please reinstall Morphly Desktop.'
-    };
-  }
-
-  return { success: true, message: 'Morphly virtual camera registration repaired successfully.' };
+  return { success: true, message: 'The upstream UnityCapture filters are registered.' };
 }
 
 function createVirtualCameraFrameHeader(payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
@@ -388,18 +318,18 @@ function updateRendererFrame(controller, payload) {
   if (srcWidth === VIRTUAL_CAM_FRAME_WIDTH && srcHeight === VIRTUAL_CAM_FRAME_HEIGHT) {
     // Already the right size — use directly.
     const rgbaBytes = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-    frameBytes = convertRgbaToBgra(rgbaBytes);
+    frameBytes = Buffer.from(rgbaBytes);
   } else {
     // Popup renders at a smaller size (e.g. 640x360). Upscale using nativeImage.
     try {
       const srcBuffer = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-      const bgraBuffer = convertRgbaToBgra(srcBuffer);
+      const bgraBuffer = swapRedAndBlueChannels(srcBuffer);
       const img = nativeImage.createFromBuffer(bgraBuffer, { width: srcWidth, height: srcHeight });
       if (img.isEmpty()) {
         return;
       }
       const scaled = img.resize({ width: VIRTUAL_CAM_FRAME_WIDTH, height: VIRTUAL_CAM_FRAME_HEIGHT });
-      frameBytes = scaled.toBitmap();
+      frameBytes = swapRedAndBlueChannels(scaled.toBitmap());
     } catch (e) {
       console.warn('updateRendererFrame: failed to upscale frame:', e.message);
       return;
@@ -538,7 +468,7 @@ function ensureMorphlyCamPublisher() {
   stopMorphlyCamPublisher();
 
   try {
-    const publisherPath = resolveVirtualCameraPublisherPath();
+    const publisherPath = resolveUnityCaptureSenderPath();
     const child = spawn(publisherPath, [], {
       stdio: ['pipe', 'ignore', 'pipe'],
       windowsHide: true
@@ -853,12 +783,7 @@ function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:start', async () => {
     virtualCameraEnabled = true;
 
-    // A packaged build can repair genuinely missing registration through the
-    // registrar's UAC flow. The registrar is asynchronous so the Electron main
-    // process and the live AI session remain responsive while Windows prompts.
-    const registrationResult = await ensureVirtualCameraRegistration({
-      attemptRepair: app.isPackaged
-    });
+    const registrationResult = await ensureUnityCaptureRegistration();
     if (!registrationResult.success) {
       virtualCameraEnabled = false;
       return registrationResult;

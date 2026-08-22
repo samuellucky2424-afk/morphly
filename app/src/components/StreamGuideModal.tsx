@@ -137,9 +137,8 @@ export function StreamGuideModal({ isOpen, onClose }: StreamGuideModalProps) {
             <div>
               <h4 className="text-sm font-semibold text-blue-100">Pro Tip</h4>
               <p className="mt-1 text-xs leading-relaxed text-blue-200/80">
-                If your app shows Morphly G1 in its camera list, select it directly. If Morphly G1 is not available,
-                add the Morphly cam window in SplitCam or OBS as Window Capture, then publish through SplitCam Camera
-                or OBS Virtual Camera for Zoom, WhatsApp, and similar apps.
+                In WhatsApp, Zoom, OBS, or another Windows app, open its camera settings and select
+                Morphly Virtual Camera. Keep Morphly streaming while the other app is using the camera.
               </p>
             </div>
           </div>

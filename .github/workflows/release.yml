@@ -16,6 +16,8 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        submodules: recursive
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -23,14 +25,6 @@ jobs:
         node-version: '20'
         cache: 'npm'
         cache-dependency-path: app/package-lock.json
-
-    - name: Configure native Morphly camera build
-      shell: pwsh
-      run: cmake -S native-camera -B native-camera/build -A x64
-
-    - name: Build native Morphly camera artifacts
-      shell: pwsh
-      run: cmake --build native-camera/build --config Release
 
     - name: Install dependencies
       working-directory: app
@@ -40,7 +34,6 @@ jobs:
       working-directory: app
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        MORPHLY_NATIVE_BUILD_DIR: ../native-camera/build
         VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
         VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
         VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
@@ -96,7 +89,7 @@ jobs:
         if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
         if (!$exe2) { throw "Missing portable build. Checked: $($portableCandidates -join ', ')" }
 
-        $bundledCameraDir = Join-Path $dir "win-unpacked/resources/morphly-cam"
+        $bundledCameraDir = Join-Path $dir "win-unpacked/resources/unity-capture"
         if (!(Test-Path $bundledCameraDir)) { throw "Missing bundled camera directory: $bundledCameraDir" }
 
         $appAsar = Join-Path $dir "win-unpacked/resources/app.asar"
@@ -109,9 +102,10 @@ jobs:
         }
 
         $expectedArtifacts = @(
-          "MorphlyVirtualCamera.dll",
-          "morphly_cam_registrar.exe",
-          "morphly_cam_pipe_publisher.exe"
+          "UnityCaptureFilter32.dll",
+          "UnityCaptureFilter64.dll",
+          "morphly_unity_capture_sender.exe",
+          "THIRD_PARTY_NOTICES.txt"
         )
 
         foreach ($artifact in $expectedArtifacts) {

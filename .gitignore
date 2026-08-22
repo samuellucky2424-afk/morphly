@@ -20,9 +20,10 @@ release/
 
 # Electron build artifacts
 app/release/
+app/release-virtual-camera/
 .push-fix/app/release/
 app/.cache/
-native-camera/build/
+unity-capture-bridge/build/
 
 # Debug / probe artifacts from development
 .edge-probe-profile/
