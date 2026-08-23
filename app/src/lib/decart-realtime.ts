@@ -10,6 +10,8 @@ export type DecartSessionUpdate<TImage extends Blob = File> = {
   image: TImage | null;
 };
 
+export const DECART_REALTIME_MODEL = 'lucy-2.5' as const;
+export const DECART_REALTIME_RESOLUTION = '720p' as const;
 export const DECART_REFERENCE_INPUT_LIMIT_BYTES = 15 * 1024 * 1024;
 export const DECART_REFERENCE_UPLOAD_TARGET_BYTES = 5 * 1024 * 1024;
 export const DECART_REFERENCE_MAX_DIMENSION = 2048;
@@ -40,6 +42,45 @@ export function buildDecartSessionUpdate<TImage extends Blob>(
     enhance: transform.enhance,
     image: transform.image,
   };
+}
+
+export function getDecartRealtimeUserMessage(
+  error: unknown,
+  fallback = 'Morphly could not update the AI video. Please try again.',
+): string {
+  const candidate = typeof error === 'object' && error !== null
+    ? error as { code?: unknown; message?: unknown; cause?: { message?: unknown } | unknown }
+    : null;
+  const code = typeof candidate?.code === 'string' ? candidate.code.toUpperCase() : '';
+  const causeMessage = typeof candidate?.cause === 'object'
+    && candidate.cause !== null
+    && 'message' in candidate.cause
+    && typeof candidate.cause.message === 'string'
+    ? candidate.cause.message
+    : '';
+  const message = error instanceof Error
+    ? error.message
+    : typeof candidate?.message === 'string'
+      ? candidate.message
+      : causeMessage;
+  const diagnosticMessage = `${message} ${causeMessage}`.trim();
+
+  if (/moderation|content policy|safety|not accepted|rejected/i.test(diagnosticMessage)) {
+    return 'That prompt or reference image was not accepted. Try a different request or image.';
+  }
+
+  switch (code) {
+    case 'INVALID_API_KEY':
+      return 'The AI session expired. Stop the stream and start it again.';
+    case 'MODEL_NOT_FOUND':
+      return 'The selected AI model is temporarily unavailable. Please try again.';
+    case 'INVALID_INPUT':
+      return 'Decart could not apply that prompt or reference image. Check it and try again.';
+    case 'WEB_RTC_ERROR':
+      return 'The AI video connection was interrupted. Morphly is trying to recover it.';
+    default:
+      return fallback;
+  }
 }
 
 export function shouldNormalizeDecartReference(

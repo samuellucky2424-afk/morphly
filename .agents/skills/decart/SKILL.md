@@ -37,10 +37,10 @@ Decart is an AI video/image platform centered on realtime transformation, with t
 
 | Use case | Model | Type |
 |---|---|---|
-| Character transform live | `lucy-2.1` | Realtime |
+| Character transform live | `lucy-2.5` | Realtime |
 | Artistic style transfer live | `lucy-restyle-2` | Realtime |
 | Virtual try-on (live or batch) | `lucy-vton-3.5` | Realtime + Batch |
-| Video editing (best quality) | `lucy-2.1` | Batch |
+| Video editing (best quality) | `lucy-2.5` | Batch |
 | Video restyling | `lucy-restyle-2` | Batch |
 | Image editing | `lucy-image-2` | Process |
 
@@ -49,7 +49,7 @@ Decart is an AI video/image platform centered on realtime transformation, with t
 ### Realtime (connect + transform)
 
 ```javascript
-const model = models.realtime("lucy-2.1");
+const model = models.realtime("lucy-2.5");
 const stream = await navigator.mediaDevices.getUserMedia({
   video: { frameRate: model.fps, width: model.width, height: model.height }
 });
@@ -65,7 +65,7 @@ await rt.set({ prompt: "Transform into anime character", image: refImage, enhanc
 
 ```javascript
 const result = await client.queue.submitAndPoll({
-  model: models.video("lucy-2.1"),
+  model: models.video("lucy-2.5"),
   data: videoFile,
   prompt: "Transform into anime style",
   resolution: "720p",
@@ -125,9 +125,9 @@ Pass `resolution: "1080p"` to `realtime.connect()` (or the SDK equivalent) when 
 - Use `submitAndPoll()` for queue jobs. Don't manually poll faster than every 2 seconds.
 - Image editing (`i2i`) only works with Process API, not Queue API. Queue is for video only.
 - Realtime sessions end silently when credits run out. Listen for disconnect events.
-- For Lucy 2.1 character transform, use clear portrait photos with good lighting.
-- Lucy Clip (`lucy-clip`) is legacy with a 5-second clip limit. Use `lucy-2.1` for new projects (unlimited duration).
-- `lucy-2.1` accepts a reference image, a text prompt, or both together for maximum control.
+- For Lucy 2.5 character transform, use clear portrait photos with good lighting.
+- Lucy Clip (`lucy-clip`) is legacy with a 5-second clip limit. Use `lucy-2.5` for new projects (unlimited duration).
+- `lucy-2.5` accepts a reference image, a text prompt, or both together for maximum control.
 - Use `mirror: "auto"` on `realtime.connect()` for selfie streams instead of CSS-flipping the displayed video.
 
 ## Verification checklist

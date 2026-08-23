@@ -7,7 +7,10 @@ import {
   isVirtualCamera,
   subscribeToCameraDeviceChanges,
 } from '../src/utils/cameraDeviceClassifier.ts';
-import { buildVideoInputConstraints } from '../src/lib/realtime-quality.ts';
+import {
+  QUALITY_MODE_PROFILES,
+  buildVideoInputConstraints,
+} from '../src/lib/realtime-quality.ts';
 import {
   validateCameraSelectionForTrustedProcess,
 } from '../electron/camera-validation.js';
@@ -81,6 +84,17 @@ test('trusted process accepts the selected physical camera', () => {
 test('camera constraints always use the exact selected deviceId', () => {
   const constraints = buildVideoInputConstraints('hd', 'physical-device-id');
   assert.deepEqual(constraints.video.deviceId, { exact: 'physical-device-id' });
+  assert.equal(constraints.audio, false);
+});
+
+test('HD camera input matches Lucy 2.5 native 720p dimensions and frame rate', () => {
+  assert.deepEqual(QUALITY_MODE_PROFILES.hd, {
+    label: 'HD 720p',
+    width: 1280,
+    height: 720,
+    targetFps: 30,
+    maxFps: 30,
+  });
 });
 
 test('devicechange subscription refreshes and cleans up', () => {

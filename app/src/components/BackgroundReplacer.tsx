@@ -12,6 +12,10 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetchWithAuth } from '@/lib/api-client';
+import {
+  DECART_REALTIME_MODEL,
+  DECART_REALTIME_RESOLUTION,
+} from '@/lib/decart-realtime';
 
 export interface BackgroundPreset {
   id: string;
@@ -170,13 +174,13 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
     setStatusMessage('Accessing camera...');
 
     try {
-      const model = models.realtime('lucy-latest');
+      const model = models.realtime(DECART_REALTIME_MODEL);
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: model.width || 1280 },
-          height: { ideal: model.height || 720 },
-          frameRate: { ideal: typeof model.fps === 'number' ? model.fps : 30 },
+          width: { ideal: model.width },
+          height: { ideal: model.height },
+          frameRate: model.fps,
         },
         audio: false,
       });
@@ -197,6 +201,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
       const rtClient = await client.realtime.connect(stream, {
         model,
         mirror: 'auto',
+        resolution: DECART_REALTIME_RESOLUTION,
         initialState: {
           prompt: {
             text: initialPrompt,

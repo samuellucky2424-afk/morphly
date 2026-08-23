@@ -63,8 +63,11 @@ import {
   upgradeQualityMode,
 } from '@/lib/realtime-quality';
 import {
+  DECART_REALTIME_MODEL,
+  DECART_REALTIME_RESOLUTION,
   buildDecartConnectInitialState,
   buildDecartSessionUpdate,
+  getDecartRealtimeUserMessage,
   prepareDecartReferenceImage,
 } from '@/lib/decart-realtime';
 
@@ -97,6 +100,10 @@ type RealtimeStats = {
 type RealtimeClientEventMap = {
   connectionChange: ConnectionState;
   connectionStateChange: ConnectionState;
+  connectionQuality: {
+    quality: 'good' | 'fair' | 'poor' | 'critical';
+    limitingFactor: 'bandwidth' | 'latency' | 'loss' | 'stall' | 'cpu' | 'none';
+  };
   stats: RealtimeStats;
   error: { message: string };
   generationTick: { seconds: number };
@@ -198,7 +205,6 @@ const DECART_SUPPORTED_REALTIME_MODELS = [
   'lucy-2.1-vton-2',
 ] as const;
 type DecartRealtimeModelName = (typeof DECART_SUPPORTED_REALTIME_MODELS)[number];
-const DECART_REALTIME_MODEL = 'lucy-2.5';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
 const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;
@@ -1476,7 +1482,10 @@ function Dashboard() {
       lastAppliedTransformRef.current = nextTransform;
     } catch (error) {
       console.error('Failed to sync live transformation:', error);
-      toast.error('Live style update stalled. Recovering stream...');
+      toast.error(getDecartRealtimeUserMessage(
+        error,
+        'Morphly could not apply that live update. The previous style is still active.',
+      ));
     } finally {
       transformInFlightRef.current = false;
       setIsSyncingTransform(false);
@@ -1655,6 +1664,8 @@ function Dashboard() {
 
       const realtimeClient = await client.realtime.connect(stream, {
         model,
+        mirror: 'auto',
+        resolution: DECART_REALTIME_RESOLUTION,
         onRemoteStream: (editedStream: MediaStream) => {
           const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
           if (!video) {
@@ -1787,12 +1798,23 @@ function Dashboard() {
       };
 
       const onError = (error: { message: string }) => {
+        const hadFirstFrame = firstFrameSettled;
         const message = getDecartSdkErrorMessage(error) || 'Unknown Decart realtime error';
         const code = typeof error === 'object' && error && 'code' in error
           ? String((error as { code?: unknown }).code || '')
           : '';
         console.error(`[Decart] realtime error${code ? ` (${code})` : ''}: ${message}`);
         failBeforeFirstFrame(error);
+        if (hadFirstFrame) {
+          toast.error(getDecartRealtimeUserMessage(error));
+        }
+      };
+
+      const onConnectionQuality = (report: RealtimeClientEventMap['connectionQuality']) => {
+        if (report.quality === 'critical') {
+          setRuntimeModeCap((currentMode) => downgradeQualityMode(currentMode));
+          setUiStatus(`Connection limited by ${report.limitingFactor}`);
+        }
       };
 
       const onGenerationTick = (tick: { seconds?: number }) => {
@@ -1809,6 +1831,7 @@ function Dashboard() {
       };
 
       realtimeClient.on('connectionChange', onConnectionChange);
+      realtimeClient.on('connectionQuality', onConnectionQuality);
       realtimeClient.on('stats', onStats);
       realtimeClient.on('error', onError);
       realtimeClient.on('generationTick', onGenerationTick);
@@ -1816,6 +1839,7 @@ function Dashboard() {
 
       clientSubscriptionsCleanupRef.current = () => {
         realtimeClient.off('connectionChange', onConnectionChange);
+        realtimeClient.off('connectionQuality', onConnectionQuality);
         realtimeClient.off('stats', onStats);
         realtimeClient.off('error', onError);
         realtimeClient.off('generationTick', onGenerationTick);
@@ -2844,7 +2868,7 @@ function Dashboard() {
             >
               <option value="fast">Fast Mode</option>
               <option value="balanced">Balanced Mode</option>
-              <option value="hd">HD Mode</option>
+              <option value="hd">HD 720p</option>
             </select>
 
             {/* Input Camera Dropdown */}

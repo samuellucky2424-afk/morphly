@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getBrowserTokenOrigins } from '../server/api/start-session.ts';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(currentDirectory, '../..');
@@ -57,13 +58,36 @@ test('AI billing RPCs are restricted to the service role', () => {
 test('Decart client tokens are scoped, rate-limited and attributable', () => {
   assert.match(startSession, /CLIENT_TOKEN_TTL_SECONDS = 300/);
   assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
+  assert.match(startSession, /allowedOrigins/);
   assert.match(startSession, /maxSessionDuration/);
+  assert.match(startSession, /AbortSignal\.timeout\(15000\)/);
+  assert.doesNotMatch(startSession, /retrying with minimal token payload/i);
+  assert.doesNotMatch(startSession, /buildTokenPayload\(false\)/);
   assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);
   assert.match(startSession, /morphlyUserId: userId/);
   assert.match(startSession, /morphlySessionId: sessionId/);
   assert.match(startSession, /event_name: status === 'issued' \? 'decart_token_issued'/);
+});
+
+test('Decart web tokens are pinned only to canonical HTTP origins', () => {
+  assert.deepEqual(
+    getBrowserTokenOrigins({ headers: { origin: 'https://morphly.example' } }, 'web'),
+    ['https://morphly.example'],
+  );
+  assert.deepEqual(
+    getBrowserTokenOrigins({ headers: { origin: 'https://morphly.example/' } }, 'web'),
+    [],
+  );
+  assert.deepEqual(
+    getBrowserTokenOrigins({ headers: { origin: 'file://' } }, 'web'),
+    [],
+  );
+  assert.deepEqual(
+    getBrowserTokenOrigins({ headers: { origin: 'https://morphly.example' } }, 'desktop'),
+    [],
+  );
 });
 
 test('Decart cumulative generation ticks are no longer truncated to ten seconds', () => {

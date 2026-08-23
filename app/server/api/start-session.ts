@@ -44,55 +44,62 @@ function getRequestFingerprint(req) {
   return crypto.createHash('sha256').update(`${forwardedFor}|${userAgent}`).digest('hex').slice(0, 20);
 }
 
-async function createDecartClientToken(apiKey, userId, sessionId, maxSeconds, installationId) {
-  const safeMaxSeconds = Math.max(60, Math.min(Math.floor(Number(maxSeconds) || 1800), 7200));
+export function getBrowserTokenOrigins(req, platform) {
+  if (platform !== 'web') return [];
 
-  const buildTokenPayload = (includeConstraints = true) => {
-    const payload = {
-      expiresIn: CLIENT_TOKEN_TTL_SECONDS,
-      allowedModels: [DECART_REALTIME_MODEL],
-      metadata: {
-        morphlyUserId: userId,
-        morphlySessionId: sessionId,
-        ...(installationId ? { morphlyInstallationId: installationId } : {}),
-      },
-    };
-    if (includeConstraints) {
-      payload.constraints = { realtime: { maxSessionDuration: safeMaxSeconds } };
-    }
-    return payload;
+  const originHeader = normalizeClientLabel(req.headers?.origin, 253);
+  if (!originHeader) return [];
+
+  try {
+    const originUrl = new URL(originHeader);
+    if (!['http:', 'https:'].includes(originUrl.protocol)) return [];
+    if (originUrl.origin !== originHeader.toLowerCase()) return [];
+    return [originUrl.origin];
+  } catch {
+    return [];
+  }
+}
+
+async function createDecartClientToken(
+  apiKey,
+  userId,
+  sessionId,
+  maxSeconds,
+  installationId,
+  allowedOrigins,
+) {
+  const safeMaxSeconds = Math.max(60, Math.min(Math.floor(Number(maxSeconds) || 1800), 7200));
+  const tokenPayload = {
+    expiresIn: CLIENT_TOKEN_TTL_SECONDS,
+    allowedModels: [DECART_REALTIME_MODEL],
+    ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
+    constraints: { realtime: { maxSessionDuration: safeMaxSeconds } },
+    metadata: {
+      morphlyUserId: userId,
+      morphlySessionId: sessionId,
+      ...(installationId ? { morphlyInstallationId: installationId } : {}),
+    },
   };
 
-  let providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-    body: JSON.stringify(buildTokenPayload(true)),
-  });
-  let providerData = await providerResponse.json().catch(() => ({}));
-
-  // Resilient fallback: if Decart API returns 400 (e.g. constraints/metadata schema mismatch), retry without constraints
-  if (!providerResponse.ok && providerResponse.status === 400) {
-    console.warn('[AI_SESSION] Decart rejected token constraints with status 400, retrying with basic token payload:', providerData);
+  let providerResponse;
+  try {
     providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-      body: JSON.stringify(buildTokenPayload(false)),
+      body: JSON.stringify(tokenPayload),
+      signal: AbortSignal.timeout(15000),
     });
-    providerData = await providerResponse.json().catch(() => ({}));
+  } catch (error) {
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+    return { error: {
+      error: 'AI_SESSION_CREATION_FAILED',
+      providerStatus: null,
+      details: timedOut
+        ? 'Decart did not respond in time. Please try again.'
+        : 'Decart could not be reached. Check the connection and try again.',
+    } };
   }
-
-  // If still failing with 400 (e.g. model or metadata rejected), retry with minimal payload
-  if (!providerResponse.ok && providerResponse.status === 400) {
-    console.warn('[AI_SESSION] Decart rejected model/metadata payload, retrying with minimal token payload:', providerData);
-    providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-      body: JSON.stringify({
-        expiresIn: CLIENT_TOKEN_TTL_SECONDS,
-      }),
-    });
-    providerData = await providerResponse.json().catch(() => ({}));
-  }
+  const providerData = await providerResponse.json().catch(() => ({}));
 
   console.log('[AI_SESSION]', {
     providerStatus: providerResponse.status,
@@ -345,6 +352,15 @@ export default async function handler(req, res) {
     if (authResult.error) return res.status(authResult.status).json({ allowed: false, error: authResult.error });
     const userId = authResult.user.id;
     if (req.body?.userId && req.body.userId !== userId) return res.status(403).json({ allowed: false, error: 'User mismatch' });
+    const installationId = normalizeClientLabel(req.body?.installationId, 120);
+    const platform = normalizeClientLabel(req.body?.platform, 30);
+    const allowedOrigins = getBrowserTokenOrigins(req, platform);
+    if (platform === 'web' && allowedOrigins.length === 0) {
+      return res.status(400).json({
+        allowed: false,
+        error: 'A canonical browser origin is required to start an AI session.',
+      });
+    }
 
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('users').select('account_status').eq('id', userId).maybeSingle();
@@ -443,8 +459,6 @@ export default async function handler(req, res) {
       });
     }
 
-    const installationId = normalizeClientLabel(req.body?.installationId, 120);
-    const platform = normalizeClientLabel(req.body?.platform, 30);
     const requestFingerprint = getRequestFingerprint(req);
     const maxSeconds = Math.min(
       Math.floor(userCredits / CREDITS_PER_SECOND),
@@ -473,6 +487,7 @@ export default async function handler(req, res) {
       newSession.id,
       maxSeconds,
       installationId,
+      allowedOrigins,
     );
     if (providerSession.error) {
       await recordProviderTokenAudit({

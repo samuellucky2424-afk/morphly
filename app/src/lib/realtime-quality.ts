@@ -6,33 +6,31 @@ type QualityProfile = {
   height: number;
   targetFps: number;
   maxFps: number;
-  enhance: boolean;
 };
 
 export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
+  // Lower modes are connection fallbacks, but stay at the same 16:9 aspect
+  // ratio as Lucy 2.5 so the browser never crops or stretches the source.
   fast: {
     label: 'Fast',
     width: 640,
-    height: 352,
-    targetFps: 25,
-    maxFps: 25,
-    enhance: false,
+    height: 360,
+    targetFps: 24,
+    maxFps: 30,
   },
   balanced: {
     label: 'Balanced',
     width: 960,
-    height: 528,
-    targetFps: 25,
-    maxFps: 25,
-    enhance: false,
+    height: 540,
+    targetFps: 30,
+    maxFps: 30,
   },
   hd: {
-    label: 'HD',
+    label: 'HD 720p',
     width: 1280,
-    height: 704,
-    targetFps: 25,
-    maxFps: 25,
-    enhance: false,
+    height: 720,
+    targetFps: 30,
+    maxFps: 30,
   },
 };
 
@@ -114,6 +112,6 @@ export function buildVideoInputConstraints(
 
   return {
     video: videoConstraints,
-    audio: true,
+    audio: false,
   };
 }
