@@ -62,6 +62,11 @@ import {
   type QualityMode,
   upgradeQualityMode,
 } from '@/lib/realtime-quality';
+import {
+  buildDecartConnectInitialState,
+  buildDecartSessionUpdate,
+  prepareDecartReferenceImage,
+} from '@/lib/decart-realtime';
 
 
 type ConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
@@ -178,8 +183,21 @@ const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const RESTART_FAILURES_BEFORE_DOWNGRADE = 2;
 const AI_CONNECT_TIMEOUT_MS = 45000;
+const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS = 3;
 const MAX_GENERATION_TICK_DELTA_SECONDS = 60;
+const DECART_SUPPORTED_REALTIME_MODELS = [
+  'lucy-latest',
+  'lucy-2.1',
+  'lucy-2.5',
+  'lucy-vton-2',
+  'lucy-vton-3',
+  'lucy-restyle-2',
+  'lucy-vton-latest',
+  'lucy-restyle-latest',
+  'lucy-2.1-vton-2',
+] as const;
+type DecartRealtimeModelName = (typeof DECART_SUPPORTED_REALTIME_MODELS)[number];
 const DECART_REALTIME_MODEL = 'lucy-2.5';
 const MORPHLY_CAM_FRAME_WIDTH = 1280;
 const MORPHLY_CAM_FRAME_HEIGHT = 720;
@@ -205,16 +223,20 @@ function buildTransformSignature(transform: TransformState): string {
   ].join('|');
 }
 
-function buildRealtimeSessionState(transform: TransformState) {
-  return {
-    prompt: transform.prompt,
-    enhance: DEFAULT_ENHANCE,
-    image: transform.image ?? null,
-  };
+async function applyRealtimeSessionState(realtimeClient: RealtimeClient, transform: TransformState) {
+  const update = buildDecartSessionUpdate(transform);
+  if (!update) {
+    return false;
+  }
+
+  await realtimeClient.set(update);
+  return true;
 }
 
-async function applyRealtimeSessionState(realtimeClient: RealtimeClient, transform: TransformState) {
-  await realtimeClient.set(buildRealtimeSessionState(transform));
+function resolveDecartRealtimeModel(model: string | undefined): DecartRealtimeModelName {
+  return DECART_SUPPORTED_REALTIME_MODELS.includes(model as DecartRealtimeModelName)
+    ? model as DecartRealtimeModelName
+    : DECART_REALTIME_MODEL;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -306,10 +328,6 @@ function getDecartSdkErrorMessage(error: unknown): string | null {
       cause?: { message?: unknown } | unknown;
     };
 
-    if (typeof candidate.message === 'string' && candidate.message) {
-      return candidate.message;
-    }
-
     if (
       typeof candidate.cause === 'object'
       && candidate.cause !== null
@@ -318,6 +336,10 @@ function getDecartSdkErrorMessage(error: unknown): string | null {
       && candidate.cause.message
     ) {
       return candidate.cause.message;
+    }
+
+    if (typeof candidate.message === 'string' && candidate.message) {
+      return candidate.message;
     }
 
     if (typeof candidate.code === 'string' && candidate.code) {
@@ -416,10 +438,13 @@ function Dashboard() {
   const clientSubscriptionsCleanupRef = useRef<(() => void) | null>(null);
   const sessionTokenRef = useRef('');
   const sessionIdRef = useRef('');
+  const sessionRealtimeModelRef = useRef<DecartRealtimeModelName>(DECART_REALTIME_MODEL);
+  const sessionWebsocketUrlRef = useRef('wss://api3.decart.ai');
   const usageFlushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingBillableSecondsRef = useRef(0);
   const lastBilledGenerationSecondsRef = useRef<number | null>(null);
   const frameCallbackHandleRef = useRef<number | null>(null);
+  const firstFrameReadyRef = useRef<(() => void) | null>(null);
   const lastRemoteFrameAtRef = useRef(0);
   const lastGenerationTickAtRef = useRef(Date.now());
   const frameWatchdogIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -427,10 +452,15 @@ function Dashboard() {
   const restartInFlightRef = useRef(false);
   const safeStopInFlightRef = useRef(false);
   const sessionEverConnectedRef = useRef(false);
+  const firstFrameTrackedRef = useRef(false);
   const restartRetryDelayRef = useRef(INITIAL_RETRY_DELAY_MS);
   const restartFailureCountRef = useRef(0);
   const handleStopRef = useRef<((options?: { silent?: boolean }) => Promise<void>) | null>(null);
   const safelyStopSessionRef = useRef<(() => Promise<void>) | null>(null);
+  const restartRealtimeSessionRef = useRef<((
+    reason: string,
+    options?: { immediate?: boolean },
+  ) => Promise<void>) | null>(null);
   const healthCountersRef = useRef({ poorSamples: 0, healthySamples: 0 });
   const userSelectedModeRef = useRef(false);
   const userInitiatedCameraChangeRef = useRef(false);
@@ -1161,11 +1191,18 @@ function Dashboard() {
   }, []);
 
   const markRemoteFrameFresh = useCallback(() => {
-    lastRemoteFrameAtRef.current = performance.now();
+    const confirmStartupFrame = firstFrameReadyRef.current;
+    if (confirmStartupFrame) {
+      confirmStartupFrame();
+      return;
+    }
+
+    lastRemoteFrameAtRef.current = Date.now();
 
     if (!hasRemoteFrameRef.current) {
       hasRemoteFrameRef.current = true;
       setHasRemoteFrame(true);
+      setUiStatus('Live');
     }
   }, []);
 
@@ -1222,6 +1259,7 @@ function Dashboard() {
     }
 
     cancelRemoteFrameMonitor();
+    firstFrameReadyRef.current = null;
     lastRemoteFrameAtRef.current = 0;
     hasRemoteFrameRef.current = false;
     setHasRemoteFrame(false);
@@ -1420,7 +1458,20 @@ function Dashboard() {
     setIsSyncingTransform(true);
 
     try {
-      await applyRealtimeSessionState(realtimeClient, nextTransform);
+      const nextUpdate = buildDecartSessionUpdate(nextTransform);
+      if (!nextUpdate) {
+        const restart = restartRealtimeSessionRef.current;
+        if (!restart) {
+          throw new Error('Realtime passthrough recovery is not ready.');
+        }
+
+        // The SDK intentionally rejects empty prompts and has no live passthrough
+        // toggle. Reconnect with passthrough enabled when all transforms are cleared.
+        await restart('transform-cleared', { immediate: true });
+        return;
+      }
+
+      await realtimeClient.set(nextUpdate);
 
       lastAppliedTransformRef.current = nextTransform;
     } catch (error) {
@@ -1538,7 +1589,7 @@ function Dashboard() {
       bitrateKbps: Math.round(bitrate / 1000),
     });
 
-    if ((stats.video?.framesPerSecond ?? 0) > 1 || (stats.outboundVideo?.framesPerSecond ?? 0) > 1) {
+    if ((stats.video?.framesPerSecond ?? 0) > 1) {
       markRemoteFrameFresh();
     }
 
@@ -1549,9 +1600,47 @@ function Dashboard() {
     stream: MediaStream,
     apiToken: string,
     initialTransform: TransformState,
-    options?: { isRecovery?: boolean; websocketUrl?: string },
-  ): Promise<RealtimeClient | null> => {
+    options?: { isRecovery?: boolean; websocketUrl?: string; modelName?: DecartRealtimeModelName },
+  ): Promise<RealtimeClient> => {
+    let activeRealtimeClient: RealtimeClient | null = null;
+    let firstFrameSettled = false;
+    let resolveFirstFrame: (() => void) | null = null;
+    let rejectFirstFrame: ((error: Error) => void) | null = null;
+    const firstFramePromise = new Promise<void>((resolve, reject) => {
+      resolveFirstFrame = resolve;
+      rejectFirstFrame = reject;
+    });
+    void firstFramePromise.catch(() => {});
+
+    const confirmFirstFrame = () => {
+      if (firstFrameSettled) return;
+      firstFrameSettled = true;
+      if (firstFrameReadyRef.current === confirmFirstFrame) {
+        firstFrameReadyRef.current = null;
+      }
+      markRemoteFrameFresh();
+      resolveFirstFrame?.();
+    };
+
+    const failBeforeFirstFrame = (error: unknown) => {
+      if (firstFrameSettled) return;
+      firstFrameSettled = true;
+      if (firstFrameReadyRef.current === confirmFirstFrame) {
+        firstFrameReadyRef.current = null;
+      }
+      rejectFirstFrame?.(new Error(
+        getDecartSdkErrorMessage(error) || 'Decart failed before delivering video output.',
+      ));
+    };
+
     try {
+      cancelRemoteFrameMonitor();
+      hasRemoteFrameRef.current = false;
+      setHasRemoteFrame(false);
+      lastRemoteFrameAtRef.current = 0;
+      firstFrameReadyRef.current = confirmFirstFrame;
+      setUiStatus(options?.isRecovery ? 'Reconnecting...' : 'Preparing realtime output...');
+
       if (morphlyCamWindowEnabledRef.current && morphlyCamWindowRef.current && !morphlyCamWindowRef.current.closed) {
         updateMorphlyCamStatus(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
         updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
@@ -1562,7 +1651,7 @@ function Dashboard() {
         apiKey: apiToken,
         ...(options?.websocketUrl ? { realtimeBaseUrl: options.websocketUrl } : {}),
       });
-      const model = models.realtime(DECART_REALTIME_MODEL);
+      const model = models.realtime(options?.modelName || DECART_REALTIME_MODEL);
 
       const realtimeClient = await client.realtime.connect(stream, {
         model,
@@ -1579,36 +1668,47 @@ function Dashboard() {
           video.playbackRate = 1;
           video.latencyHint = 'interactive';
 
+          let readinessArmed = false;
           const playRemote = () => {
+            if (readinessArmed) return;
+            readinessArmed = true;
             void video.play().catch(() => {});
-            markRemoteFrameFresh();
-            startRemoteFrameMonitor();
+
+            if (video.requestVideoFrameCallback) {
+              frameCallbackHandleRef.current = video.requestVideoFrameCallback(() => {
+                frameCallbackHandleRef.current = null;
+                confirmFirstFrame();
+                startRemoteFrameMonitor();
+              });
+              return;
+            }
+
+            const confirmLoadedFrame = () => {
+              if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+                confirmFirstFrame();
+                startRemoteFrameMonitor();
+              }
+            };
+
+            video.addEventListener('loadeddata', confirmLoadedFrame, { once: true });
+            confirmLoadedFrame();
           };
 
           video.onloadedmetadata = playRemote;
-
-          if (video.readyState >= 2) {
-            playRemote();
-          }
+          playRemote();
 
           syncMorphlyCamStream(
             editedStream,
             options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...',
           );
         },
-        initialState: {
-          prompt: {
-            text: initialTransform.prompt,
-            enhance: DEFAULT_ENHANCE,
-          },
-          image: initialTransform.image ?? undefined,
-        },
+        initialState: buildDecartConnectInitialState(),
       });
+      activeRealtimeClient = realtimeClient as RealtimeClient;
 
-      // connect() resolving means the WebRTC/WebSocket handshake is complete and
-      // initialState has already been applied by the SDK. Do NOT call set() here
-      // again — a redundant set() immediately after connect resets the generation
-      // pipeline and causes the visible "hook" freeze on startup.
+      // The media room starts in passthrough. Apply the requested state only after
+      // connect() so its acknowledgement is awaited and cannot fail behind a false
+      // "connected" state.
       sessionEverConnectedRef.current = true;
 
       cleanupClientSubscriptions();
@@ -1643,7 +1743,7 @@ function Dashboard() {
         if (nextState === 'connected' || nextState === 'generating') {
           hasSeenConnectedViaHandler = true;
           sessionEverConnectedRef.current = true;
-          setUiStatus('Live');
+          setUiStatus(hasRemoteFrameRef.current ? 'Live' : 'Preparing realtime output...');
           restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
           restartFailureCountRef.current = 0;
         }
@@ -1651,8 +1751,9 @@ function Dashboard() {
         if (nextState === 'disconnected') {
           setUiStatus('Disconnected');
           void flushBillableUsage();
-          // Only stop if the session was actually established — not during initial WebSocket handshake.
-          if (!restartInFlightRef.current && sessionEverConnectedRef.current) {
+          if (!hasRemoteFrameRef.current) {
+            failBeforeFirstFrame(new Error('Decart disconnected before delivering video output.'));
+          } else if (!restartInFlightRef.current && sessionEverConnectedRef.current && isStreamingRef.current) {
             void safelyStopSessionRef.current?.();
           }
         }
@@ -1665,8 +1766,10 @@ function Dashboard() {
           const recoveryTransform = getDesiredTransformState();
           void sleep(INITIAL_PROMPT_INJECTION_DELAY_MS)
             .then(() => applyRealtimeSessionState(realtimeClient as RealtimeClient, recoveryTransform))
-            .then(() => {
-              lastAppliedTransformRef.current = recoveryTransform;
+            .then((applied) => {
+              if (applied) {
+                lastAppliedTransformRef.current = recoveryTransform;
+              }
             })
             .catch((error) => {
               console.error('Failed to reapply realtime session state after reconnect:', error);
@@ -1684,7 +1787,12 @@ function Dashboard() {
       };
 
       const onError = (error: { message: string }) => {
-        console.error('[Decart] realtime error:', error);
+        const message = getDecartSdkErrorMessage(error) || 'Unknown Decart realtime error';
+        const code = typeof error === 'object' && error && 'code' in error
+          ? String((error as { code?: unknown }).code || '')
+          : '';
+        console.error(`[Decart] realtime error${code ? ` (${code})` : ''}: ${message}`);
+        failBeforeFirstFrame(error);
       };
 
       const onGenerationTick = (tick: { seconds?: number }) => {
@@ -1694,7 +1802,6 @@ function Dashboard() {
         if (hasRemoteFrameRef.current) {
           recordBillableGenerationTick(tick);
         }
-        markRemoteFrameFresh();
       };
 
       const onDiagnostic = (diagnostic: unknown) => {
@@ -1716,15 +1823,28 @@ function Dashboard() {
       };
 
       realtimeClientRef.current = realtimeClient as RealtimeClient;
-      lastAppliedTransformRef.current = initialTransform;
       lastGenerationTickAtRef.current = Date.now();
       resetHealthCounters();
-      setConnectionState(realtimeClient.getConnectionState?.() ?? 'connecting');
-      setUiStatus('Live');
+      const currentState = realtimeClient.getConnectionState?.() ?? 'connecting';
+      connectionStateRef.current = currentState;
+      setConnectionState(currentState);
+      setUiStatus('Preparing realtime output...');
       setStreamMetrics(createEmptyStreamMetrics());
-      hasRemoteFrameRef.current = false;
-      setHasRemoteFrame(false);
-      lastRemoteFrameAtRef.current = performance.now();
+
+      const applied = await applyRealtimeSessionState(realtimeClient as RealtimeClient, initialTransform);
+      lastAppliedTransformRef.current = initialTransform;
+      console.log('[Decart] startup state acknowledged:', applied ? 'transform' : 'passthrough');
+
+      await withTimeout(
+        firstFramePromise,
+        AI_FIRST_FRAME_TIMEOUT_MS,
+        `Decart connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`,
+      );
+
+      if (!firstFrameTrackedRef.current) {
+        firstFrameTrackedRef.current = true;
+        trackFirstFrameReceived(sessionIdRef.current || undefined);
+      }
 
       if (!options?.isRecovery) {
         toast.success('Connected to AI!');
@@ -1732,20 +1852,21 @@ function Dashboard() {
 
       return realtimeClient as RealtimeClient;
     } catch (error) {
-      console.error('[Decart] SDK error:', error);
-
-      if (!options?.isRecovery) {
-        const errorMessage = getDecartSdkErrorMessage(error);
-        toast.error(
-          errorMessage
-            ? `Failed to connect to AI: ${errorMessage}`
-            : 'Failed to connect to AI',
-        );
+      firstFrameSettled = true;
+      if (firstFrameReadyRef.current === confirmFirstFrame) {
+        firstFrameReadyRef.current = null;
       }
-
-      return null;
+      const errorMessage = getDecartSdkErrorMessage(error) || 'Unknown Decart SDK error';
+      console.error(`[Decart] SDK error: ${errorMessage}`);
+      cleanupClientSubscriptions();
+      if (realtimeClientRef.current === activeRealtimeClient) {
+        realtimeClientRef.current = null;
+      }
+      activeRealtimeClient?.disconnect();
+      throw error instanceof Error ? error : new Error(errorMessage);
     }
   }, [
+    cancelRemoteFrameMonitor,
     cleanupClientSubscriptions,
     clearSoftReconnectTimer,
     flushBillableUsage,
@@ -1791,7 +1912,11 @@ function Dashboard() {
         currentStream,
         sessionTokenRef.current,
         getDesiredTransformState(),
-        { isRecovery: true },
+        {
+          isRecovery: true,
+          websocketUrl: sessionWebsocketUrlRef.current,
+          modelName: sessionRealtimeModelRef.current,
+        },
       );
 
       if (!reconnectedClient) {
@@ -1813,6 +1938,13 @@ function Dashboard() {
       restartInFlightRef.current = false;
     }
   }, [connectToDecart, disconnectFromDecart, getDesiredTransformState, startWebcam]);
+
+  useEffect(() => {
+    restartRealtimeSessionRef.current = restartRealtimeSession;
+    return () => {
+      restartRealtimeSessionRef.current = null;
+    };
+  }, [restartRealtimeSession]);
 
   const safelyStopSession = useCallback(async () => {
     if (safeStopInFlightRef.current) {
@@ -1870,6 +2002,9 @@ function Dashboard() {
 
     sessionTokenRef.current = '';
     sessionIdRef.current = '';
+    sessionRealtimeModelRef.current = DECART_REALTIME_MODEL;
+    sessionWebsocketUrlRef.current = 'wss://api3.decart.ai';
+    firstFrameTrackedRef.current = false;
     resetBillableUsageTracking();
     isStreamingRef.current = false;
     restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
@@ -2314,6 +2449,7 @@ function Dashboard() {
     setRuntimeModeCap('hd');
     resetHealthCounters();
     resetBillableUsageTracking();
+    firstFrameTrackedRef.current = false;
 
     // Arm the virtual camera publisher. The live frames come from the main
     // Morphly output stream; the popup, if opened, is only an optional mirror.
@@ -2371,6 +2507,9 @@ function Dashboard() {
         sessionIdRef.current = startResponse.sessionId || '';
 
         const websocketUrl = startResponse.websocketUrl || 'wss://api3.decart.ai';
+        const realtimeModel = resolveDecartRealtimeModel(startResponse.model);
+        sessionWebsocketUrlRef.current = websocketUrl;
+        sessionRealtimeModelRef.current = realtimeModel;
         const parsedWebsocketUrl = new URL(websocketUrl);
         console.log('[AI_DIAGNOSTICS]', {
           platform: navigator.platform,
@@ -2380,7 +2519,7 @@ function Dashboard() {
           pageHost: location.host,
           websocketProtocol: parsedWebsocketUrl.protocol,
           websocketHost: parsedWebsocketUrl.host,
-          model: startResponse.model || DECART_REALTIME_MODEL,
+          model: realtimeModel,
           hasToken: Boolean(sessionToken),
           expiresAt: startResponse.expiresAt ?? null,
         });
@@ -2391,7 +2530,10 @@ function Dashboard() {
 
         try {
           realtimeClient = await withTimeout(
-            connectToDecart(stream, sessionToken, getDesiredTransformState(), { websocketUrl }),
+            connectToDecart(stream, sessionToken, getDesiredTransformState(), {
+              websocketUrl,
+              modelName: realtimeModel,
+            }),
             AI_CONNECT_TIMEOUT_MS,
             `AI connection timed out after ${AI_CONNECT_TIMEOUT_MS / 1000}s`,
           );
@@ -2423,7 +2565,6 @@ function Dashboard() {
       setIsStreaming(true);
       setSessionStatus('LIVE');
       setUiStatus('Live');
-      trackFirstFrameReceived(sessionIdRef.current || undefined);
     } catch (error) {
       console.error('Start session error:', error);
       trackConnectionFailed(sessionIdRef.current || undefined, {
@@ -2471,28 +2612,22 @@ function Dashboard() {
       return;
     }
 
-    if (!file.type.startsWith('image/')) {
-      toast.error('Select a valid image file.');
-      return;
-    }
-    if (file.size > 15 * 1024 * 1024) {
-      toast.error('The reference image must be 15 MB or smaller.');
-      return;
-    }
-
     setIsValidatingImage(true);
     try {
-      const bitmap = await createImageBitmap(file);
-      bitmap.close();
+      const preparedFile = await prepareDecartReferenceImage(file);
 
       setReferenceImage({
-        file,
+        file: preparedFile,
         name: file.name,
-        signature: `${file.name}:${file.size}:${file.lastModified}`,
+        signature: `${preparedFile.name}:${preparedFile.size}:${preparedFile.lastModified}`,
       });
     } catch (error) {
       console.error('Reference image validation failed:', error);
-      toast.error('Morphly could not read that image. Select another image file.');
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'Morphly could not read that image. Select another image file.',
+      );
       return;
     } finally {
       setIsValidatingImage(false);
@@ -2582,11 +2717,9 @@ function Dashboard() {
           autoPlay
           playsInline
           muted
-          onLoadedData={markRemoteFrameFresh}
-          onPlaying={markRemoteFrameFresh}
           className="h-full w-full object-cover transition-[opacity,filter] duration-200"
           style={{
-            display: isStreaming ? 'block' : 'none',
+            display: isStreaming || isLoading ? 'block' : 'none',
             opacity: hasRemoteFrame ? 1 : 0.85,
             willChange: 'transform, opacity',
             transform: 'translateZ(0)',
@@ -2595,7 +2728,7 @@ function Dashboard() {
           }}
         />
 
-        {!isStreaming && (
+        {!isStreaming && !isLoading && (
           <div className="flex flex-col items-center justify-center gap-5 text-[#3F3F46]">
             <Monitor className="h-[60px] w-[60px] stroke-[1]" />
             <span className="text-xs font-semibold tracking-[0.2em] text-[#4A4A4A]">CAMERA FEED OFFLINE</span>
@@ -2612,7 +2745,7 @@ function Dashboard() {
           id="image-upload"
         />
 
-        {isStreaming && (isLoading || isSyncingTransform || connectionState === 'reconnecting' || !hasRemoteFrame) && (
+        {(isStreaming || isLoading) && (isLoading || isSyncingTransform || connectionState === 'reconnecting' || !hasRemoteFrame) && (
           <div className="pointer-events-none absolute inset-x-0 bottom-8 z-20 flex justify-center px-6">
             <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/55 px-4 py-2 text-xs text-white/90 shadow-xl shadow-black/30 backdrop-blur-md">
               <LoaderCircle className="h-4 w-4 animate-spin" />
