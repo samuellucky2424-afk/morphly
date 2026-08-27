@@ -5,7 +5,8 @@ import {
   applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
-  verifyFlutterwaveTransaction
+  verifyFlutterwaveTransaction,
+  verifyFlutterwaveTransactionByReference,
 } from '../flutterwave-payment.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
@@ -30,8 +31,8 @@ export default async function handler(req, res) {
     priceUSD,
   });
 
-  if (!reference || !transactionId || !userId) {
-    return res.status(400).json({ status: 'failed', message: 'Missing reference, transactionId, or userId' });
+  if (!reference || !userId) {
+    return res.status(400).json({ status: 'failed', message: 'Missing reference or userId' });
   }
 
   try {
@@ -45,7 +46,10 @@ export default async function handler(req, res) {
       return res.status(500).json({ status: 'failed', message: 'Missing Flutterwave Secret Key' });
     }
 
-    const verification = await verifyFlutterwaveTransaction(transactionId, flutterwaveSecretKey);
+    const verification = transactionId
+      ? await verifyFlutterwaveTransaction(transactionId, flutterwaveSecretKey)
+      : await verifyFlutterwaveTransactionByReference(reference, flutterwaveSecretKey);
+    const verifiedTransactionId = verification.transaction?.id || transactionId;
 
     if (!verification.isVerified) {
       await logPaymentEvent('verify-payment.rejected', {
@@ -55,6 +59,9 @@ export default async function handler(req, res) {
         message: verification.data?.message || 'Payment verification failed',
       });
       return res.status(400).json({ status: 'failed', message: verification.data?.message || 'Payment verification failed' });
+    }
+    if (!verifiedTransactionId) {
+      return res.status(400).json({ status: 'failed', message: 'Missing verified Flutterwave transaction ID' });
     }
 
     const paymentContext = extractFlutterwavePaymentContext(verification.transaction, {
@@ -87,14 +94,14 @@ export default async function handler(req, res) {
       reference: validation.reference,
       userId: paymentContext.userId,
       packageId: paymentContext.packageId,
-      transactionId,
+      transactionId: verifiedTransactionId,
       amountPaidNGN: validation.amountPaidNGN,
       gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
     });
 
     await logPaymentEvent('verify-payment.processed', {
       reference: validation.reference,
-      transactionId,
+      transactionId: verifiedTransactionId,
       userId: paymentContext.userId,
       creditsAdded: result.creditsAdded,
       newCredits: result.newCredits,

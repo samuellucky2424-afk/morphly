@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -70,6 +70,8 @@ interface AuditLogEntry {
   event?: string;
   [key: string]: unknown;
 }
+
+type CreditAdjustmentMode = 'add' | 'deduct';
 
 interface AdminUsageUser {
   userId: string;
@@ -311,8 +313,11 @@ function AdminDashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [savingPackages, setSavingPackages] = useState(false);
   const [creditDialogUser, setCreditDialogUser] = useState<AdminUserRecord | null>(null);
-  const [creditsToAdd, setCreditsToAdd] = useState('');
+  const [creditAdjustmentMode, setCreditAdjustmentMode] = useState<CreditAdjustmentMode>('add');
+  const [creditAmount, setCreditAmount] = useState('');
+  const [creditReason, setCreditReason] = useState('');
   const [isSubmittingCredit, setIsSubmittingCredit] = useState(false);
+  const creditOperationRef = useRef<{ signature: string; key: string } | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
   const [disqualifyingReferralId, setDisqualifyingReferralId] = useState<string | null>(null);
 
@@ -467,23 +472,71 @@ function AdminDashboard() {
     }
   };
 
-  const handleAddCredits = async () => {
+  const resetCreditDialog = () => {
+    setCreditDialogUser(null);
+    setCreditAdjustmentMode('add');
+    setCreditAmount('');
+    setCreditReason('');
+  };
+
+  const handleAdjustCredits = async () => {
     if (!creditDialogUser) {
       return;
     }
 
-    const parsedCredits = Number(creditsToAdd);
-    if (!Number.isFinite(parsedCredits) || parsedCredits <= 0) {
-      toast.error('Enter a valid number of credits to add');
+    const parsedCredits = Number(creditAmount);
+    if (!Number.isSafeInteger(parsedCredits) || parsedCredits <= 0 || parsedCredits > 1_000_000) {
+      toast.error('Enter a whole number between 1 and 1,000,000');
       return;
     }
+
+    if (creditAdjustmentMode === 'deduct' && parsedCredits > creditDialogUser.credits) {
+      toast.error(`This user only has ${creditDialogUser.credits.toLocaleString()} credits`);
+      return;
+    }
+
+    if (creditAdjustmentMode === 'deduct' && user?.adminRole !== 'super_admin') {
+      toast.error('Only a super admin can deduct credits');
+      return;
+    }
+
+    const reason = creditReason.trim();
+    if (reason.length < 3) {
+      toast.error('Enter a reason of at least 3 characters');
+      return;
+    }
+
+    const adjustment = creditAdjustmentMode === 'deduct' ? -parsedCredits : parsedCredits;
+    const operationSignature = JSON.stringify({
+      userId: creditDialogUser.id,
+      adjustment,
+      reason,
+    });
+    const creditOperation = creditOperationRef.current?.signature === operationSignature
+      ? creditOperationRef.current
+      : {
+        signature: operationSignature,
+        key: `admin:${crypto.randomUUID()}`,
+      };
+    creditOperationRef.current = creditOperation;
 
     setIsSubmittingCredit(true);
 
     try {
-      const response = await adminRequest<{ newCredits: number; creditsAdded: number }>('/admin-users', {
+      const response = await adminRequest<{
+        newCredits: number;
+        adjustment: number;
+        creditsAdded: number;
+        creditsDeducted: number;
+      }>('/admin-users', {
         method: 'POST',
-        body: JSON.stringify({ userId: creditDialogUser.id, creditsToAdd: parsedCredits }),
+        body: JSON.stringify({
+          action: 'credits',
+          userId: creditDialogUser.id,
+          adjustment,
+          reason,
+          idempotencyKey: creditOperation.key,
+        }),
       });
 
       setUsers((currentUsers) =>
@@ -495,14 +548,18 @@ function AdminDashboard() {
       );
       setOverview((currentOverview) => ({
         ...currentOverview,
-        totalCredits: currentOverview.totalCredits + response.creditsAdded,
+        totalCredits: Math.max(0, currentOverview.totalCredits + response.adjustment),
       }));
-      setCreditsToAdd('');
-      setCreditDialogUser(null);
-      toast.success(`Added ${response.creditsAdded.toLocaleString()} credits`);
+      creditOperationRef.current = null;
+      resetCreditDialog();
+      toast.success(
+        response.adjustment < 0
+          ? `Deducted ${response.creditsDeducted.toLocaleString()} credits`
+          : `Added ${response.creditsAdded.toLocaleString()} credits`,
+      );
     } catch (error) {
       console.error(error);
-      toast.error(error instanceof Error ? error.message : 'Failed to add credits');
+      toast.error(error instanceof Error ? error.message : 'Failed to adjust credits');
     } finally {
       setIsSubmittingCredit(false);
     }
@@ -807,7 +864,9 @@ function AdminDashboard() {
                                 variant="outline"
                                 onClick={() => {
                                   setCreditDialogUser(entry);
-                                  setCreditsToAdd('');
+                                  setCreditAdjustmentMode('add');
+                                  setCreditAmount('');
+                                  setCreditReason('');
                                 }}
                                 className="h-9 rounded-full border-[#dbe4ff] bg-white px-4 text-[#0f172a] hover:bg-[#f8fafc]"
                               >
@@ -1243,15 +1302,14 @@ function AdminDashboard() {
         open={Boolean(creditDialogUser)}
         onOpenChange={(open) => {
           if (!open) {
-            setCreditDialogUser(null);
-            setCreditsToAdd('');
+            resetCreditDialog();
           }
         }}
       >
         <DialogContent className="rounded-[28px] border-[#e5e7eb] bg-white p-0 sm:max-w-md">
           <div className="border-b border-[#e5e7eb] px-6 py-5">
             <DialogHeader className="gap-2 text-left">
-              <DialogTitle className="text-xl font-semibold text-[#0f172a]">Add credits</DialogTitle>
+              <DialogTitle className="text-xl font-semibold text-[#0f172a]">Adjust credits</DialogTitle>
               <DialogDescription className="text-sm text-[#64748b]">
                 Apply a manual wallet adjustment for <span className="font-medium text-[#0f172a]">{creditDialogUser?.email}</span>.
               </DialogDescription>
@@ -1263,37 +1321,89 @@ function AdminDashboard() {
               Current balance <span className="font-semibold text-[#0f172a]">{creditDialogUser?.credits.toLocaleString() || 0}</span> credits
             </div>
 
+            <div className={`grid gap-2 rounded-2xl bg-[#f8fafc] p-1.5 ${user?.adminRole === 'super_admin' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+              <Button
+                type="button"
+                variant="ghost"
+                aria-pressed={creditAdjustmentMode === 'add'}
+                onClick={() => setCreditAdjustmentMode('add')}
+                className={creditAdjustmentMode === 'add'
+                  ? 'h-10 rounded-xl bg-white text-[#166534] shadow-sm hover:bg-white hover:text-[#166534]'
+                  : 'h-10 rounded-xl text-[#64748b] hover:bg-white'}
+              >
+                Add credits
+              </Button>
+              {user?.adminRole === 'super_admin' && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-pressed={creditAdjustmentMode === 'deduct'}
+                  onClick={() => setCreditAdjustmentMode('deduct')}
+                  className={creditAdjustmentMode === 'deduct'
+                    ? 'h-10 rounded-xl bg-white text-[#b91c1c] shadow-sm hover:bg-white hover:text-[#b91c1c]'
+                    : 'h-10 rounded-xl text-[#64748b] hover:bg-white'}
+                >
+                  Deduct credits
+                </Button>
+              )}
+            </div>
+
             <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Credits to add</label>
+              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">
+                Credits to {creditAdjustmentMode}
+              </label>
               <Input
                 type="number"
                 min="1"
-                value={creditsToAdd}
-                onChange={(event) => setCreditsToAdd(event.target.value)}
+                max={creditAdjustmentMode === 'deduct' ? creditDialogUser?.credits : 1_000_000}
+                step="1"
+                value={creditAmount}
+                onChange={(event) => setCreditAmount(event.target.value)}
                 placeholder="500"
                 className="h-12 rounded-full border-[#dbe4ff] bg-white text-[#0f172a]"
               />
             </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Reason</label>
+              <Input
+                type="text"
+                value={creditReason}
+                onChange={(event) => setCreditReason(event.target.value)}
+                placeholder={creditAdjustmentMode === 'deduct' ? 'Refund, correction, or policy action' : 'Support credit or account correction'}
+                maxLength={240}
+                className="h-12 rounded-full border-[#dbe4ff] bg-white text-[#0f172a]"
+              />
+              <p className="px-1 text-xs text-[#94a3b8]">This reason is saved in the admin audit log.</p>
+            </div>
+
+            {creditAdjustmentMode === 'deduct' && Number(creditAmount) > 0 && creditDialogUser && (
+              <div className="rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#9f1239]">
+                Balance after deduction:{' '}
+                <span className="font-semibold">
+                  {Math.max(0, creditDialogUser.credits - Number(creditAmount)).toLocaleString()} credits
+                </span>
+              </div>
+            )}
           </div>
 
           <DialogFooter className="border-t border-[#e5e7eb] px-6 py-5 sm:justify-between">
             <Button
               variant="ghost"
-              onClick={() => {
-                setCreditDialogUser(null);
-                setCreditsToAdd('');
-              }}
+              onClick={resetCreditDialog}
               className="h-11 rounded-full px-4 text-[#64748b] hover:bg-[#eef2ff] hover:text-[#0f172a]"
             >
               Cancel
             </Button>
             <Button
-              onClick={() => void handleAddCredits()}
+              onClick={() => void handleAdjustCredits()}
               disabled={isSubmittingCredit}
-              className="h-11 rounded-full bg-[#0f172a] px-5 text-white hover:bg-[#1e293b]"
+              className={creditAdjustmentMode === 'deduct'
+                ? 'h-11 rounded-full bg-[#b91c1c] px-5 text-white hover:bg-[#991b1b]'
+                : 'h-11 rounded-full bg-[#0f172a] px-5 text-white hover:bg-[#1e293b]'}
             >
               {isSubmittingCredit ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
-              Apply credits
+              {creditAdjustmentMode === 'deduct' ? 'Deduct credits' : 'Add credits'}
             </Button>
           </DialogFooter>
         </DialogContent>

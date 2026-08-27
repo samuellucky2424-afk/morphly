@@ -3,7 +3,7 @@
 const CONFIG = {
   apiBase: window.MORPHLY_API_BASE || window.location.origin,
   endpoints: {
-    overview: "/api/admin-overview", users: "/api/admin-users", addCredit: () => "/api/admin-users",
+    overview: "/api/admin-overview", users: "/api/admin-users", adjustCredit: () => "/api/admin-users",
     updateStatus: () => "/api/admin-users", packages: "/api/admin-credit-packages",
     transactions: "/api/admin-transactions", referrals: "/api/admin-referrals", usage: "/api/admin-usage", logs: "/api/admin-logs", audit: "/api/admin-audit-log",
     me: "/api/admin-me", config: "/api/public-config"
@@ -27,7 +27,11 @@ const state = {
   source: "all",
   loadedAt: null,
   loadErrors: {},
+  currentAdmin: null,
   selectedUserId: null,
+  userHistory: new Map(),
+  creditOperation: null,
+  creditSubmitting: false,
   editingPackageId: null,
   users: [],
   usage: { periodDays: 30, totals: {}, users: [], dataHealth: {} },
@@ -127,6 +131,9 @@ function normalizeSystemLog(log) {
   return {
     event: log.event || log.errorCode || log.error_code || log.event_name || "UNKNOWN_ERROR",
     platform: String(log.platform || "all").toLowerCase(),
+    source: String(log.source || "unknown").toLowerCase(),
+    recordSource: log.recordSource || log.record_source || "system",
+    message: log.message || log.safeMessage || log.safe_message || "System event recorded",
     user: log.user || log.userId || log.user_id || "Multiple users",
     count: Math.max(1, Math.round(safeNumber(log.count ?? log.occurrences ?? 1))),
     severity,
@@ -163,11 +170,15 @@ const AdminAPI = {
     if (!response.ok) throw new Error(data.error || data.message || `Request failed (${response.status})`);
     return data;
   },
-  async addCredit(userId, amount, reason) {
-    return AdminAPI.request(CONFIG.endpoints.addCredit(userId), {
+  async adjustCredit(userId, adjustment, reason, idempotencyKey) {
+    return AdminAPI.request(CONFIG.endpoints.adjustCredit(userId), {
       method: "POST",
-      body: JSON.stringify({ userId, amount, reason, idempotencyKey: crypto.randomUUID() })
+      body: JSON.stringify({ action: "credits", userId, adjustment, reason, idempotencyKey })
     });
+  },
+  async userHistory(userId, limit = 100) {
+    const query = new URLSearchParams({ userId, limit: String(limit) });
+    return AdminAPI.request(`${CONFIG.endpoints.audit}?${query.toString()}`);
   },
   async updateStatus(userId, status, reason) {
     return AdminAPI.request(CONFIG.endpoints.updateStatus(userId), {
@@ -630,12 +641,13 @@ function renderLogs() {
   ].join("");
   $("#logTableBody").innerHTML = logs.length
     ? logs.map((log) => [
-      "<tr><td><code>", escapeHtml(log.event), "</code></td><td>", escapeHtml(log.platform),
+      "<tr><td><code>", escapeHtml(log.event), "</code></td><td><strong>", escapeHtml(log.message),
+      "</strong><small class=\"usage-detail\">", escapeHtml(`${log.recordSource} · ${log.source}`), "</small></td><td>", escapeHtml(log.platform),
       "</td><td>", escapeHtml(log.user), "</td><td>", number(log.count),
       "</td><td><span class=\"status-pill ", escapeHtml(log.severity), "\">", escapeHtml(log.severity),
       "</span></td><td>", escapeHtml(formatDateTime(log.timestamp)), "</td></tr>"
     ].join("")).join("")
-    : '<tr><td class="empty-cell" colspan="6">No system errors were recorded for the selected period and filters.</td></tr>';
+    : '<tr><td class="empty-cell" colspan="7">No system events were recorded for the selected period and filters.</td></tr>';
 }
 function renderDeveloper() {
   const requirements = [
@@ -715,6 +727,116 @@ function setView(view) {
   if (view === "logs") renderLogs();
 }
 
+function normalizeUserHistoryEntry(entry) {
+  return {
+    id: entry.id || `${entry.source || "history"}:${entry.time || crypto.randomUUID()}`,
+    action: entry.action || "Account activity",
+    detail: entry.detail || "Account activity recorded",
+    time: entry.time || entry.timestamp || entry.createdAt || entry.created_at || null,
+    actor: entry.actor || entry.admin || entry.adminEmail || "Morphly",
+    source: entry.source || "account"
+  };
+}
+
+function accountCreatedHistoryEntry(user) {
+  return normalizeUserHistoryEntry({
+    id: `account:${user.id}`,
+    action: "Account created",
+    detail: `Morphly account registered for ${user.email || user.id}`,
+    time: user.createdAt,
+    actor: "Morphly",
+    source: "auth"
+  });
+}
+
+function renderUserHistory(userId) {
+  if (state.selectedUserId !== userId) return;
+  const container = $("[data-user-audit]", $("#drawerContent"));
+  const user = state.users.find((item) => item.id === userId);
+  if (!container || !user) return;
+
+  const history = state.userHistory.get(userId);
+  const entries = [accountCreatedHistoryEntry(user), ...(history?.entries || [])]
+    .filter((entry, index, all) => all.findIndex((candidate) => candidate.id === entry.id) === index)
+    .sort((left, right) => (parseTimestamp(right.time) || 0) - (parseTimestamp(left.time) || 0));
+  const missingSources = Object.entries(history?.dataHealth || {})
+    .filter(([, available]) => available === false)
+    .map(([source]) => source.replace(/Available$/, ""));
+  const notices = [];
+  if (!history || history.status === "loading") {
+    notices.push('<p class="history-notice">Loading the latest account history...</p>');
+  } else if (history.status === "error") {
+    notices.push(`<p class="history-notice error">History could not be fully loaded: ${escapeHtml(history.error)}</p>`);
+  } else if (history.dataHealth?.truncated) {
+    notices.push('<p class="history-notice warning">This account has more history than can be shown at once. The newest events are displayed.</p>');
+  } else if (missingSources.length) {
+    notices.push(`<p class="history-notice warning">Some history sources are unavailable: ${escapeHtml(missingSources.join(", "))}.</p>`);
+  }
+  container.innerHTML = notices.join("") + entries.map((item) => (
+    `<div class="timeline-item"><strong>${escapeHtml(item.action)}</strong><p>${escapeHtml(item.detail)}</p><small>${escapeHtml(formatDateTime(item.time))} &middot; ${escapeHtml(item.actor)}</small></div>`
+  )).join("");
+}
+
+async function loadUserHistory(userId) {
+  const previous = state.userHistory.get(userId);
+  state.userHistory.set(userId, { ...previous, status: "loading" });
+  renderUserHistory(userId);
+  try {
+    const result = await AdminAPI.userHistory(userId, 100);
+    const entries = Array.isArray(result.entries) ? result.entries.map(normalizeUserHistoryEntry) : [];
+    state.userHistory.set(userId, { status: "ready", entries, dataHealth: result.dataHealth || {} });
+  } catch (error) {
+    state.userHistory.set(userId, {
+      ...previous,
+      status: "error",
+      entries: previous?.entries || [],
+      error: error.message || "Unknown history error"
+    });
+  }
+  renderUserHistory(userId);
+}
+
+function updateCreditAdjustmentUi() {
+  const user = state.users.find((item) => item.id === state.selectedUserId);
+  if (!user || !$("#creditAdjustmentMode")) return;
+  const mode = $("#creditAdjustmentMode").value;
+  const amount = Number($("#creditAmount").value);
+  const validAmount = Number.isSafeInteger(amount) && amount > 0 ? amount : 0;
+  const projected = mode === "deduct" ? user.credits - validAmount : user.credits + validAmount;
+  $("[data-projected-balance]").textContent = `${number(Math.max(0, projected))} credits`;
+  $("#creditDeductionConfirmationRow").hidden = mode !== "deduct";
+  $("#creditAmount").max = String(mode === "deduct" ? Math.max(1, user.credits) : 1000000);
+  $("#creditSubmitButton").textContent = mode === "deduct" ? "Remove credits" : "Add credits";
+  $("#creditSubmitButton").classList.toggle("deduct", mode === "deduct");
+  $$('[data-credit-mode]').forEach((button) => {
+    const active = button.dataset.creditMode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function setCreditMode(mode) {
+  if (mode === "deduct" && state.currentAdmin?.role !== "super_admin") return;
+  $("#creditAdjustmentMode").value = mode;
+  $("#creditDeductionConfirmation").checked = false;
+  $("#creditFormError").textContent = "";
+  updateCreditAdjustmentUi();
+}
+
+function setCreditFormDisabled(disabled) {
+  state.creditSubmitting = disabled;
+  const form = $("#creditForm");
+  if (form) $$("input, button", form).forEach((control) => { control.disabled = disabled; });
+}
+
+function creditOperationKey(userId, adjustment, reason) {
+  const signature = JSON.stringify({ userId, adjustment, reason });
+  if (!state.creditOperation || state.creditOperation.signature !== signature) {
+    state.creditOperation = { signature, key: `admin:${crypto.randomUUID()}` };
+  }
+  return state.creditOperation.key;
+}
+
 function openUserDrawer(userId) {
   const user = state.users.find((item) => item.id === userId);
   if (!user) return;
@@ -736,17 +858,23 @@ function openUserDrawer(userId) {
   const actionButton = $("[data-status-action-button]", template);
   actionTitle.textContent = user.status === "active" ? "Suspend this user" : "Restore this user";
   actionButton.textContent = user.status === "active" ? "Suspend user" : "Restore user";
-  const audit = state.audit.filter((item) => item.userId === user.id);
-  $("[data-user-audit]", template).innerHTML = audit.length ? audit.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.action)}</strong><p>${escapeHtml(item.detail)}</p><small>${escapeHtml(item.time)} · ${escapeHtml(item.admin)}</small></div>`).join("") : `<p class="empty-cell">No account changes recorded.</p>`;
+  $("[data-user-audit]", template).innerHTML = '<p class="history-notice">Loading the latest account history...</p>';
   const content = $("#drawerContent");
   content.replaceChildren(template);
   $("#drawerTitle").textContent = `Manage ${user.name}`;
-  $("#creditForm").addEventListener("submit", handleAddCredit);
+  $("#creditForm").addEventListener("submit", handleCreditAdjustment);
+  $$('[data-credit-mode]').forEach((button) => button.addEventListener("click", () => setCreditMode(button.dataset.creditMode)));
+  $("#creditAmount").addEventListener("input", updateCreditAdjustmentUi);
+  if (state.currentAdmin?.role !== "super_admin") {
+    $('[data-credit-mode="deduct"]').hidden = true;
+  }
+  setCreditMode("add");
   $("#statusForm").addEventListener("submit", handleStatusChange);
   $("#drawerBackdrop").hidden = false;
   $("#userDrawer").classList.add("open");
   $("#userDrawer").setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  void loadUserHistory(userId);
 }
 
 function closeUserDrawer() {
@@ -757,29 +885,49 @@ function closeUserDrawer() {
   state.selectedUserId = null;
 }
 
-async function handleAddCredit(event) {
+async function handleCreditAdjustment(event) {
   event.preventDefault();
   const error = $("#creditFormError");
-  const amount = Math.floor(Number($("#creditAmount").value));
+  const amount = Number($("#creditAmount").value);
+  const mode = $("#creditAdjustmentMode").value;
   const reason = $("#creditReason").value.trim();
+  const user = state.users.find((item) => item.id === state.selectedUserId);
   error.textContent = "";
-  if (!Number.isFinite(amount) || amount < 1 || amount > 1000000) {
-    error.textContent = "Enter a credit amount between 1 and 1,000,000.";
+  if (!Number.isSafeInteger(amount) || amount < 1 || amount > 1000000) {
+    error.textContent = "Enter a whole credit amount between 1 and 1,000,000.";
     return;
   }
-  if (reason.length < 3) {
-    error.textContent = "Enter a clear reason for the audit log.";
+  if (reason.length < 3 || reason.length > 240) {
+    error.textContent = "Enter a clear reason between 3 and 240 characters.";
     return;
   }
+  if (mode === "deduct" && state.currentAdmin?.role !== "super_admin") {
+    error.textContent = "Only a super admin can remove credits.";
+    return;
+  }
+  if (mode === "deduct" && amount > user.credits) {
+    error.textContent = `This user only has ${number(user.credits)} credits.`;
+    return;
+  }
+  if (mode === "deduct" && !$("#creditDeductionConfirmation").checked) {
+    error.textContent = "Confirm this credit removal before continuing.";
+    return;
+  }
+  const adjustment = mode === "deduct" ? -amount : amount;
+  const idempotencyKey = creditOperationKey(user.id, adjustment, reason);
   try {
-    const result = await AdminAPI.addCredit(state.selectedUserId, amount, reason);
-    const user = state.users.find((item) => item.id === state.selectedUserId);
-    user.credits = result.newCredits;
-    showToast(`${number(amount)} credits added to ${user.name}. New balance: ${number(user.credits)}.`);
+    setCreditFormDisabled(true);
+    const result = await AdminAPI.adjustCredit(user.id, adjustment, reason, idempotencyKey);
+    user.credits = safeNumber(result.newCredits);
+    state.creditOperation = null;
+    state.userHistory.delete(user.id);
+    showToast(`${number(amount)} credits ${adjustment < 0 ? "removed from" : "added to"} ${user.name}. New balance: ${number(user.credits)}.`);
     renderAll();
     openUserDrawer(user.id);
   } catch (failure) {
-    error.textContent = failure.message || "Unable to add credit.";
+    error.textContent = failure.message || "Unable to adjust credits.";
+  } finally {
+    setCreditFormDisabled(false);
   }
 }
 
@@ -803,6 +951,7 @@ async function handleStatusChange(event) {
     const result = await AdminAPI.updateStatus(user.id, nextStatus, reason);
     Object.assign(user, result);
     const updated = user;
+    state.userHistory.delete(updated.id);
     showToast(`${updated.name} is now ${updated.status}.`);
     renderAll();
     openUserDrawer(updated.id);
@@ -1080,14 +1229,14 @@ async function init() {
     window.morphlyAccessToken = nextSession?.access_token || null;
   });
   if (session) {
-    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (me.isAdmin) { await startAuthenticatedApp(); return; } } catch (error) { $("#loginError").textContent = error.message; }
+    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (me.isAdmin) { state.currentAdmin = me; await startAuthenticatedApp(); return; } } catch (error) { $("#loginError").textContent = error.message; }
   }
   $("#adminLoginForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("#loginError").textContent = "";
     const { data, error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value, password: $("#adminPassword").value });
     if (error) { $("#loginError").textContent = error.message; return; }
     window.morphlyAccessToken = data.session?.access_token || null;
-    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); await startAuthenticatedApp(); }
+    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); state.currentAdmin = me; await startAuthenticatedApp(); }
     catch (appError) { $("#loginError").textContent = appError.message; }
   });
   $("#adminForgotPassword").addEventListener("click", async () => {

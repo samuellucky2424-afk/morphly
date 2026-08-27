@@ -2,7 +2,7 @@
 import { authenticateRequestUser, getAdminMembership, requireAdminContext } from '../../shared/admin-auth.js';
 import { readAdminAuditLog } from '../../shared/admin-audit.js';
 import {
-  addCreditsToUser,
+  adjustUserCredits,
   deleteUserAccount,
   getAdminOverview,
   listAdminUsers,
@@ -11,6 +11,7 @@ import {
   listAdminReferrals,
   disqualifyAdminReferral,
   listSystemLogs,
+  listUserAccountHistory,
   setUserStatus,
   listCreditPackages,
   updateCreditPackages,
@@ -82,6 +83,14 @@ function getReportOptions(req) {
     source: req.query?.source,
     status: req.query?.status,
   };
+}
+
+function creditAdjustmentErrorStatus(error) {
+  const message = String(error?.message || error || '');
+  if (/admin access required|super admin access required/i.test(message)) return 403;
+  if (/cannot deduct|wallet only has|idempotency key was already used|conflict/i.test(message)) return 409;
+  if (/required|valid|non-zero integer|between -?\d+ and|wallet not found/i.test(message)) return 400;
+  return 500;
 }
 
 async function handleAdminReferrals(req, res, routeConfig) {
@@ -219,20 +228,29 @@ async function handleAdminUsers(req, res, routeConfig) {
         const result = await setUserStatus(supabaseAdmin, { ...req.body, adminUserId: adminContext.user.id });
         return res.json(result);
       }
-      const result = await addCreditsToUser(supabaseAdmin, {
+      const adjustment = Number(req.body?.adjustment ?? req.body?.amount ?? req.body?.creditsToAdd);
+      if (adjustment < 0 && adminContext.admin.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Super admin access is required to remove credits' });
+      }
+      const result = await adjustUserCredits(supabaseAdmin, {
         userId: req.body?.userId,
-        creditsToAdd: req.body?.creditsToAdd ?? req.body?.amount,
+        adjustment,
         reason: req.body?.reason,
         idempotencyKey: req.body?.idempotencyKey,
         adminUserId: adminContext.user.id,
       });
 
-      await logRequestEvent('admin-users.credits_added', {
-        adminUserId: adminContext.user.id,
-        userId: result.userId,
-        creditsAdded: result.creditsAdded,
-        newCredits: result.newCredits,
-      });
+      await logRequestEvent(
+        result.adjustment < 0 ? 'admin-users.credits_deducted' : 'admin-users.credits_added',
+        {
+          adminUserId: adminContext.user.id,
+          userId: result.userId,
+          adjustment: result.adjustment,
+          creditsAdded: result.creditsAdded,
+          creditsDeducted: result.creditsDeducted,
+          newCredits: result.newCredits,
+        },
+      );
 
       return res.json(result);
     }
@@ -255,7 +273,10 @@ async function handleAdminUsers(req, res, routeConfig) {
     await logErrorEvent(`${routeConfig.event}.exception`, error, {
       method: req.method,
     });
-    return res.status(500).json({ error: error instanceof Error ? error.message : 'Internal server error' });
+    const status = req.method === 'POST' && req.body?.action !== 'status'
+      ? creditAdjustmentErrorStatus(error)
+      : 500;
+    return res.status(status).json({ error: error instanceof Error ? error.message : 'Internal server error' });
   }
 }
 
@@ -312,11 +333,21 @@ async function handleAdminAuditLog(req, res, routeConfig) {
       return;
     }
 
+    if (req.query?.userId) {
+      return res.json(await listUserAccountHistory(supabaseAdmin, {
+        userId: req.query.userId,
+        limit: req.query?.limit,
+      }));
+    }
+
     const entries = await readAdminAuditLog({ limit: req.query?.limit || 50 }, supabaseAdmin);
     return res.json({ entries });
   } catch (error) {
     await logErrorEvent(`${routeConfig.event}.exception`, error);
-    return res.status(500).json({ error: 'Failed to load admin audit log' });
+    const status = /valid userId/i.test(String(error?.message || '')) ? 400 : 500;
+    return res.status(status).json({
+      error: status === 400 ? error.message : 'Failed to load admin audit log',
+    });
   }
 }
 

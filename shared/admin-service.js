@@ -38,6 +38,7 @@ function normalizeAmount(value) {
 }
 
 const REPORTING_PAGE_SIZE = 1000;
+const SYSTEM_LOG_SOURCE_LIMIT = 5000;
 const SUCCESSFUL_PAYMENT_STATUSES = new Set(['success', 'successful', 'succeeded', 'completed', 'paid', 'verified']);
 const PURCHASE_TRANSACTION_TYPES = new Set(['credit', 'credit_purchase', 'purchase', 'payment']);
 
@@ -56,26 +57,38 @@ function normalizeReportOptions(options = {}) {
   };
 }
 
-async function fetchAllRows(buildQuery, sourceName) {
+async function fetchAllRows(buildQuery, sourceName, maxRows = Number.POSITIVE_INFINITY) {
   const rows = [];
-  for (let from = 0; ; from += REPORTING_PAGE_SIZE) {
-    const { data, error } = await buildQuery().range(from, from + REPORTING_PAGE_SIZE - 1);
+  const boundedMaxRows = Number.isFinite(maxRows)
+    ? Math.max(0, Math.floor(maxRows))
+    : Number.POSITIVE_INFINITY;
+  for (let from = 0; from < boundedMaxRows; from += REPORTING_PAGE_SIZE) {
+    const to = Number.isFinite(boundedMaxRows)
+      ? Math.min(from + REPORTING_PAGE_SIZE - 1, boundedMaxRows - 1)
+      : from + REPORTING_PAGE_SIZE - 1;
+    const { data, error } = await buildQuery().range(from, to);
     if (error) {
       throw new Error(`Unable to read ${sourceName}: ${error.message || error.code || 'Supabase query failed'}`);
     }
     const page = data || [];
     rows.push(...page);
-    if (page.length < REPORTING_PAGE_SIZE) break;
+    if (page.length < to - from + 1 || rows.length >= boundedMaxRows) break;
   }
   return rows;
 }
 
-async function fetchOptionalRows(buildQuery, sourceName) {
+async function fetchOptionalRows(buildQuery, sourceName, maxRows = Number.POSITIVE_INFINITY) {
   try {
-    return { rows: await fetchAllRows(buildQuery, sourceName), available: true };
+    const fetchLimit = Number.isFinite(maxRows) ? Math.max(0, Math.floor(maxRows)) + 1 : maxRows;
+    const rows = await fetchAllRows(buildQuery, sourceName, fetchLimit);
+    return {
+      rows: Number.isFinite(maxRows) ? rows.slice(0, maxRows) : rows,
+      available: true,
+      truncated: Number.isFinite(maxRows) && rows.length > maxRows,
+    };
   } catch (error) {
     if (/42P01|PGRST205|does not exist|schema cache/i.test(String(error?.message || error))) {
-      return { rows: [], available: false };
+      return { rows: [], available: false, truncated: false };
     }
     throw error;
   }
@@ -106,10 +119,81 @@ function transactionDate(transaction) {
   return transaction?.verified_at || transaction?.created_at || null;
 }
 
-function queryAnalyticsEvents(supabaseAdmin, filters, columns = '*') {
+function normalizeUuid(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)
+    ? normalized
+    : null;
+}
+
+function normalizeHistoryLimit(value) {
+  const parsed = Number.parseInt(String(value ?? 100), 10);
+  return Number.isFinite(parsed) ? Math.max(20, Math.min(200, parsed)) : 100;
+}
+
+function normalizeEventText(value, fallback = '') {
+  const normalized = String(value || fallback).replace(/\s+/g, ' ').trim();
+  return normalized.slice(0, 240);
+}
+
+function humanizeEventName(value) {
+  return String(value || 'system.event')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function systemEventSeverity(eventName, fallback = 'info') {
+  const normalized = String(eventName || '').toLowerCase();
+  const normalizedFallback = String(fallback || 'info').toLowerCase();
+  if (['fatal', 'critical', 'error'].includes(normalizedFallback)) return 'critical';
+  if (['warn', 'warning'].includes(normalizedFallback)) return 'warning';
+  if (/(fatal|critical|crash|exception)/.test(normalized)) return 'critical';
+  if (/(fail|error|invalid|reject|disconnect|suspend|deduct|refund)/.test(normalized)) return 'warning';
+  return fallback;
+}
+
+function addGroupedSystemLog(logsByKey, input) {
+  const event = String(input.event || 'SYSTEM_EVENT').trim().toUpperCase();
+  const userId = input.userId || null;
+  const platform = String(input.platform || 'all').trim().toLowerCase() || 'all';
+  const source = String(input.source || 'all').trim().toLowerCase() || 'all';
+  const severity = systemEventSeverity(event, input.severity || 'info');
+  const message = normalizeEventText(input.message, humanizeEventName(event));
+  const firstSeenAt = input.firstSeenAt || input.lastSeenAt || new Date().toISOString();
+  const lastSeenAt = input.lastSeenAt || input.firstSeenAt || firstSeenAt;
+  const occurrences = Math.max(1, Number(input.occurrences || 1));
+  const recordSource = String(input.recordSource || 'system').trim().toLowerCase() || 'system';
+  const key = input.key || [event, userId || 'system', platform, source, recordSource, severity, message].join('|');
+  const existing = logsByKey.get(key);
+
+  if (existing) {
+    existing.occurrences += occurrences;
+    if (String(firstSeenAt) < String(existing.first_seen_at)) existing.first_seen_at = firstSeenAt;
+    if (String(lastSeenAt) > String(existing.last_seen_at)) existing.last_seen_at = lastSeenAt;
+    return;
+  }
+
+  logsByKey.set(key, {
+    fingerprint: key,
+    event,
+    error_code: event,
+    safe_message: message,
+    user_id: userId,
+    user: input.user || null,
+    platform,
+    source,
+    record_source: recordSource,
+    severity,
+    occurrences,
+    first_seen_at: firstSeenAt,
+    last_seen_at: lastSeenAt,
+  });
+}
+
+function queryAnalyticsEvents(supabaseAdmin, filters, columns = '*', ascending = true) {
   return () => {
     let query = supabaseAdmin.from('analytics_events').select(columns)
-      .gte('created_at', filters.since).order('created_at', { ascending: true });
+      .gte('created_at', filters.since).order('created_at', { ascending });
     if (filters.platform) query = query.eq('platform', filters.platform);
     if (filters.source) query = query.eq('acquisition_source', filters.source);
     return query;
@@ -637,24 +721,29 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
   };
 }
 
-export async function addCreditsToUser(supabaseAdmin, payload) {
+export async function adjustUserCredits(supabaseAdmin, payload) {
   const userId = String(payload.userId || '').trim();
-  const creditsToAdd = normalizeCredits(payload.creditsToAdd);
+  const adjustment = Number(payload.adjustment);
   const adminUserId = String(payload.adminUserId || '').trim();
 
   if (!userId) {
     throw new Error('userId is required');
   }
 
-  if (!(creditsToAdd > 0)) {
-    throw new Error('creditsToAdd must be a positive integer');
+  if (!Number.isSafeInteger(adjustment) || adjustment === 0 || Math.abs(adjustment) > 1_000_000) {
+    throw new Error('adjustment must be a non-zero integer between -1000000 and 1000000');
   }
 
   const reason = String(payload.reason || '').trim();
-  if (reason.length < 3) throw new Error('A reason is required');
+  if (reason.length < 3 || reason.length > 240) {
+    throw new Error('A reason between 3 and 240 characters is required');
+  }
   const idempotencyKey = String(payload.idempotencyKey || `admin:${adminUserId}:${userId}:${Date.now()}`);
+  if (idempotencyKey.trim().length < 8 || idempotencyKey.trim().length > 200) {
+    throw new Error('A valid idempotency key is required');
+  }
   const { data, error } = await supabaseAdmin.rpc('admin_adjust_credits', {
-    p_admin: adminUserId, p_user: userId, p_amount: creditsToAdd, p_reason: reason, p_key: idempotencyKey,
+    p_admin: adminUserId, p_user: userId, p_amount: adjustment, p_reason: reason, p_key: idempotencyKey.trim(),
   });
   if (error) throw error;
   return data;
@@ -719,80 +808,291 @@ export async function listAdminTransactions(supabaseAdmin, options = {}) {
 
 export async function listSystemLogs(supabaseAdmin, options = {}) {
   const filters = normalizeReportOptions(options);
-  const [errorResult, sessions, transactions] = await Promise.all([
+  const [errorResult, analyticsResult, auditResult, sessionRows, transactionRows, authUsers] = await Promise.all([
     fetchOptionalRows(() => {
       let query = supabaseAdmin.from('error_logs').select('*')
         .gte('last_seen_at', filters.since).order('last_seen_at', { ascending: false });
       if (filters.platform) query = query.eq('platform', filters.platform);
       return query;
-    }, 'error_logs'),
+    }, 'error_logs', SYSTEM_LOG_SOURCE_LIMIT),
+    fetchOptionalRows(queryAnalyticsEvents(
+      supabaseAdmin,
+      filters,
+      'id, event_name, user_id, platform, acquisition_source, created_at',
+      false,
+    ), 'analytics_events', SYSTEM_LOG_SOURCE_LIMIT),
+    fetchOptionalRows(
+      () => supabaseAdmin.from('admin_audit_logs')
+        .select('id, admin_user_id, action, target_type, target_id, reason, created_at')
+        .gte('created_at', filters.since).order('created_at', { ascending: false }),
+      'admin_audit_logs',
+      SYSTEM_LOG_SOURCE_LIMIT,
+    ),
     fetchAllRows(
       () => supabaseAdmin.from('sessions').select('*')
         .gte('created_at', filters.since).order('created_at', { ascending: false }),
       'sessions',
+      SYSTEM_LOG_SOURCE_LIMIT + 1,
     ),
     fetchAllRows(
       () => supabaseAdmin.from('transactions').select('*')
         .gte('created_at', filters.since).order('created_at', { ascending: false }),
       'transactions',
+      SYSTEM_LOG_SOURCE_LIMIT + 1,
     ),
+    listAllAuthUsers(supabaseAdmin),
+  ]);
+  const sessionsTruncated = sessionRows.length > SYSTEM_LOG_SOURCE_LIMIT;
+  const transactionsTruncated = transactionRows.length > SYSTEM_LOG_SOURCE_LIMIT;
+  const sessions = sessionRows.slice(0, SYSTEM_LOG_SOURCE_LIMIT);
+  const transactions = transactionRows.slice(0, SYSTEM_LOG_SOURCE_LIMIT);
+
+  const emailById = new Map(authUsers.map((user) => [user.id, user.email || user.id]));
+  const latestEventByUserId = new Map();
+  for (const event of analyticsResult.rows) {
+    if (event.user_id && !latestEventByUserId.has(event.user_id)) {
+      latestEventByUserId.set(event.user_id, event);
+    }
+  }
+  const cohortUserIds = (filters.platform || filters.source)
+    ? new Set(analyticsResult.rows.map((event) => event.user_id).filter(Boolean))
+    : null;
+  const matchesCohort = (userId) => !cohortUserIds || (userId && cohortUserIds.has(userId));
+  const matchesErrorFilters = (error) => {
+    const userEvent = latestEventByUserId.get(error.user_id);
+    if (filters.source && userEvent?.acquisition_source !== filters.source) return false;
+    if (filters.platform) {
+      const directPlatform = String(error.platform || '').trim().toLowerCase();
+      if (directPlatform) return directPlatform === filters.platform;
+      return userEvent?.platform === filters.platform;
+    }
+    return true;
+  };
+  const logsByKey = new Map();
+
+  for (const error of errorResult.rows) {
+    if (!matchesErrorFilters(error)) continue;
+    const userEvent = latestEventByUserId.get(error.user_id);
+    addGroupedSystemLog(logsByKey, {
+      key: `error_logs:${error.fingerprint || error.id}`,
+      event: error.error_code || 'APPLICATION_ERROR',
+      message: error.safe_message || 'Application error recorded',
+      userId: error.user_id,
+      user: emailById.get(error.user_id) || error.user_id || null,
+      platform: error.platform || userEvent?.platform || filters.platform || 'all',
+      source: userEvent?.acquisition_source || filters.source || 'unknown',
+      recordSource: 'error_logs',
+      severity: error.severity || 'error',
+      occurrences: error.occurrences,
+      firstSeenAt: error.first_seen_at,
+      lastSeenAt: error.last_seen_at,
+    });
+  }
+
+  for (const event of analyticsResult.rows) {
+    addGroupedSystemLog(logsByKey, {
+      event: event.event_name || 'ANALYTICS_EVENT',
+      message: `${humanizeEventName(event.event_name)} recorded`,
+      userId: event.user_id,
+      user: emailById.get(event.user_id) || event.user_id || null,
+      platform: event.platform || 'unknown',
+      source: event.acquisition_source || 'unknown',
+      recordSource: 'analytics_events',
+      severity: systemEventSeverity(event.event_name),
+      firstSeenAt: event.created_at,
+      lastSeenAt: event.created_at,
+    });
+  }
+
+  for (const session of sessions) {
+    if (!matchesCohort(session.user_id)) continue;
+    const status = String(session.status || 'activity').trim().toLowerCase();
+    const userEvent = latestEventByUserId.get(session.user_id);
+    const timestamp = session.created_at || session.start_time || session.end_time;
+    addGroupedSystemLog(logsByKey, {
+      event: `SESSION_${status}`,
+      message: `Morphly session ${status}`,
+      userId: session.user_id,
+      user: emailById.get(session.user_id) || session.user_id || null,
+      platform: userEvent?.platform || filters.platform || 'unknown',
+      source: userEvent?.acquisition_source || filters.source || 'unknown',
+      recordSource: 'sessions',
+      severity: systemEventSeverity(status),
+      firstSeenAt: timestamp,
+      lastSeenAt: session.end_time || timestamp,
+    });
+  }
+
+  for (const transaction of transactions.filter(isPurchaseTransaction)) {
+    if (!matchesCohort(transaction.user_id)) continue;
+    const status = String(transaction.status || (isSuccessfulPayment(transaction) ? 'success' : 'pending'))
+      .trim().toLowerCase();
+    const userEvent = latestEventByUserId.get(transaction.user_id);
+    const timestamp = transactionDate(transaction) || transaction.created_at;
+    addGroupedSystemLog(logsByKey, {
+      event: `PAYMENT_${status}`,
+      message: `${transaction.payment_gateway || 'Payment'} transaction ${status}`,
+      userId: transaction.user_id,
+      user: emailById.get(transaction.user_id) || transaction.user_id || null,
+      platform: userEvent?.platform || filters.platform || 'unknown',
+      source: userEvent?.acquisition_source || filters.source || 'unknown',
+      recordSource: 'transactions',
+      severity: isSuccessfulPayment(transaction) ? 'info' : systemEventSeverity(status, 'warning'),
+      firstSeenAt: transaction.created_at || timestamp,
+      lastSeenAt: timestamp,
+    });
+  }
+
+  for (const audit of auditResult.rows) {
+    const targetUserId = audit.target_type === 'user' ? normalizeUuid(audit.target_id) : null;
+    if (!matchesCohort(targetUserId)) continue;
+    const userEvent = latestEventByUserId.get(targetUserId);
+    addGroupedSystemLog(logsByKey, {
+      event: audit.action || 'ADMIN_ACTION',
+      message: normalizeEventText(audit.reason, humanizeEventName(audit.action)),
+      userId: targetUserId,
+      user: emailById.get(targetUserId) || targetUserId || null,
+      platform: userEvent?.platform || 'web',
+      source: userEvent?.acquisition_source || filters.source || 'unknown',
+      recordSource: 'admin_audit_logs',
+      severity: systemEventSeverity(audit.action),
+      firstSeenAt: audit.created_at,
+      lastSeenAt: audit.created_at,
+    });
+  }
+
+  if (
+    errorResult.truncated
+    || analyticsResult.truncated
+    || auditResult.truncated
+    || sessionsTruncated
+    || transactionsTruncated
+  ) {
+    addGroupedSystemLog(logsByKey, {
+      key: `system:results-truncated:${filters.since}`,
+      event: 'LOG_RESULTS_TRUNCATED',
+      message: `At least one event source exceeded ${SYSTEM_LOG_SOURCE_LIMIT.toLocaleString('en-NG')} records; showing the newest records`,
+      platform: filters.platform || 'all',
+      source: filters.source || 'all',
+      recordSource: 'reporting_guard',
+      severity: 'warning',
+      firstSeenAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString(),
+    });
+  }
+
+  return [...logsByKey.values()].sort((left, right) =>
+    String(right.last_seen_at || '').localeCompare(String(left.last_seen_at || '')));
+}
+
+export async function listUserAccountHistory(supabaseAdmin, options = {}) {
+  const userId = normalizeUuid(options.userId);
+  if (!userId) throw new Error('A valid userId is required');
+  const limit = normalizeHistoryLimit(options.limit);
+  const sourceLimit = Math.min(1000, Math.max(200, limit * 4));
+
+  const [auditResult, ledgerResult, transactionResult, authUsers] = await Promise.all([
+    fetchOptionalRows(
+      () => supabaseAdmin.from('admin_audit_logs')
+        .select('id, admin_user_id, action, target_type, target_id, reason, before_data, after_data, created_at')
+        .eq('target_type', 'user').eq('target_id', userId)
+        .order('created_at', { ascending: false }),
+      'admin_audit_logs',
+      sourceLimit,
+    ),
+    fetchOptionalRows(
+      () => supabaseAdmin.from('wallet_ledger')
+        .select('id, user_id, transaction_id, delta, balance_after, entry_type, reason, actor_user_id, created_at')
+        .eq('user_id', userId).order('created_at', { ascending: false }),
+      'wallet_ledger',
+      sourceLimit,
+    ),
+    fetchOptionalRows(
+      () => supabaseAdmin.from('transactions').select('*')
+        .eq('user_id', userId).order('created_at', { ascending: false }),
+      'transactions',
+      sourceLimit,
+    ),
+    listAllAuthUsers(supabaseAdmin),
   ]);
 
-  if (errorResult.rows.length > 0) return errorResult.rows;
+  const emailById = new Map(authUsers.map((user) => [user.id, user.email || user.id]));
+  const entries = [];
+  const purchaseTransactionIds = new Set(
+    transactionResult.rows.filter(isPurchaseTransaction).map((transaction) => transaction.id).filter(Boolean),
+  );
 
-  const latestSession = sessions[0]?.created_at || sessions[0]?.start_time || new Date().toISOString();
-  const latestTransaction = transactions[0] ? transactionDate(transactions[0]) : new Date().toISOString();
-  const failures = sessions.filter((session) =>
-    ['failed', 'error', 'interrupted'].includes(String(session.status || '').toLowerCase()));
-  const successfulPayments = transactions.filter((transaction) =>
-    isPurchaseTransaction(transaction) && isSuccessfulPayment(transaction));
-  const operationalLogs = [];
-
-  if (sessions.length > 0) {
-    operationalLogs.push({
-      fingerprint: 'derived-session-activity',
-      error_code: 'SESSION_ACTIVITY',
-      safe_message: 'Real Morphly sessions recorded in the selected period',
-      user_id: null,
-      platform: filters.platform || 'all',
-      severity: 'info',
-      occurrences: sessions.length,
-      first_seen_at: sessions.at(-1)?.created_at || sessions.at(-1)?.start_time || latestSession,
-      last_seen_at: latestSession,
-      metadata: { derivedFrom: 'sessions', active: sessions.filter((session) => session.status === 'active').length },
-    });
-  }
-  if (successfulPayments.length > 0) {
-    operationalLogs.push({
-      fingerprint: 'derived-payment-activity',
-      error_code: 'PAYMENT_ACTIVITY',
-      safe_message: 'Verified customer payments recorded in the selected period',
-      user_id: null,
-      platform: 'all',
-      severity: 'info',
-      occurrences: successfulPayments.length,
-      first_seen_at: transactionDate(successfulPayments.at(-1)) || latestTransaction,
-      last_seen_at: transactionDate(successfulPayments[0]) || latestTransaction,
-      metadata: { derivedFrom: 'transactions' },
-    });
-  }
-  if (failures.length > 0) {
-    operationalLogs.push({
-      fingerprint: 'derived-session-failures',
-      error_code: 'SESSION_FAILURE',
-      safe_message: 'Sessions ended with a failure or interruption status',
-      user_id: null,
-      platform: filters.platform || 'all',
-      severity: 'warning',
-      occurrences: failures.length,
-      first_seen_at: failures.at(-1)?.created_at || latestSession,
-      last_seen_at: failures[0]?.created_at || latestSession,
-      metadata: { derivedFrom: 'sessions' },
+  for (const audit of auditResult.rows) {
+    if (ledgerResult.available && ['credits.added', 'credits.deducted'].includes(audit.action)) continue;
+    entries.push({
+      id: `audit:${audit.id}`,
+      userId,
+      action: humanizeEventName(audit.action),
+      detail: normalizeEventText(audit.reason, 'Administrative account change'),
+      time: audit.created_at,
+      actor: emailById.get(audit.admin_user_id) || 'Administrator',
+      source: 'admin_audit_logs',
+      severity: systemEventSeverity(audit.action),
     });
   }
 
-  return operationalLogs.sort((left, right) =>
-    String(right.last_seen_at || '').localeCompare(String(left.last_seen_at || '')));
+  for (const transaction of transactionResult.rows) {
+    if (!isPurchaseTransaction(transaction)) continue;
+    const successful = isSuccessfulPayment(transaction);
+    const status = String(transaction.status || (successful ? 'success' : 'pending')).toLowerCase();
+    const credits = Math.max(0, normalizeCredits(
+      transaction.package_credits_snapshot ?? transaction.credits,
+    ));
+    const amount = transactionAmount(transaction);
+    const reference = normalizeEventText(transaction.reference || transaction.id, 'No reference');
+    const packageName = normalizeEventText(
+      transaction.package_name_snapshot || transaction.description,
+      'Credit purchase',
+    );
+    entries.push({
+      id: `transaction:${transaction.id}`,
+      userId,
+      action: successful ? 'Payment verified' : `Payment ${status}`,
+      detail: `${packageName} · NGN ${amount.toLocaleString('en-NG')} · ${credits.toLocaleString('en-NG')} credits · ${reference}`,
+      time: transactionDate(transaction),
+      actor: normalizeEventText(transaction.payment_gateway, 'Payment system'),
+      source: 'transactions',
+      severity: successful ? 'info' : systemEventSeverity(status, 'warning'),
+      delta: successful ? credits : 0,
+    });
+  }
+
+  for (const ledger of ledgerResult.rows) {
+    if (ledger.transaction_id && purchaseTransactionIds.has(ledger.transaction_id)) continue;
+    const delta = Number(ledger.delta || 0);
+    const isDeduction = delta < 0;
+    const isAdminAdjustment = ledger.entry_type === 'admin_adjustment';
+    entries.push({
+      id: `ledger:${ledger.id}`,
+      userId,
+      action: isAdminAdjustment
+        ? (isDeduction ? 'Credits removed' : 'Credits added')
+        : humanizeEventName(ledger.entry_type || 'wallet change'),
+      detail: `${normalizeEventText(ledger.reason, 'Wallet balance changed')} · ${delta >= 0 ? '+' : ''}${delta.toLocaleString('en-NG')} credits · balance ${normalizeCredits(ledger.balance_after).toLocaleString('en-NG')}`,
+      time: ledger.created_at,
+      actor: emailById.get(ledger.actor_user_id) || (isAdminAdjustment ? 'Administrator' : 'Morphly'),
+      source: 'wallet_ledger',
+      severity: isDeduction ? 'warning' : 'info',
+      delta,
+      balanceAfter: normalizeCredits(ledger.balance_after),
+    });
+  }
+
+  entries.sort((left, right) => String(right.time || '').localeCompare(String(left.time || '')));
+  return {
+    entries: entries.slice(0, limit),
+    dataHealth: {
+      adminAuditAvailable: auditResult.available,
+      walletLedgerAvailable: ledgerResult.available,
+      transactionsAvailable: transactionResult.available,
+      truncated: auditResult.truncated || ledgerResult.truncated || transactionResult.truncated,
+    },
+  };
 }
 
 export async function listCreditPackages(supabaseAdmin, options = {}) {

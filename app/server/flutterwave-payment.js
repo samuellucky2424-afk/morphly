@@ -3,6 +3,18 @@ import { supabaseAdmin } from './supabase-admin.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
+const FLUTTERWAVE_API_BASE_URL = 'https://api.flutterwave.com/v3';
+
+export const FLUTTERWAVE_MAIN_SHARE = 0.60;
+export const FLUTTERWAVE_SAVINGS_SHARE = 0.40;
+export const FLUTTERWAVE_CHECKOUT_DURATION_MINUTES = 30;
+
+function createFlutterwaveConfigurationError(message) {
+  const error = new Error(message);
+  error.code = 'FLUTTERWAVE_CONFIGURATION_ERROR';
+  return error;
+}
+
 export function isFlutterwaveTestKey(value) {
   return /(?:^|_)TEST(?:-|_)/i.test(String(value || '').trim());
 }
@@ -32,6 +44,163 @@ export function validateFlutterwaveEnvironment(secretKey) {
   return { ok: true };
 }
 
+export function buildFlutterwaveStandardPaymentPayload({
+  userId,
+  email,
+  customerName,
+  amountNGN,
+  credits,
+  packageId,
+  priceUSD,
+  reference,
+  redirectUrl,
+  linkExpiration,
+  savingsSubaccountId,
+}) {
+  const normalizedSubaccountId = String(savingsSubaccountId || '').trim().replace(/^["']|["']$/g, '');
+  if (!normalizedSubaccountId) {
+    throw createFlutterwaveConfigurationError(
+      'FLUTTERWAVE_SAVINGS_SUBACCOUNT_ID is not configured; refusing to create an unsplit Flutterwave payment',
+    );
+  }
+
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const normalizedReference = String(reference || '').trim();
+  const normalizedPackageId = String(packageId || '').trim();
+  const normalizedUserId = String(userId || '').trim();
+  const normalizedAmount = Number(amountNGN);
+  const normalizedCredits = Number(credits);
+
+  if (!normalizedEmail || !normalizedReference || !normalizedPackageId || !normalizedUserId) {
+    throw new Error('Missing required Flutterwave payment details');
+  }
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error('A positive Naira amount is required for a Flutterwave payment');
+  }
+  if (!Number.isFinite(normalizedCredits) || normalizedCredits <= 0) {
+    throw new Error('A positive credit package is required for a Flutterwave payment');
+  }
+
+  let parsedRedirectUrl;
+  try {
+    parsedRedirectUrl = new URL(String(redirectUrl || ''));
+  } catch {
+    throw new Error('A valid Flutterwave redirect URL is required');
+  }
+  if (!['http:', 'https:'].includes(parsedRedirectUrl.protocol)) {
+    throw new Error('Flutterwave redirect URL must use HTTP or HTTPS');
+  }
+
+  const parsedLinkExpiration = new Date(String(linkExpiration || ''));
+  if (!Number.isFinite(parsedLinkExpiration.getTime())) {
+    throw new Error('A valid Flutterwave checkout expiration is required');
+  }
+
+  const metadata = {
+    userId: normalizedUserId,
+    credits: normalizedCredits,
+    packageId: normalizedPackageId,
+  };
+  const normalizedPriceUSD = Number(priceUSD);
+  if (Number.isFinite(normalizedPriceUSD) && normalizedPriceUSD > 0) {
+    metadata.priceUSD = normalizedPriceUSD;
+  }
+
+  return {
+    tx_ref: normalizedReference,
+    amount: normalizedAmount,
+    currency: 'NGN',
+    redirect_url: parsedRedirectUrl.toString(),
+    link_expiration: parsedLinkExpiration.toISOString(),
+    payment_options: 'card,banktransfer,ussd',
+    customer: {
+      email: normalizedEmail,
+      name: String(customerName || normalizedEmail.split('@')[0] || 'Morphly User').trim(),
+    },
+    meta: metadata,
+    customizations: {
+      title: 'Morphly Credits',
+      description: `Purchase ${normalizedCredits} credits`,
+    },
+    subaccounts: [
+      {
+        id: normalizedSubaccountId,
+        // Flutterwave defines this percentage as the main merchant's share.
+        // The savings subaccount receives the remaining 40% before deductions.
+        transaction_charge_type: 'percentage',
+        transaction_charge: FLUTTERWAVE_MAIN_SHARE,
+      },
+    ],
+  };
+}
+
+export async function initiateFlutterwavePayment({
+  userId,
+  email,
+  customerName,
+  amountNGN,
+  credits,
+  packageId,
+  priceUSD,
+  reference,
+  redirectUrl,
+  linkExpiration,
+  secretKey,
+  savingsSubaccountId,
+}) {
+  const effectiveSecretKey = String(secretKey || process.env.FLUTTERWAVE_SECRET_KEY || '')
+    .trim()
+    .replace(/^["']|["']$/g, '');
+  if (!effectiveSecretKey) {
+    throw createFlutterwaveConfigurationError('FLUTTERWAVE_SECRET_KEY is not configured in server environment');
+  }
+
+  const environmentValidation = validateFlutterwaveEnvironment(effectiveSecretKey);
+  if (!environmentValidation.ok) {
+    throw createFlutterwaveConfigurationError(environmentValidation.message);
+  }
+
+  const payload = buildFlutterwaveStandardPaymentPayload({
+    userId,
+    email,
+    customerName,
+    amountNGN,
+    credits,
+    packageId,
+    priceUSD,
+    reference,
+    redirectUrl,
+    linkExpiration: linkExpiration || new Date(
+      Date.now() + FLUTTERWAVE_CHECKOUT_DURATION_MINUTES * 60 * 1000,
+    ).toISOString(),
+    savingsSubaccountId: savingsSubaccountId || process.env.FLUTTERWAVE_SAVINGS_SUBACCOUNT_ID,
+  });
+
+  const response = await fetch(`${FLUTTERWAVE_API_BASE_URL}/payments`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${effectiveSecretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  const checkoutUrl = data?.data?.link;
+
+  if (!response.ok || data?.status !== 'success' || !checkoutUrl) {
+    const error = new Error('Flutterwave rejected the payment creation request');
+    error.code = 'FLUTTERWAVE_PAYMENT_CREATION_FAILED';
+    error.providerStatus = response.status;
+    throw error;
+  }
+
+  return {
+    status: 'success',
+    reference: String(reference),
+    checkoutUrl: String(checkoutUrl),
+  };
+}
+
 export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
   const environmentValidation = validateFlutterwaveEnvironment(secretKey);
   if (!environmentValidation.ok) {
@@ -44,7 +213,7 @@ export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
     };
   }
 
-  const response = await fetch(`https://api.flutterwave.com/v3/transactions/${encodeURIComponent(String(transactionId))}/verify`, {
+  const response = await fetch(`${FLUTTERWAVE_API_BASE_URL}/transactions/${encodeURIComponent(String(transactionId))}/verify`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${secretKey}`,
@@ -62,6 +231,40 @@ export async function verifyFlutterwaveTransaction(transactionId, secretKey) {
     data,
     transaction,
     isVerified: response.ok && data?.status === 'success' && (status === 'successful' || status === 'succeeded')
+  };
+}
+
+export async function verifyFlutterwaveTransactionByReference(reference, secretKey) {
+  const environmentValidation = validateFlutterwaveEnvironment(secretKey);
+  if (!environmentValidation.ok) {
+    return {
+      response: null,
+      data: { status: 'error', message: environmentValidation.message },
+      transaction: null,
+      isVerified: false,
+      environmentRejected: true,
+    };
+  }
+
+  const response = await fetch(
+    `${FLUTTERWAVE_API_BASE_URL}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(String(reference))}`,
+    {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        'Content-Type': 'application/json',
+      },
+    },
+  );
+  const data = await response.json();
+  const transaction = data?.data;
+  const status = String(transaction?.status || '').toLowerCase();
+
+  return {
+    response,
+    data,
+    transaction,
+    isVerified: response.ok && data?.status === 'success' && (status === 'successful' || status === 'succeeded'),
   };
 }
 

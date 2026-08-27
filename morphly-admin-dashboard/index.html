@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/private/morphly/login/styles.css">
+  <link rel="stylesheet" href="/private/morphly/login/styles.css?v=20260827-1">
   <script src="/private/morphly/login/supabase.js"></script>
 </head>
 <body>
@@ -229,7 +229,7 @@
 
         <section class="view" id="logsView" data-view-panel="logs">
           <div class="metric-grid compact" id="logMetrics"></div>
-          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Reliability</p><h2>System event logs</h2></div><select id="logSeverityFilter" aria-label="Filter log severity"><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Information</option></select></div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Platform</th><th>User</th><th>Count</th><th>Severity</th><th>Last seen</th></tr></thead><tbody id="logTableBody"></tbody></table></div></article>
+          <article class="panel"><div class="panel-head"><div><p class="eyebrow">Reliability</p><h2>System event logs</h2></div><select id="logSeverityFilter" aria-label="Filter log severity"><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Information</option></select></div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Details</th><th>Platform</th><th>User</th><th>Count</th><th>Severity</th><th>Last seen</th></tr></thead><tbody id="logTableBody"></tbody></table></div></article>
         </section>
 
         <section class="view" id="developerView" data-view-panel="developer">
@@ -258,11 +258,18 @@
     </div>
     <div class="detail-grid" data-user-details></div>
     <section class="drawer-section">
-      <div class="section-title"><div><p class="eyebrow">Wallet</p><h3>Add credits</h3></div><strong class="credit-balance" data-user-balance></strong></div>
+      <div class="section-title"><div><p class="eyebrow">Wallet</p><h3>Adjust credits</h3></div><strong class="credit-balance" data-user-balance></strong></div>
       <form id="creditForm">
-        <div class="form-row"><label><span>Credit amount</span><input id="creditAmount" name="amount" type="number" min="1" max="1000000" step="1" placeholder="500" required></label><label><span>Reason</span><input id="creditReason" name="reason" type="text" maxlength="120" placeholder="Payment correction" required></label></div>
+        <div class="credit-mode" aria-label="Credit adjustment type">
+          <button class="credit-mode-button active" type="button" data-credit-mode="add" aria-pressed="true">Add credits</button>
+          <button class="credit-mode-button deduct" type="button" data-credit-mode="deduct" aria-pressed="false">Remove credits</button>
+        </div>
+        <input id="creditAdjustmentMode" type="hidden" value="add">
+        <div class="form-row"><label><span>Credit amount</span><input id="creditAmount" name="amount" type="number" min="1" max="1000000" step="1" placeholder="500" required></label><label><span>Reason</span><input id="creditReason" name="reason" type="text" minlength="3" maxlength="240" placeholder="Payment correction" required></label></div>
+        <p class="credit-projection" id="creditProjection">Balance after adjustment: <strong data-projected-balance></strong></p>
+        <label class="confirmation deduction-confirmation" id="creditDeductionConfirmationRow" hidden><input id="creditDeductionConfirmation" type="checkbox"><span>I confirm this credit removal. It cannot reduce the wallet below zero.</span></label>
         <p class="form-error" id="creditFormError"></p>
-        <button class="primary-button full-width" type="submit">Add credits</button>
+        <button class="primary-button full-width" id="creditSubmitButton" type="submit">Add credits</button>
       </form>
     </section>
     <section class="drawer-section danger-section">
@@ -277,6 +284,6 @@
     <section class="drawer-section"><div class="section-title"><div><p class="eyebrow">Account history</p><h3>Audit trail</h3></div></div><div class="timeline" data-user-audit></div></section>
   </template>
 
-  <script src="/private/morphly/login/app.js?v=20260718-3"></script>
+  <script src="/private/morphly/login/app.js?v=20260827-1"></script>
 </body>
 </html>

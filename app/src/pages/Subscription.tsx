@@ -11,12 +11,6 @@ import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
 import { trackPaymentStarted, trackPaymentSucceeded, trackPaymentFailed } from '@/lib/telemetry-client';
 
-declare global {
-  interface Window {
-    FlutterwaveCheckout?: (options: any) => void;
-  }
-}
-
 interface CreditPlan {
   id?: string;
   name?: string;
@@ -28,34 +22,77 @@ interface CreditPlan {
 
 type PaymentMethod = 'flutterwave' | 'crypto';
 
-const FLUTTERWAVE_SCRIPT_ID = 'flutterwave-checkout-js';
+const FLUTTERWAVE_PENDING_PAYMENT_KEY = 'morphly.flutterwave.pending-payment';
 
-function isValidFlutterwavePublicKey(key: string): boolean {
-  return /^FLWPUBK(?:_TEST)?-[A-Za-z0-9_-]+-X$/.test(key);
+interface PendingFlutterwavePayment {
+  reference: string;
+  packageId?: string;
+  credits?: number;
 }
 
-function loadFlutterwaveScript(): Promise<void> {
-  if (window.FlutterwaveCheckout) {
-    return Promise.resolve();
-  }
+interface FlutterwaveReturn {
+  status: string;
+  reference: string;
+  transactionId: string;
+  isReturn: boolean;
+}
 
-  const existingScript = document.getElementById(FLUTTERWAVE_SCRIPT_ID) as HTMLScriptElement | null;
-  if (existingScript) {
-    return new Promise((resolve, reject) => {
-      existingScript.addEventListener('load', () => resolve(), { once: true });
-      existingScript.addEventListener('error', () => reject(new Error('Failed to load Flutterwave SDK')), { once: true });
-    });
-  }
+const EMPTY_FLUTTERWAVE_RETURN: FlutterwaveReturn = {
+  status: '',
+  reference: '',
+  transactionId: '',
+  isReturn: false,
+};
 
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.id = FLUTTERWAVE_SCRIPT_ID;
-    script.src = 'https://checkout.flutterwave.com/v3.js';
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Failed to load Flutterwave SDK'));
-    document.body.appendChild(script);
-  });
+function readFlutterwaveReturn(): FlutterwaveReturn {
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashQuery = window.location.hash.includes('?')
+    ? window.location.hash.slice(window.location.hash.indexOf('?') + 1)
+    : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  const getParameter = (name: string) => hashParams.get(name) || searchParams.get(name);
+
+  const status = String(getParameter('status') || '').trim().toLowerCase();
+  const reference = String(getParameter('tx_ref') || '').trim();
+  const transactionId = String(getParameter('transaction_id') || '').trim();
+
+  return {
+    status,
+    reference,
+    transactionId,
+    isReturn: Boolean(reference || transactionId),
+  };
+}
+
+function readPendingFlutterwavePayment(): PendingFlutterwavePayment | null {
+  try {
+    const value = sessionStorage.getItem(FLUTTERWAVE_PENDING_PAYMENT_KEY);
+    if (!value) return null;
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed.reference === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function storePendingFlutterwavePayment(payment: PendingFlutterwavePayment) {
+  try {
+    sessionStorage.setItem(FLUTTERWAVE_PENDING_PAYMENT_KEY, JSON.stringify(payment));
+  } catch {
+    // The verified Flutterwave metadata remains authoritative if storage is unavailable.
+  }
+}
+
+function clearPendingFlutterwavePayment() {
+  try {
+    sessionStorage.removeItem(FLUTTERWAVE_PENDING_PAYMENT_KEY);
+  } catch {
+    // Ignore unavailable browser storage.
+  }
+}
+
+function clearFlutterwaveReturnUrl() {
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}#/subscription`);
 }
 
 const DEFAULT_CREDIT_PLANS: CreditPlan[] = [
@@ -90,8 +127,6 @@ function Subscription() {
   const [isLoadingPlans, setIsLoadingPlans] = useState(true);
   const [isFallbackRate, setIsFallbackRate] = useState(false);
   const [rateUpdatedAt, setRateUpdatedAt] = useState<string | null>(null);
-  const [isFlutterwaveReady, setIsFlutterwaveReady] = useState(false);
-  const [runtimeFlutterwavePublicKey, setRuntimeFlutterwavePublicKey] = useState('');
   const [isCryptoEnabled, setIsCryptoEnabled] = useState(true);
   const [activeCryptoSession, setActiveCryptoSession] = useState<{
     reference: string;
@@ -109,19 +144,17 @@ function Subscription() {
   } | null>(null);
   const [isCheckingCrypto, setIsCheckingCrypto] = useState(false);
   const [cryptoPaymentQrCode, setCryptoPaymentQrCode] = useState<string | null>(null);
+  const [flutterwaveReturn, setFlutterwaveReturn] = useState<FlutterwaveReturn>(readFlutterwaveReturn);
 
-  const flutterwavePublicKey = runtimeFlutterwavePublicKey;
-  const hasValidFlutterwavePublicKey = isValidFlutterwavePublicKey(flutterwavePublicKey);
-  const paymentCompletedRef = useRef(false);
+  const flutterwaveReturnHandledRef = useRef(false);
+  const flutterwaveCheckoutWindowRef = useRef<Window | null>(null);
+  const flutterwaveCheckoutCloseTimerRef = useRef<number | null>(null);
+  const flutterwaveReturnReceivedRef = useRef(false);
 
   useEffect(() => {
     let isCancelled = false;
     const applyRuntimeConfig = (config: any) => {
       if (isCancelled) return;
-      const normalizedKey = typeof config?.flutterwavePublicKey === 'string' ? config.flutterwavePublicKey.trim() : '';
-      if (normalizedKey) {
-        setRuntimeFlutterwavePublicKey(normalizedKey);
-      }
       if (typeof config?.isCryptoPaymentEnabled === 'boolean') {
         setIsCryptoEnabled(config.isCryptoPaymentEnabled);
       }
@@ -145,15 +178,153 @@ function Subscription() {
   }, []);
 
   useEffect(() => {
-    void loadFlutterwaveScript()
-      .then(() => {
-        setIsFlutterwaveReady(true);
-      })
-      .catch((error) => {
-        console.error(error);
-        setIsFlutterwaveReady(false);
+    const handleFlutterwaveMessage = (event: MessageEvent) => {
+      const checkoutWindow = flutterwaveCheckoutWindowRef.current;
+      const data = event.data;
+      if (!checkoutWindow || event.source !== checkoutWindow) return;
+      if (!data || data.type !== 'morphly:flutterwave-return') return;
+
+      const pendingPayment = readPendingFlutterwavePayment();
+      const reference = String(data.reference || data.tx_ref || '').trim();
+      if (!pendingPayment?.reference || reference !== pendingPayment.reference) return;
+
+      flutterwaveReturnReceivedRef.current = true;
+      if (flutterwaveCheckoutCloseTimerRef.current != null) {
+        window.clearInterval(flutterwaveCheckoutCloseTimerRef.current);
+        flutterwaveCheckoutCloseTimerRef.current = null;
+      }
+      if (!checkoutWindow.closed) checkoutWindow.close();
+      flutterwaveCheckoutWindowRef.current = null;
+      setFlutterwaveReturn({
+        status: String(data.status || '').trim().toLowerCase(),
+        reference,
+        transactionId: String(data.transactionId || data.transaction_id || '').trim(),
+        isReturn: true,
       });
+    };
+
+    window.addEventListener('message', handleFlutterwaveMessage);
+    return () => {
+      window.removeEventListener('message', handleFlutterwaveMessage);
+      if (flutterwaveCheckoutCloseTimerRef.current != null) {
+        window.clearInterval(flutterwaveCheckoutCloseTimerRef.current);
+        flutterwaveCheckoutCloseTimerRef.current = null;
+      }
+      const checkoutWindow = flutterwaveCheckoutWindowRef.current;
+      if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
+      flutterwaveCheckoutWindowRef.current = null;
+    };
   }, []);
+
+  useEffect(() => {
+    const paymentReturn = flutterwaveReturn;
+    if (!paymentReturn.isReturn || flutterwaveReturnHandledRef.current) return;
+
+    const pendingPayment = readPendingFlutterwavePayment();
+    if (
+      pendingPayment?.reference
+      && paymentReturn.reference
+      && pendingPayment.reference !== paymentReturn.reference
+    ) {
+      flutterwaveReturnHandledRef.current = true;
+      clearFlutterwaveReturnUrl();
+      toast.error('Payment reference mismatch. Your pending checkout was not changed.');
+      return;
+    }
+
+    const isCancelled = paymentReturn.status === 'cancelled' || paymentReturn.status === 'canceled';
+    const isFailed = ['failed', 'error'].includes(paymentReturn.status);
+
+    if (isCancelled || isFailed) {
+      flutterwaveReturnHandledRef.current = true;
+      if (pendingPayment?.packageId) {
+        trackPaymentFailed({
+          packageId: pendingPayment.packageId,
+          reason: isCancelled ? 'user_cancelled' : 'payment_failed',
+        });
+      }
+      clearPendingFlutterwavePayment();
+      clearFlutterwaveReturnUrl();
+      toast[isCancelled ? 'info' : 'error'](isCancelled ? 'Payment cancelled' : 'Payment was not completed.');
+      setIsProcessing(false);
+      navigate('/subscription', { replace: true });
+      return;
+    }
+
+    if (!user?.id) return;
+
+    if (!paymentReturn.reference) {
+      flutterwaveReturnHandledRef.current = true;
+      if (pendingPayment?.packageId) {
+        trackPaymentFailed({ packageId: pendingPayment.packageId, reason: 'missing_transaction_reference' });
+      }
+      clearPendingFlutterwavePayment();
+      clearFlutterwaveReturnUrl();
+      toast.error('Payment was not completed.');
+      setIsProcessing(false);
+      navigate('/subscription', { replace: true });
+      return;
+    }
+
+    flutterwaveReturnHandledRef.current = true;
+    setIsProcessing(true);
+
+    void (async () => {
+      try {
+        const res = await apiFetchWithAuth('/verify-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reference: paymentReturn.reference,
+            ...(paymentReturn.transactionId ? { transactionId: paymentReturn.transactionId } : {}),
+            userId: user.id,
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || `Server returned ${res.status}`);
+        if (data.status !== 'success') throw new Error(data.message || 'Payment verification failed');
+
+        if (typeof data.newBalance === 'number') setBalance(data.newBalance);
+        if (typeof data.newCredits === 'number') setCredits(data.newCredits);
+
+        const successMetadata: Record<string, string | number> = {
+          transactionId: data.transactionId || paymentReturn.transactionId || paymentReturn.reference,
+        };
+        if (pendingPayment?.packageId) successMetadata.packageId = pendingPayment.packageId;
+        trackPaymentSucceeded(successMetadata);
+
+        const creditsAdded = Number(data.creditsAdded || pendingPayment?.credits || 0);
+        toast.success(
+          creditsAdded > 0
+            ? `Successfully purchased ${creditsAdded} credits!`
+            : 'Payment verified and credits added to your wallet!',
+        );
+        clearPendingFlutterwavePayment();
+        clearFlutterwaveReturnUrl();
+        navigate('/wallet', { replace: true });
+      } catch (error) {
+        console.error(error);
+        if (paymentReturn.status === 'closed') {
+          if (pendingPayment?.packageId) {
+            trackPaymentFailed({ packageId: pendingPayment.packageId, reason: 'user_cancelled' });
+          }
+          clearPendingFlutterwavePayment();
+          toast.info('Payment cancelled or not completed.');
+          return;
+        }
+        const failureMetadata: Record<string, string> = {
+          reason: 'verification_error',
+          message: error instanceof Error ? error.message : 'Unknown',
+        };
+        if (pendingPayment?.packageId) failureMetadata.packageId = pendingPayment.packageId;
+        trackPaymentFailed(failureMetadata);
+        toast.error(error instanceof Error ? error.message : 'Payment could not be verified.');
+      } finally {
+        setIsProcessing(false);
+      }
+    })();
+  }, [flutterwaveReturn, navigate, setBalance, setCredits, user?.id]);
 
   useEffect(() => {
     const fetchRate = async () => {
@@ -271,7 +442,7 @@ function Subscription() {
     if (paymentMethod === 'crypto') {
       await handleCryptoPayment();
     } else {
-      handleFlutterwavePayment();
+      await handleFlutterwavePayment();
     }
   };
 
@@ -371,104 +542,85 @@ function Subscription() {
     }
   };
 
-  const handleFlutterwavePayment = () => {
+  const handleFlutterwavePayment = async () => {
     if (!selectedPlan || !user) return;
-    if (!hasValidFlutterwavePublicKey) {
-      toast.error('Payment configuration is invalid. Please contact support.');
-      return;
-    }
 
-    if (!isFlutterwaveReady || !window.FlutterwaveCheckout) {
-      toast.error('Payment gateway is still loading. Please try again.');
+    const checkoutWindow = window.open(
+      'about:blank',
+      '_blank',
+      'popup=yes,width=520,height=760,resizable=yes,scrollbars=yes',
+    );
+    if (!checkoutWindow) {
+      trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'checkout_popup_blocked' });
+      toast.error('Please allow payment pop-ups for Morphly and try again.');
       return;
     }
 
     const priceUSD = Number(getPriceUSD(selectedPlan.priceNGN));
+    flutterwaveCheckoutWindowRef.current = checkoutWindow;
+    flutterwaveReturnReceivedRef.current = false;
+    flutterwaveReturnHandledRef.current = false;
+    setFlutterwaveReturn(EMPTY_FLUTTERWAVE_RETURN);
     setIsProcessing(true);
-    paymentCompletedRef.current = false;
     trackPaymentStarted({ packageId: selectedPlan.id!, amount: selectedPlan.priceNGN, currency: 'NGN' });
 
-    const txRef = `morphly_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-
+    let initiatedReference = '';
     try {
-      window.FlutterwaveCheckout?.({
-        public_key: flutterwavePublicKey,
-        tx_ref: txRef,
-        amount: selectedPlan.priceNGN,
-        currency: 'NGN',
-        payment_options: 'card,banktransfer,ussd',
-        customer: {
-          email: user.email,
-          name: user.name || user.email.split('@')[0] || 'Morphly User',
-        },
-        meta: {
-          userId: user.id,
-          credits: selectedPlan.credits,
+      const res = await apiFetchWithAuth('/initiate-flutterwave-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           packageId: selectedPlan.id,
           priceUSD,
-        },
-        customizations: {
-          title: 'Morphly Credits',
-          description: `Purchase ${selectedPlan.credits} credits`,
-        },
-        callback: function (response: any) {
-          if (paymentCompletedRef.current) return;
-          if (!response?.transaction_id) {
-            setIsProcessing(false);
-            trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'missing_transaction_id' });
-            toast.error('Payment was not completed.');
-            return;
-          }
-
-          paymentCompletedRef.current = true;
-          (async () => {
-            try {
-              const res = await apiFetchWithAuth('/verify-payment', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  reference: response.tx_ref || txRef,
-                  transactionId: response.transaction_id,
-                  userId: user?.id,
-                  credits: selectedPlan.credits,
-                  packageId: selectedPlan.id,
-                  priceUSD: priceUSD,
-                }),
-              });
-
-              const data = await res.json();
-              if (!res.ok) throw new Error(data.message || `Server returned ${res.status}`);
-              if (data.status === 'success') {
-                if (typeof data.newBalance === 'number') setBalance(data.newBalance);
-                if (typeof data.newCredits === 'number') setCredits(data.newCredits);
-                trackPaymentSucceeded({ packageId: selectedPlan.id!, transactionId: data.transactionId });
-                toast.success(`Successfully purchased ${selectedPlan.credits} credits!`);
-                navigate('/wallet');
-              } else {
-                trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'verification_failed' });
-                toast.error(data.message || 'Payment verification failed');
-              }
-            } catch (error) {
-              console.error(error);
-              trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'verification_error', message: error instanceof Error ? error.message : 'Unknown' });
-              toast.error(error instanceof Error ? error.message : 'Payment could not be verified.');
-            } finally {
-              setIsProcessing(false);
-            }
-          })();
-        },
-        onclose: function () {
-          if (!paymentCompletedRef.current) {
-            trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'user_cancelled' });
-            toast.info('Payment cancelled');
-            setIsProcessing(false);
-          }
-        },
+        }),
       });
+
+      const data = await res.json();
+      if (!res.ok || !data.reference || !data.checkoutUrl) {
+        throw new Error(data.message || 'Failed to initialize Flutterwave checkout');
+      }
+      initiatedReference = data.reference;
+
+      storePendingFlutterwavePayment({
+        reference: data.reference,
+        packageId: selectedPlan.id,
+        credits: selectedPlan.credits,
+      });
+      checkoutWindow.location.replace(data.checkoutUrl);
+      flutterwaveCheckoutCloseTimerRef.current = window.setInterval(() => {
+        if (!checkoutWindow.closed) return;
+
+        if (flutterwaveCheckoutCloseTimerRef.current != null) {
+          window.clearInterval(flutterwaveCheckoutCloseTimerRef.current);
+          flutterwaveCheckoutCloseTimerRef.current = null;
+        }
+        if (flutterwaveCheckoutWindowRef.current === checkoutWindow) {
+          flutterwaveCheckoutWindowRef.current = null;
+        }
+        if (flutterwaveReturnReceivedRef.current) return;
+
+        const pendingPayment = readPendingFlutterwavePayment();
+        if (pendingPayment?.reference === data.reference) {
+          setFlutterwaveReturn({
+            status: 'closed',
+            reference: data.reference,
+            transactionId: '',
+            isReturn: true,
+          });
+        }
+      }, 500);
     } catch (error) {
+      if (!checkoutWindow.closed) checkoutWindow.close();
+      if (flutterwaveCheckoutWindowRef.current === checkoutWindow) {
+        flutterwaveCheckoutWindowRef.current = null;
+      }
+      const pendingPayment = readPendingFlutterwavePayment();
+      if (initiatedReference && pendingPayment?.reference === initiatedReference) {
+        clearPendingFlutterwavePayment();
+      }
       console.error(error);
       trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'gateway_init_failed' });
-      toast.error('Failed to initialize payment gateway');
+      toast.error(error instanceof Error ? error.message : 'Failed to initialize payment gateway');
       setIsProcessing(false);
     }
   };
@@ -729,7 +881,7 @@ function Subscription() {
             </div>
             <Button
               onClick={handleProceedToPayment}
-              disabled={isProcessing || (paymentMethod === 'flutterwave' && (!isFlutterwaveReady || !hasValidFlutterwavePublicKey))}
+              disabled={isProcessing}
               className={`h-9 px-5 text-xs font-semibold rounded-md shadow-sm transition-all text-white ${
                 paymentMethod === 'crypto'
                   ? 'bg-emerald-600 hover:bg-emerald-500'
