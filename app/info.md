@@ -31,7 +31,7 @@ Structure:
   postcss.config.js    Config file for CSS post-processing tools
 
 Packaging:
-  npm run electron:build      Builds Windows installer and portable artifacts from the current dist/electron folders.
+  npm run electron:build      Builds the Windows installer from the current dist/electron folders.
   npm run electron:build:dir  Builds the unpacked Windows app for packaging smoke tests.
 
 UnityCapture virtual camera:

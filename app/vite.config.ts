@@ -3,11 +3,19 @@ import fs from "fs"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
 import { inspectAttr } from 'kimi-plugin-inspect-react'
+import { validatePublicBuildEnvironment } from './build/public-env-validation'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, '');
-  const apiProxyTarget = env.API_PROXY_TARGET || env.VITE_API_PROXY_TARGET || 'http://localhost:3000';
+export default defineConfig(({ command, mode }) => {
+  const workspaceDirectory = path.resolve(__dirname, '..');
+  const env = loadEnv(mode, workspaceDirectory, '');
+  const runtimeEnv = { ...env, ...process.env };
+  validatePublicBuildEnvironment(runtimeEnv, {
+    requireHttps: command === 'build' && mode === 'production',
+  });
+  const apiProxyTarget = runtimeEnv.API_PROXY_TARGET
+    || runtimeEnv.VITE_API_PROXY_TARGET
+    || 'http://localhost:3000';
 
   const adminPortalPlugin = {
     name: 'morphly-admin-portal',
@@ -30,11 +38,22 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: './',
+    envDir: workspaceDirectory,
     plugins: [inspectAttr(), react(), adminPortalPlugin],
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
       },
+    },
+    // Decart creates frame-metadata-worker.js through import.meta.url at
+    // runtime. Pre-bundling the SDK moves the parent module into .vite/deps
+    // without copying that sibling worker, which breaks every realtime start.
+    optimizeDeps: {
+      exclude: ['@decartai/sdk'],
+      // The excluded SDK imports p-retry, which in turn default-imports its
+      // CommonJS-only retry dependency. Optimize that exact nested copy so
+      // the browser receives a valid ESM interop wrapper.
+      include: ['@decartai/sdk > p-retry > retry'],
     },
     server: {
       host: '127.0.0.1',

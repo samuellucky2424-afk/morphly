@@ -71,6 +71,7 @@ test('Decart moderation and connection failures produce useful user messages', (
 
 test('the dashboard waits for decoded output and uses one clock for the freeze watchdog', () => {
   const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
+  const viteConfig = fs.readFileSync(path.join(appDirectory, 'vite.config.ts'), 'utf8');
 
   assert.match(dashboard, /initialState: buildDecartConnectInitialState\(\)/);
   assert.match(dashboard, /mirror: 'auto'/);
@@ -81,4 +82,6 @@ test('the dashboard waits for decoded output and uses one clock for the freeze w
   assert.match(dashboard, /lastRemoteFrameAtRef\.current = Date\.now\(\)/);
   assert.doesNotMatch(dashboard, /lastRemoteFrameAtRef\.current = performance\.now\(\)/);
   assert.doesNotMatch(dashboard, /initialState:\s*\{\s*prompt:/);
+  assert.match(viteConfig, /optimizeDeps:\s*\{[\s\S]*exclude:\s*\['@decartai\/sdk'\]/);
+  assert.match(viteConfig, /optimizeDeps:\s*\{[\s\S]*include:\s*\['@decartai\/sdk > p-retry > retry'\]/);
 });

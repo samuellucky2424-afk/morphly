@@ -70,6 +70,7 @@ import {
   getDecartRealtimeUserMessage,
   prepareDecartReferenceImage,
 } from '@/lib/decart-realtime';
+import { getNextVirtualCameraFrameClock } from '@/lib/virtual-camera-timing';
 
 
 type ConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
@@ -177,6 +178,13 @@ type VideoElementWithFrameCallbacks = HTMLVideoElement & {
   latencyHint?: string;
 };
 
+type VirtualCameraProfile = {
+  mode: 'low' | 'balanced' | 'high';
+  width: number;
+  height: number;
+  frameRate: number;
+};
+
 const BASE_PROMPT = `Substitute the character in the video with the person in the reference image.`;
 const DEFAULT_ENHANCE = true;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
@@ -205,10 +213,30 @@ const DECART_SUPPORTED_REALTIME_MODELS = [
   'lucy-2.1-vton-2',
 ] as const;
 type DecartRealtimeModelName = (typeof DECART_SUPPORTED_REALTIME_MODELS)[number];
-const MORPHLY_CAM_FRAME_WIDTH = 1280;
-const MORPHLY_CAM_FRAME_HEIGHT = 720;
-const MORPHLY_CAM_FRAME_INTERVAL_MS = 1000 / 30;
+const DEFAULT_VIRTUAL_CAMERA_PROFILE: VirtualCameraProfile = {
+  mode: 'low',
+  width: 640,
+  height: 360,
+  frameRate: 24,
+};
+const MORPHLY_CAM_POPUP_WIDTH = 640;
+const MORPHLY_CAM_POPUP_HEIGHT = 360;
+const MORPHLY_CAM_POPUP_FRAME_INTERVAL_MS = 1000 / 24;
 const SELECTED_CAMERA_STORAGE_PREFIX = 'morphly:selected-physical-camera';
+
+function isVirtualCameraProfile(value: unknown): value is VirtualCameraProfile {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as Partial<VirtualCameraProfile>;
+  return (
+    (candidate.mode === 'low' || candidate.mode === 'balanced' || candidate.mode === 'high') &&
+    Number.isInteger(candidate.width) && Number(candidate.width) > 0 &&
+    Number.isInteger(candidate.height) && Number(candidate.height) > 0 &&
+    Number.isInteger(candidate.frameRate) && Number(candidate.frameRate) > 0
+  );
+}
 
 function createEmptyStreamMetrics(): StreamMetrics {
   return {
@@ -483,7 +511,10 @@ function Dashboard() {
   const morphlyCamLastFrameSentAtRef = useRef(0);
   const mainVirtualCamCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const mainVirtualCamRenderHandleRef = useRef<number | null>(null);
-  const mainVirtualCamLastFrameSentAtRef = useRef(0);
+  const mainVirtualCamUsesVideoFrameCallbackRef = useRef(false);
+  const mainVirtualCamLastFrameSentAtRef = useRef(-1);
+  const virtualCameraProfileRef = useRef<VirtualCameraProfile>(DEFAULT_VIRTUAL_CAMERA_PROFILE);
+  const virtualCameraReceiverConnectedRef = useRef<boolean | null>(null);
 
   const promptRef = useRef(prompt);
   const activePromptRef = useRef(activePrompt);
@@ -498,6 +529,18 @@ function Dashboard() {
   const preferredModeRef = useRef(preferredMode);
 
   const activeMode = clampQualityMode(preferredMode, runtimeModeCap);
+  useEffect(() => {
+    if (!window.electron?.on) {
+      return undefined;
+    }
+
+    return window.electron.on('virtual-camera:receiver-state', (state: { connected?: unknown }) => {
+      virtualCameraReceiverConnectedRef.current = typeof state?.connected === 'boolean'
+        ? state.connected
+        : null;
+    });
+  }, []);
+
   useEffect(() => {
     promptRef.current = prompt;
   }, [prompt]);
@@ -822,10 +865,16 @@ function Dashboard() {
 
   const stopMainVirtualCamRenderLoop = useCallback(() => {
     if (mainVirtualCamRenderHandleRef.current !== null) {
-      window.cancelAnimationFrame(mainVirtualCamRenderHandleRef.current);
+      const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
+      if (mainVirtualCamUsesVideoFrameCallbackRef.current && video?.cancelVideoFrameCallback) {
+        video.cancelVideoFrameCallback(mainVirtualCamRenderHandleRef.current);
+      } else {
+        window.cancelAnimationFrame(mainVirtualCamRenderHandleRef.current);
+      }
     }
 
     mainVirtualCamRenderHandleRef.current = null;
+    mainVirtualCamUsesVideoFrameCallbackRef.current = false;
   }, []);
 
   const pushMorphlyCamFrame = useCallback((canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
@@ -838,7 +887,7 @@ function Dashboard() {
       width: canvas.width,
       height: canvas.height,
       stride: canvas.width * 4,
-      pixels: new Uint8ClampedArray(imageData.data),
+      pixels: imageData.data,
     });
   }, []);
 
@@ -857,7 +906,6 @@ function Dashboard() {
     const context = canvas.getContext('2d', {
       alpha: false,
       desynchronized: true,
-      willReadFrequently: true,
     });
 
     if (!context) {
@@ -874,15 +922,12 @@ function Dashboard() {
         return;
       }
 
-      context.fillStyle = '#000000';
-      context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
-
       if (currentVideo.readyState >= 2 && currentVideo.videoWidth > 0 && currentVideo.videoHeight > 0) {
-        drawVideoFrameCover(context, currentVideo, currentCanvas.width, currentCanvas.height);
-
         const now = currentPopup.performance?.now?.() ?? performance.now();
-        if ((now - morphlyCamLastFrameSentAtRef.current) >= MORPHLY_CAM_FRAME_INTERVAL_MS) {
-          pushMorphlyCamFrame(currentCanvas, context);
+        if ((now - morphlyCamLastFrameSentAtRef.current) >= MORPHLY_CAM_POPUP_FRAME_INTERVAL_MS) {
+          context.fillStyle = '#000000';
+          context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+          drawVideoFrameCover(context, currentVideo, currentCanvas.width, currentCanvas.height);
           morphlyCamLastFrameSentAtRef.current = now;
         }
       }
@@ -891,7 +936,7 @@ function Dashboard() {
     };
 
     morphlyCamRenderHandleRef.current = popup.requestAnimationFrame(renderFrame);
-  }, [pushMorphlyCamFrame, stopMorphlyCamRenderLoop]);
+  }, [stopMorphlyCamRenderLoop]);
 
   const startMainVirtualCamRenderLoop = useCallback(() => {
     if (!morphlyCamWindowEnabledRef.current) {
@@ -906,13 +951,17 @@ function Dashboard() {
     let canvas = mainVirtualCamCanvasRef.current;
     if (!canvas) {
       canvas = document.createElement('canvas');
-      canvas.width = MORPHLY_CAM_FRAME_WIDTH;
-      canvas.height = MORPHLY_CAM_FRAME_HEIGHT;
       mainVirtualCamCanvasRef.current = canvas;
     }
 
+    const profile = virtualCameraProfileRef.current;
+    if (canvas.width !== profile.width || canvas.height !== profile.height) {
+      canvas.width = profile.width;
+      canvas.height = profile.height;
+    }
+
     stopMainVirtualCamRenderLoop();
-    mainVirtualCamLastFrameSentAtRef.current = 0;
+    mainVirtualCamLastFrameSentAtRef.current = -1;
 
     const context = canvas.getContext('2d', {
       alpha: false,
@@ -924,32 +973,66 @@ function Dashboard() {
       return;
     }
 
-    const renderFrame = () => {
-      const currentVideo = outputVideoRef.current;
+    const renderContext = context;
+
+    function scheduleNextFrame() {
+      const currentVideo = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
+      if (!currentVideo || !morphlyCamWindowEnabledRef.current) {
+        mainVirtualCamRenderHandleRef.current = null;
+        mainVirtualCamUsesVideoFrameCallbackRef.current = false;
+        return;
+      }
+
+      if (currentVideo.requestVideoFrameCallback) {
+        mainVirtualCamUsesVideoFrameCallbackRef.current = true;
+        mainVirtualCamRenderHandleRef.current = currentVideo.requestVideoFrameCallback(renderFrame);
+      } else {
+        mainVirtualCamUsesVideoFrameCallbackRef.current = false;
+        mainVirtualCamRenderHandleRef.current = window.requestAnimationFrame(renderFrame);
+      }
+    }
+
+    function renderFrame(now: number) {
+      const currentVideo = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
       const currentCanvas = mainVirtualCamCanvasRef.current;
 
       if (!morphlyCamWindowEnabledRef.current || !currentVideo || !currentCanvas) {
         mainVirtualCamRenderHandleRef.current = null;
+        mainVirtualCamUsesVideoFrameCallbackRef.current = false;
         return;
       }
 
-      context.fillStyle = '#000000';
-      context.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+      if (
+        virtualCameraReceiverConnectedRef.current !== false &&
+        currentVideo.readyState >= 2 &&
+        currentVideo.videoWidth > 0 &&
+        currentVideo.videoHeight > 0
+      ) {
+        const currentProfile = virtualCameraProfileRef.current;
+        const frameIntervalMs = 1000 / currentProfile.frameRate;
+        const nextFrameClock = getNextVirtualCameraFrameClock(
+          mainVirtualCamLastFrameSentAtRef.current,
+          now,
+          frameIntervalMs,
+        );
+        if (nextFrameClock !== null) {
+          if (currentCanvas.width !== currentProfile.width || currentCanvas.height !== currentProfile.height) {
+            currentCanvas.width = currentProfile.width;
+            currentCanvas.height = currentProfile.height;
+          }
 
-      if (currentVideo.readyState >= 2 && currentVideo.videoWidth > 0 && currentVideo.videoHeight > 0) {
-        drawVideoFrameCover(context, currentVideo, currentCanvas.width, currentCanvas.height);
-
-        const now = performance.now();
-        if ((now - mainVirtualCamLastFrameSentAtRef.current) >= MORPHLY_CAM_FRAME_INTERVAL_MS) {
-          pushMorphlyCamFrame(currentCanvas, context);
-          mainVirtualCamLastFrameSentAtRef.current = now;
+          renderContext.fillStyle = '#000000';
+          renderContext.fillRect(0, 0, currentCanvas.width, currentCanvas.height);
+          drawVideoFrameCover(renderContext, currentVideo, currentCanvas.width, currentCanvas.height);
+          pushMorphlyCamFrame(currentCanvas, renderContext);
+          mainVirtualCamLastFrameSentAtRef.current = nextFrameClock;
         }
       }
 
-      mainVirtualCamRenderHandleRef.current = window.requestAnimationFrame(renderFrame);
-    };
+      scheduleNextFrame();
+    }
 
-    mainVirtualCamRenderHandleRef.current = window.requestAnimationFrame(renderFrame);
+    scheduleNextFrame();
   }, [pushMorphlyCamFrame, stopMainVirtualCamRenderLoop]);
 
   const renderMorphlyCamWindowShell = useCallback((popup: Window) => {
@@ -1038,7 +1121,7 @@ function Dashboard() {
         </head>
         <body>
           <div id="morphly-cam-root">
-            <canvas id="morphly-cam-output" width="${MORPHLY_CAM_FRAME_WIDTH}" height="${MORPHLY_CAM_FRAME_HEIGHT}"></canvas>
+            <canvas id="morphly-cam-output" width="${MORPHLY_CAM_POPUP_WIDTH}" height="${MORPHLY_CAM_POPUP_HEIGHT}"></canvas>
             <video id="morphly-cam-video" autoplay playsinline muted></video>
             <div id="morphly-cam-placeholder">
               Start Morphly first, then capture this window in SplitCam or OBS. This window is not a standalone webcam device.
@@ -2478,6 +2561,7 @@ function Dashboard() {
     // Arm the virtual camera publisher. The live frames come from the main
     // Morphly output stream; the popup, if opened, is only an optional mirror.
     morphlyCamWindowEnabledRef.current = true;
+    virtualCameraReceiverConnectedRef.current = null;
     const virtualCameraStartPromise = window.electron
       ? window.electron.invoke('virtual-camera:start').catch((err: unknown) => {
           console.warn('Failed to arm virtual camera publisher:', err);
@@ -2496,6 +2580,13 @@ function Dashboard() {
         const message = virtualCameraStartResult.error || virtualCameraStartResult.message || 'Morphly virtual camera is unavailable';
         console.warn('Morphly virtual camera is unavailable:', message);
         toast.warning(message);
+      } else if (isVirtualCameraProfile(virtualCameraStartResult?.profile)) {
+        virtualCameraProfileRef.current = virtualCameraStartResult.profile;
+        console.info(
+          `Morphly virtual camera using ${virtualCameraStartResult.profile.mode} profile: ` +
+          `${virtualCameraStartResult.profile.width}x${virtualCameraStartResult.profile.height}` +
+          `@${virtualCameraStartResult.profile.frameRate}`,
+        );
       }
     });
 

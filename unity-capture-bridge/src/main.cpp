@@ -16,6 +16,7 @@ namespace
     constexpr uint32_t kPipeProtocolVersion = 1;
     constexpr int kCaptureDeviceNumber = 0;
     constexpr int kFrameTimeoutMilliseconds = 1000;
+    constexpr int kSkippedFramesBeforeReceiverIsInactive = 12;
 
     struct PipeFrameHeader
     {
@@ -79,6 +80,7 @@ int wmain()
     SharedImageMemory unityCaptureSender(kCaptureDeviceNumber);
     std::vector<uint8_t> rgbaFrame;
     bool wasWaitingForReceiver = false;
+    int skippedFramesWithoutReceiver = 0;
 
     for (;;)
     {
@@ -108,6 +110,7 @@ int wmain()
         // opens the camera. Frames can be safely discarded until that happens.
         if (!unityCaptureSender.SendIsReady())
         {
+            skippedFramesWithoutReceiver = 0;
             if (!wasWaitingForReceiver)
             {
                 std::cerr << "Waiting for an application to open Morphly Virtual Camera.\n";
@@ -116,19 +119,13 @@ int wmain()
             continue;
         }
 
-        if (wasWaitingForReceiver)
-        {
-            std::cerr << "Connected to the UnityCapture virtual camera.\n";
-            wasWaitingForReceiver = false;
-        }
-
         const auto result = unityCaptureSender.Send(
             static_cast<int>(header.width),
             static_cast<int>(header.height),
             static_cast<int>(header.strideBytes / 4),
             static_cast<DWORD>(header.payloadBytes),
             SharedImageMemory::FORMAT_UINT8,
-            SharedImageMemory::RESIZEMODE_DISABLED,
+            SharedImageMemory::RESIZEMODE_LINEAR,
             SharedImageMemory::MIRRORMODE_DISABLED,
             kFrameTimeoutMilliseconds,
             rgbaFrame.data());
@@ -137,6 +134,27 @@ int wmain()
         {
             std::cerr << "UnityCapture rejected a frame that exceeds its shared buffer.\n";
             return 1;
+        }
+
+        if (result == SharedImageMemory::SENDRES_OK)
+        {
+            skippedFramesWithoutReceiver = 0;
+            if (wasWaitingForReceiver)
+            {
+                std::cerr << "Connected to the UnityCapture virtual camera.\n";
+                wasWaitingForReceiver = false;
+            }
+        }
+        else if (
+            result == SharedImageMemory::SENDRES_WARN_FRAMESKIP
+            && ++skippedFramesWithoutReceiver >= kSkippedFramesBeforeReceiverIsInactive)
+        {
+            skippedFramesWithoutReceiver = kSkippedFramesBeforeReceiverIsInactive;
+            if (!wasWaitingForReceiver)
+            {
+                std::cerr << "Waiting for an application to open Morphly Virtual Camera.\n";
+                wasWaitingForReceiver = true;
+            }
         }
     }
 }

@@ -1,7 +1,9 @@
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
 const CAMERA_NAME = 'Morphly Virtual Camera';
+const VIDEO_INPUT_DEVICE_CATEGORY = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}';
 const FILTERS = [
   {
     architecture: '32-bit',
@@ -37,10 +39,35 @@ function run(executable, args) {
   });
 }
 
+function queryRegistryString(key, valueName, registryView) {
+  const valueArgs = valueName ? ['/v', valueName] : ['/ve'];
+  const result = run('reg.exe', ['query', key, ...valueArgs, `/reg:${registryView}`]);
+  if (result.status !== 0) {
+    return null;
+  }
+
+  const match = String(result.stdout || '').match(/REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/mi);
+  return match ? match[1].trim().replace(/^"|"$/g, '') : null;
+}
+
+function normalizeWindowsPath(value) {
+  return path.resolve(String(value || '')).replace(/[\\/]+/g, '\\').toLowerCase();
+}
+
 function probeFilter(filter) {
-  const key = `HKLM\\SOFTWARE\\Classes\\CLSID\\${filter.clsid}\\InprocServer32`;
-  const result = run('reg.exe', ['query', key, '/ve', `/reg:${filter.registryView}`]);
-  return result.status === 0;
+  const clsidKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${filter.clsid}`;
+  const categoryKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${VIDEO_INPUT_DEVICE_CATEGORY}\\Instance\\${filter.clsid}`;
+  const expectedFilterPath = path.join(upstreamInstallDirectory, filter.file);
+  const registeredName = queryRegistryString(clsidKey, null, filter.registryView);
+  const registeredFilterPath = queryRegistryString(`${clsidKey}\\InprocServer32`, null, filter.registryView);
+  const categoryName = queryRegistryString(categoryKey, 'FriendlyName', filter.registryView);
+  const categoryClsid = queryRegistryString(categoryKey, 'CLSID', filter.registryView);
+
+  return registeredName === CAMERA_NAME
+    && categoryName === CAMERA_NAME
+    && String(categoryClsid || '').toLowerCase() === filter.clsid.toLowerCase()
+    && normalizeWindowsPath(registeredFilterPath) === normalizeWindowsPath(expectedFilterPath)
+    && fs.existsSync(expectedFilterPath);
 }
 
 function registerFilter(filter, uninstall = false) {

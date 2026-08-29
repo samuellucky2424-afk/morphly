@@ -138,6 +138,7 @@ function prepareBrandedExecutable() {
 prepareBrandedExecutable();
 
 const childEnvironment = { ...process.env };
+childEnvironment.MORPHLY_DESKTOP_DEV = '1';
 delete childEnvironment.ELECTRON_RUN_AS_NODE;
 
 const electronProcess = spawn(brandedExecutable, [appDirectory], {

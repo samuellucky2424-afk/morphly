@@ -30,14 +30,17 @@ jobs:
       working-directory: app
       run: npm ci
 
-    - name: Build Electron app
+    - name: Run automated tests
+      working-directory: app
+      run: npm test
+
+    - name: Build Electron app without publishing
       working-directory: app
       env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
         VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
         VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
-      run: npm run electron:release
+      run: npm run electron:build
 
     - name: Resolve release version
       id: release-version
@@ -78,16 +81,9 @@ jobs:
           (Join-Path $dir "Morphly-Setup-$version.exe"),
           (Join-Path $dir "Morphly Setup $version.exe")
         )
-        $portableCandidates = @(
-          (Join-Path $dir "Morphly-$version.exe"),
-          (Join-Path $dir "Morphly $version.exe")
-        )
-
         $exe1 = $installerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-        $exe2 = $portableCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
         if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
-        if (!$exe2) { throw "Missing portable build. Checked: $($portableCandidates -join ', ')" }
 
         $bundledCameraDir = Join-Path $dir "win-unpacked/resources/unity-capture"
         if (!(Test-Path $bundledCameraDir)) { throw "Missing bundled camera directory: $bundledCameraDir" }
@@ -111,4 +107,27 @@ jobs:
         foreach ($artifact in $expectedArtifacts) {
           $artifactPath = Join-Path $bundledCameraDir $artifact
           if (!(Test-Path $artifactPath)) { throw "Missing bundled camera artifact: $artifactPath" }
+        }
+
+    - name: Publish verified release
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $version = "${{ steps.release-version.outputs.VERSION }}"
+        $tagName = "${{ steps.release-version.outputs.TAG_NAME }}"
+        $installer = "app/release/Morphly-Setup-$version.exe"
+        $latest = "app/release/latest.yml"
+        $blockmaps = @(Get-ChildItem -Path "app/release" -Filter "*.blockmap" | ForEach-Object { $_.FullName })
+        $assets = @((Resolve-Path $installer).Path, (Resolve-Path $latest).Path) + $blockmaps
+
+        gh release view $tagName --repo "${{ github.repository }}" *> $null
+        if ($LASTEXITCODE -eq 0) {
+          gh release upload $tagName $assets --clobber --repo "${{ github.repository }}"
+        } else {
+          gh release create $tagName $assets --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Morphly Desktop $version" --generate-notes
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+          throw "Publishing verified release $tagName failed."
         }

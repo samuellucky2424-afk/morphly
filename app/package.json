@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "Morphly Desktop Electron package with bundled virtual camera install flow.",
   "author": "Morphly",
   "repository": {
@@ -20,11 +20,18 @@
     "build": "npm run build:app",
     "build:app": "cross-env NODE_OPTIONS=--max-old-space-size=4096 tsc -b && vite build",
     "preview": "vite preview",
+    "preelectron:only": "npm run virtual-camera:build && npm run virtual-camera:ensure",
     "electron:only": "electron .",
+    "preelectron:dev": "npm run virtual-camera:build && npm run virtual-camera:ensure",
     "electron:dev": "concurrently -k \"npm run dev:api\" \"npm run dev:web\" \"npm run electron:dev:wait\"",
     "electron:dev:wait": "wait-on tcp:127.0.0.1:3000 tcp:127.0.0.1:5173 && node scripts/launch-branded-electron-dev.cjs",
+    "preelectron:dev:live": "npm run virtual-camera:build && npm run virtual-camera:ensure",
+    "electron:dev:live": "node scripts/launch-live-electron-dev.cjs",
+    "electron:dev:live:inner": "concurrently -k \"npm run dev:web\" \"npm run electron:dev:wait:live\"",
+    "electron:dev:wait:live": "wait-on tcp:127.0.0.1:5173 && node scripts/launch-branded-electron-dev.cjs",
     "clean:build": "node scripts/clean-build.cjs",
     "virtual-camera:build": "cmake -S ../unity-capture-bridge -B ../unity-capture-bridge/build -A x64 && cmake --build ../unity-capture-bridge/build --config Release",
+    "virtual-camera:ensure": "node scripts/ensure-unity-capture-registration.cjs",
     "virtual-camera:install": "node scripts/unity-capture-registration.cjs install",
     "virtual-camera:uninstall": "node scripts/unity-capture-registration.cjs uninstall",
     "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe",
@@ -52,8 +59,7 @@
     "afterPack": "build/afterPack.cjs",
     "win": {
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "icon": "build/icon.ico",
       "signAndEditExecutable": true
@@ -67,9 +73,6 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": "always",
       "shortcutName": "Morphly Desktop"
-    },
-    "portable": {
-      "artifactName": "Morphly-${version}.${ext}"
     },
     "publish": [
       {

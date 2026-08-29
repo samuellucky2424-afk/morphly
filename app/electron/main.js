@@ -8,26 +8,38 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import { createDesktopUpdater } from './updater.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
+import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
+import { loadMorphlyEnvironment } from '../shared/load-environment.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const isDevelopment = !app.isPackaged && process.env.NODE_ENV !== 'production';
+// The branded development launcher runs a renamed electron.exe. Electron treats
+// that executable as packaged, so use the launcher's explicit marker as the
+// source of truth for development-only paths and behaviour.
+const isDevelopment = process.env.MORPHLY_DESKTOP_DEV === '1'
+  || (!app.isPackaged && process.env.NODE_ENV !== 'production');
+const isPackagedRuntime = app.isPackaged && !isDevelopment;
 const RELEASES_URL = 'https://github.com/samuellucky2424-afk/morphly/releases';
 const MORPHLY_CAM_WINDOW_NAME = 'Morphly cam';
 const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 const UNITY_CAPTURE_SENDER_EXE = 'morphly_unity_capture_sender.exe';
 const UNITY_CAPTURE_REGISTRY_TIMEOUT_MS = 5000;
+const UNITY_CAPTURE_NAME = 'Morphly Virtual Camera';
+const VIDEO_INPUT_DEVICE_CATEGORY = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}';
 const UNITY_CAPTURE_FILTERS = [
-  { clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70020}', registryView: '32' },
-  { clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70010}', registryView: '64' }
+  {
+    clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70020}',
+    registryView: '32',
+    file: 'UnityCaptureFilter32.dll'
+  },
+  {
+    clsid: '{5C2CD55C-92AD-4999-8666-912BD3E70010}',
+    registryView: '64',
+    file: 'UnityCaptureFilter64.dll'
+  }
 ];
-const VIRTUAL_CAM_FRAME_WIDTH = 1280;
-const VIRTUAL_CAM_FRAME_HEIGHT = 720;
-const VIRTUAL_CAM_FRAME_STRIDE = VIRTUAL_CAM_FRAME_WIDTH * 4;
-const VIRTUAL_CAM_FRAME_RATE = 30;
-const VIRTUAL_CAM_FRAME_INTERVAL_MS = Math.max(1, Math.floor(1000 / VIRTUAL_CAM_FRAME_RATE));
-const VIRTUAL_CAM_FRAME_QUEUE_MAX = 8;
+const VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS = 500;
 const VIRTUAL_CAM_PIPE_MAGIC = 0x5041434d;
 const VIRTUAL_CAM_PIPE_VERSION = 1;
 const VIRTUAL_CAM_PIPE_HEADER_BYTES = 40;
@@ -36,8 +48,16 @@ const VIRTUAL_CAM_STATS_INTERVAL_MS = 5000;
 const VIRTUAL_CAM_BLACK_SAMPLE_PIXELS = 512;
 
 app.setName('Morphly Desktop');
+loadEnvironmentVariables();
 
-app.disableHardwareAcceleration();
+const VIRTUAL_CAM_PROFILE = selectVirtualCameraProfile();
+
+if (process.env.MORPHLY_DISABLE_HARDWARE_ACCELERATION === '1') {
+  app.disableHardwareAcceleration();
+  console.warn('Morphly hardware acceleration disabled by MORPHLY_DISABLE_HARDWARE_ACCELERATION.');
+} else {
+  console.info('Morphly hardware acceleration enabled for realtime video rendering.');
+}
 
 function configureChromiumCachePaths() {
   try {
@@ -62,6 +82,7 @@ let desktopUpdater = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
+let virtualCameraOperationGeneration = 0;
 
 function formatErrorMessage(error) {
   if (error instanceof Error) {
@@ -69,6 +90,30 @@ function formatErrorMessage(error) {
   }
 
   return String(error ?? 'Unknown error');
+}
+
+function sendVirtualCameraReceiverState(connected) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('virtual-camera:receiver-state', {
+    connected,
+    profile: VIRTUAL_CAM_PROFILE
+  });
+}
+
+function setVirtualCameraReceiverState(controller, connected) {
+  if (
+    controller.stopping
+    || morphlyCamPublisher !== controller
+    || controller.receiverReady === connected
+  ) {
+    return;
+  }
+
+  controller.receiverReady = connected;
+  sendVirtualCameraReceiverState(connected);
 }
 
 function getTimestampHundredsOfNs() {
@@ -87,7 +132,9 @@ function logVirtualCameraStats(controller, reason) {
     `Morphly cam bridge stats (${reason}): frames=${controller.stats.framesSent} fps=${fps.toFixed(2)} ` +
     `rendererFrames=${controller.stats.rendererFramesReceived} captureFallbacks=${controller.stats.captureFallbacks} ` +
     `captureFailures=${controller.stats.captureFailures} publishFailures=${controller.stats.publishFailures} ` +
-    `blackFrames=${controller.stats.blackFrames} size=${VIRTUAL_CAM_FRAME_WIDTH}x${VIRTUAL_CAM_FRAME_HEIGHT} format=RGBA8`
+    `droppedFrames=${controller.stats.rendererFramesDropped} receiverProbes=${controller.stats.receiverProbes} ` +
+    `blackFrames=${controller.stats.blackFrames} profile=${controller.profile.mode} ` +
+    `size=${controller.profile.width}x${controller.profile.height}@${controller.profile.frameRate} format=RGBA8`
   );
   controller.stats.lastLogAt = now;
 }
@@ -140,7 +187,7 @@ function swapRedAndBlueChannels(frameBytes) {
 }
 
 function getUnityCaptureSenderCandidates() {
-  if (app.isPackaged) {
+  if (isPackagedRuntime) {
     return [
       path.join(process.resourcesPath, 'unity-capture', UNITY_CAPTURE_SENDER_EXE),
       path.join(process.resourcesPath, UNITY_CAPTURE_SENDER_EXE),
@@ -165,14 +212,14 @@ function resolveUnityCaptureSenderPath() {
   return match;
 }
 
-function queryUnityCaptureRegistration({ clsid, registryView }) {
+function queryRegistryString(registryKey, valueName, registryView) {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
     let timeout = null;
-    const registryKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${clsid}\\InprocServer32`;
-    const child = spawn('reg.exe', ['query', registryKey, '/ve', `/reg:${registryView}`], {
+    const valueArgs = valueName ? ['/v', valueName] : ['/ve'];
+    const child = spawn('reg.exe', ['query', registryKey, ...valueArgs, `/reg:${registryView}`], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -226,6 +273,47 @@ function queryUnityCaptureRegistration({ clsid, registryView }) {
   });
 }
 
+function parseRegistryString(stdout) {
+  const match = String(stdout || '').match(/REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/mi);
+  return match ? match[1].trim().replace(/^"|"$/g, '') : null;
+}
+
+function normalizeWindowsPath(value) {
+  return path.resolve(String(value || '')).replace(/[\\/]+/g, '\\').toLowerCase();
+}
+
+function getExpectedUnityCaptureFilterPath(filter) {
+  if (isPackagedRuntime) {
+    return path.join(process.resourcesPath, 'unity-capture', filter.file);
+  }
+
+  return path.resolve(__dirname, '../../third_party/UnityCapture/Install', filter.file);
+}
+
+async function queryUnityCaptureRegistration(filter) {
+  const clsidKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${filter.clsid}`;
+  const categoryKey = `HKLM\\SOFTWARE\\Classes\\CLSID\\${VIDEO_INPUT_DEVICE_CATEGORY}\\Instance\\${filter.clsid}`;
+  const expectedFilterPath = getExpectedUnityCaptureFilterPath(filter);
+  const [nameResult, pathResult, categoryNameResult, categoryClsidResult] = await Promise.all([
+    queryRegistryString(clsidKey, null, filter.registryView),
+    queryRegistryString(`${clsidKey}\\InprocServer32`, null, filter.registryView),
+    queryRegistryString(categoryKey, 'FriendlyName', filter.registryView),
+    queryRegistryString(categoryKey, 'CLSID', filter.registryView)
+  ]);
+  const registeredFilterPath = parseRegistryString(pathResult.stdout);
+  const ok = nameResult.ok
+    && pathResult.ok
+    && categoryNameResult.ok
+    && categoryClsidResult.ok
+    && parseRegistryString(nameResult.stdout) === UNITY_CAPTURE_NAME
+    && parseRegistryString(categoryNameResult.stdout) === UNITY_CAPTURE_NAME
+    && String(parseRegistryString(categoryClsidResult.stdout) || '').toLowerCase() === filter.clsid.toLowerCase()
+    && normalizeWindowsPath(registeredFilterPath) === normalizeWindowsPath(expectedFilterPath)
+    && fs.existsSync(expectedFilterPath);
+
+  return { ok, registryView: filter.registryView };
+}
+
 async function ensureUnityCaptureRegistration() {
   if (process.platform !== 'win32') {
     return { success: false, error: 'Virtual camera registration is only supported on Windows.' };
@@ -245,14 +333,14 @@ async function ensureUnityCaptureRegistration() {
   return { success: true, message: 'The upstream UnityCapture filters are registered.' };
 }
 
-function createVirtualCameraFrameHeader(payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
+function createVirtualCameraFrameHeader(profile, payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
   const header = Buffer.alloc(VIRTUAL_CAM_PIPE_HEADER_BYTES);
   header.writeUInt32LE(VIRTUAL_CAM_PIPE_MAGIC, 0);
   header.writeUInt32LE(VIRTUAL_CAM_PIPE_VERSION, 4);
-  header.writeUInt32LE(VIRTUAL_CAM_FRAME_WIDTH, 8);
-  header.writeUInt32LE(VIRTUAL_CAM_FRAME_HEIGHT, 12);
-  header.writeUInt32LE(VIRTUAL_CAM_FRAME_STRIDE, 16);
-  header.writeUInt32LE(VIRTUAL_CAM_FRAME_RATE, 20);
+  header.writeUInt32LE(profile.width, 8);
+  header.writeUInt32LE(profile.height, 12);
+  header.writeUInt32LE(profile.width * 4, 16);
+  header.writeUInt32LE(profile.frameRate, 20);
   header.writeUInt32LE(1, 24);
   header.writeUInt32LE(payloadBytes, 28);
   header.writeBigInt64LE(timestampHundredsOfNs, 32);
@@ -264,7 +352,7 @@ async function writeFrameToVirtualCameraPublisher(controller, frameBytes, timest
     throw new Error('Virtual camera publisher process is not writable.');
   }
 
-  const header = createVirtualCameraFrameHeader(frameBytes.length, timestampHundredsOfNs);
+  const header = createVirtualCameraFrameHeader(controller.profile, frameBytes.length, timestampHundredsOfNs);
   if (!controller.child.stdin.write(header)) {
     await once(controller.child.stdin, 'drain');
   }
@@ -275,14 +363,14 @@ async function writeFrameToVirtualCameraPublisher(controller, frameBytes, timest
 }
 
 async function publishFrameToVirtualCamera(controller, frameBytes, timestampHundredsOfNs, sourceLabel) {
-  const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
+  const expectedBytes = controller.profile.width * controller.profile.height * 4;
   if (!frameBytes || frameBytes.length !== expectedBytes) {
     throw new Error(`Unexpected ${sourceLabel} frame size: received ${frameBytes?.length ?? 0} bytes, expected ${expectedBytes}.`);
   }
 
   if (isLikelyBlackFrame(frameBytes)) {
     controller.stats.blackFrames += 1;
-    if ((controller.stats.blackFrames % VIRTUAL_CAM_FRAME_RATE) === 0) {
+    if ((controller.stats.blackFrames % controller.profile.frameRate) === 0) {
       console.warn(`Morphly cam bridge published a black ${sourceLabel} frame.`);
     }
   }
@@ -315,12 +403,11 @@ function updateRendererFrame(controller, payload) {
 
   let frameBytes;
 
-  if (srcWidth === VIRTUAL_CAM_FRAME_WIDTH && srcHeight === VIRTUAL_CAM_FRAME_HEIGHT) {
-    // Already the right size — use directly.
-    const rgbaBytes = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
-    frameBytes = Buffer.from(rgbaBytes);
+  if (srcWidth === controller.profile.width && srcHeight === controller.profile.height) {
+    // Retain the IPC-owned backing store without another full-frame copy.
+    frameBytes = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
   } else {
-    // Popup renders at a smaller size (e.g. 640x360). Upscale using nativeImage.
+    // Keep the bridge tolerant of an in-flight renderer profile update.
     try {
       const srcBuffer = Buffer.from(pixels.buffer, pixels.byteOffset, pixels.byteLength);
       const bgraBuffer = swapRedAndBlueChannels(srcBuffer);
@@ -328,15 +415,15 @@ function updateRendererFrame(controller, payload) {
       if (img.isEmpty()) {
         return;
       }
-      const scaled = img.resize({ width: VIRTUAL_CAM_FRAME_WIDTH, height: VIRTUAL_CAM_FRAME_HEIGHT });
+      const scaled = img.resize({ width: controller.profile.width, height: controller.profile.height });
       frameBytes = swapRedAndBlueChannels(scaled.toBitmap());
     } catch (e) {
-      console.warn('updateRendererFrame: failed to upscale frame:', e.message);
+      console.warn('updateRendererFrame: failed to resize frame:', e.message);
       return;
     }
   }
 
-  const expectedBytes = VIRTUAL_CAM_FRAME_STRIDE * VIRTUAL_CAM_FRAME_HEIGHT;
+  const expectedBytes = controller.profile.width * controller.profile.height * 4;
   if (!frameBytes || frameBytes.length !== expectedBytes) {
     return;
   }
@@ -347,12 +434,15 @@ function updateRendererFrame(controller, payload) {
     receivedAt: Date.now(),
     sequence: (controller.rendererFrameSequence ?? 0) + 1
   };
+  if (
+    controller.latestRendererFrame?.sequence > controller.lastPublishedSequence &&
+    controller.latestRendererFrame?.sequence !== controller.frameBeingPublishedSequence
+  ) {
+    controller.stats.rendererFramesDropped += 1;
+  }
+
   controller.rendererFrameSequence = rendererFrame.sequence;
   controller.latestRendererFrame = rendererFrame;
-  controller.frameQueue.push(rendererFrame);
-  while (controller.frameQueue.length > VIRTUAL_CAM_FRAME_QUEUE_MAX) {
-    controller.frameQueue.shift();
-  }
   controller.stats.rendererFramesReceived += 1;
 }
 
@@ -361,27 +451,44 @@ async function publishLatestRendererFrame(controller) {
     return;
   }
 
-  const nextBufferedFrame = controller.frameQueue.length > 0
-    ? controller.frameQueue.shift()
-    : null;
-  const frameToPublish = nextBufferedFrame ?? controller.lastPublishedFrame;
+  const now = Date.now();
+  const latestFrame = controller.latestRendererFrame;
+  const hasFreshFrame = latestFrame?.sequence > controller.lastPublishedSequence;
+  const receiverProbeDue = controller.receiverReady === false &&
+    (now - controller.lastReceiverProbeAt) >= VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS;
+  const keepAliveDue = controller.receiverReady !== false && controller.lastPublishedFrame &&
+    (now - controller.lastPublishedAt) >= VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS;
+
+  if (controller.receiverReady === false && !receiverProbeDue) {
+    return;
+  }
+
+  const frameToPublish = hasFreshFrame
+    ? latestFrame
+    : (receiverProbeDue || keepAliveDue ? controller.lastPublishedFrame : null);
 
   if (!frameToPublish?.frameBytes) {
     return;
   }
 
   controller.writeInFlight = true;
+  controller.frameBeingPublishedSequence = frameToPublish.sequence;
+  if (receiverProbeDue) {
+    controller.lastReceiverProbeAt = now;
+    controller.stats.receiverProbes += 1;
+  }
 
   try {
     await publishFrameToVirtualCamera(
       controller,
       frameToPublish.frameBytes,
       getTimestampHundredsOfNs(),
-      nextBufferedFrame ? 'renderer' : 'cached-renderer'
+      hasFreshFrame ? 'renderer' : (receiverProbeDue ? 'receiver-probe' : 'cached-renderer')
     );
 
     controller.lastPublishedFrame = frameToPublish;
     controller.lastPublishedSequence = frameToPublish.sequence ?? controller.lastPublishedSequence;
+    controller.lastPublishedAt = Date.now();
   } catch (error) {
     controller.stats.publishFailures += 1;
     console.error('Failed to push Morphly output into the virtual camera bridge:', error);
@@ -394,6 +501,7 @@ async function publishLatestRendererFrame(controller) {
     }
   } finally {
     controller.writeInFlight = false;
+    controller.frameBeingPublishedSequence = null;
   }
 }
 
@@ -408,7 +516,10 @@ function scheduleMorphlyCamPublish(controller, delayMs = 0) {
     void publishLatestRendererFrame(controller).finally(() => {
       if (!controller.stopping) {
         const elapsedMs = Date.now() - startedAt;
-        scheduleMorphlyCamPublish(controller, Math.max(0, VIRTUAL_CAM_FRAME_INTERVAL_MS - elapsedMs));
+        const frameIntervalMs = controller.receiverReady === false
+          ? VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS
+          : Math.max(1, Math.floor(1000 / controller.profile.frameRate));
+        scheduleMorphlyCamPublish(controller, Math.max(0, frameIntervalMs - elapsedMs));
       }
     });
   }, delayMs);
@@ -422,6 +533,7 @@ function stopMorphlyCamPublisher() {
   const controller = morphlyCamPublisher;
   morphlyCamPublisher = null;
   controller.stopping = true;
+  sendVirtualCameraReceiverState(false);
 
   if (controller.timer) {
     clearTimeout(controller.timer);
@@ -462,7 +574,11 @@ function ensureMorphlyCamPublisher() {
   }
 
   if (morphlyCamPublisher && !morphlyCamPublisher.stopping) {
-    return { success: true, message: 'Morphly cam output is already being published.' };
+    return {
+      success: true,
+      message: 'Morphly cam output is already being published.',
+      profile: morphlyCamPublisher.profile
+    };
   }
 
   stopMorphlyCamPublisher();
@@ -476,14 +592,19 @@ function ensureMorphlyCamPublisher() {
 
     const controller = {
       child,
+      profile: VIRTUAL_CAM_PROFILE,
       timer: null,
       writeInFlight: false,
       stopping: false,
       latestRendererFrame: null,
-      frameQueue: [],
       lastPublishedFrame: null,
       rendererFrameSequence: 0,
       lastPublishedSequence: 0,
+      frameBeingPublishedSequence: null,
+      lastPublishedAt: 0,
+      lastReceiverProbeAt: 0,
+      receiverReady: null,
+      stderrBuffer: '',
       stats: {
         startedAt: Date.now(),
         lastLogAt: Date.now(),
@@ -492,15 +613,29 @@ function ensureMorphlyCamPublisher() {
         captureFallbacks: 0,
         captureFailures: 0,
         publishFailures: 0,
+        rendererFramesDropped: 0,
+        receiverProbes: 0,
         blackFrames: 0
       }
     };
 
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk) => {
-      const message = chunk.toString().trim();
-      if (message) {
-        console.error(`Morphly cam publisher: ${message}`);
+      controller.stderrBuffer += chunk.toString();
+      const lines = controller.stderrBuffer.split(/\r?\n/);
+      controller.stderrBuffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line) {
+          continue;
+        }
+
+        console.info(`Morphly cam publisher: ${line}`);
+        if (line.includes('Waiting for an application to open Morphly Virtual Camera.')) {
+          setVirtualCameraReceiverState(controller, false);
+        } else if (line.includes('Connected to the UnityCapture virtual camera.')) {
+          setVirtualCameraReceiverState(controller, true);
+        }
       }
     });
 
@@ -519,11 +654,19 @@ function ensureMorphlyCamPublisher() {
     });
 
     child.on('exit', (code, signal) => {
-      if (morphlyCamPublisher === controller) {
-        morphlyCamPublisher = null;
+      const wasStopping = controller.stopping;
+      controller.stopping = true;
+      if (controller.timer) {
+        clearTimeout(controller.timer);
+        controller.timer = null;
       }
 
-      if (!controller.stopping) {
+      if (morphlyCamPublisher === controller) {
+        morphlyCamPublisher = null;
+        sendVirtualCameraReceiverState(false);
+      }
+
+      if (!wasStopping) {
         console.error(`Virtual camera publisher exited unexpectedly with code ${code ?? 'null'} and signal ${signal ?? 'null'}.`);
       }
     });
@@ -531,7 +674,16 @@ function ensureMorphlyCamPublisher() {
     morphlyCamPublisher = controller;
     scheduleMorphlyCamPublish(controller);
 
-    return { success: true, message: `Publishing Morphly cam output via ${publisherPath}.` };
+    console.info(
+      `Morphly virtual camera profile: ${controller.profile.mode} ` +
+      `${controller.profile.width}x${controller.profile.height}@${controller.profile.frameRate}.`
+    );
+
+    return {
+      success: true,
+      message: `Publishing Morphly cam output via ${publisherPath}.`,
+      profile: controller.profile
+    };
   } catch (error) {
     console.error('Unable to start the virtual camera publisher:', error);
     return { success: false, error: formatErrorMessage(error) };
@@ -539,9 +691,12 @@ function ensureMorphlyCamPublisher() {
 }
 
 function loadEnvironmentVariables() {
-  const envPath = app.isPackaged
-    ? path.join(process.resourcesPath, '.env')
-    : path.join(__dirname, '../.env');
+  if (!isPackagedRuntime) {
+    loadMorphlyEnvironment();
+    return;
+  }
+
+  const envPath = path.join(process.resourcesPath, '.env');
 
   if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath });
@@ -626,6 +781,36 @@ function buildLoadFailureHtml(failedUrl, errorCode, errorDescription) {
 </html>`;
 }
 
+function logDevelopmentRendererHealth(window) {
+  if (!isDevelopment) {
+    return;
+  }
+
+  setTimeout(() => {
+    if (window.isDestroyed()) {
+      return;
+    }
+
+    void window.webContents.executeJavaScript(`(() => {
+      const root = document.getElementById('root');
+      return {
+        readyState: document.readyState,
+        rootPresent: Boolean(root),
+        rootChildCount: root?.childElementCount ?? 0,
+        bodyTextLength: (document.body?.innerText ?? '').trim().length
+      };
+    })()`).then((health) => {
+      console.info(
+        'Morphly renderer health: ' +
+        `readyState=${health.readyState} rootPresent=${health.rootPresent} ` +
+        `rootChildren=${health.rootChildCount} bodyTextLength=${health.bodyTextLength}`
+      );
+    }).catch((error) => {
+      console.error(`Unable to inspect Morphly renderer health: ${formatErrorMessage(error)}`);
+    });
+  }, 1000);
+}
+
 function isMorphlyCamPopup(details) {
   return details.frameName === MORPHLY_CAM_WINDOW_NAME;
 }
@@ -695,7 +880,7 @@ function configureMorphlyCamPopup(window) {
 }
 
 function createWindow() {
-  const iconPath = app.isPackaged
+  const iconPath = isPackagedRuntime
     ? path.join(process.resourcesPath, 'icon.ico')
     : path.join(__dirname, '../build/icon.ico');
   const windowIcon = nativeImage.createFromPath(iconPath);
@@ -761,6 +946,8 @@ function createWindow() {
   });
 
   mainWindow.webContents.once('did-finish-load', () => {
+    logDevelopmentRendererHealth(mainWindow);
+
     if (!virtualCameraEnabled || !mainWindow || mainWindow.isDestroyed()) {
       return;
     }
@@ -781,11 +968,22 @@ function createWindow() {
 
 function registerVirtualCameraHandlers() {
   ipcMain.handle('virtual-camera:start', async () => {
+    const operationGeneration = ++virtualCameraOperationGeneration;
     virtualCameraEnabled = true;
 
     const registrationResult = await ensureUnityCaptureRegistration();
+    if (operationGeneration !== virtualCameraOperationGeneration || !virtualCameraEnabled) {
+      return {
+        success: true,
+        cancelled: true,
+        message: 'Virtual camera start was cancelled.',
+        profile: VIRTUAL_CAM_PROFILE
+      };
+    }
+
     if (!registrationResult.success) {
       virtualCameraEnabled = false;
+      stopMorphlyCamPublisher();
       return registrationResult;
     }
 
@@ -793,6 +991,7 @@ function registerVirtualCameraHandlers() {
   });
 
   ipcMain.handle('virtual-camera:stop', async () => {
+    virtualCameraOperationGeneration += 1;
     virtualCameraEnabled = false;
     return stopMorphlyCamPublisher();
   });
@@ -883,8 +1082,6 @@ function registerClipboardHandlers() {
 }
 
 app.whenReady().then(async () => {
-  loadEnvironmentVariables();
-
   if (process.platform === 'darwin') {
     await systemPreferences.askForMediaAccess('camera');
   }
@@ -899,7 +1096,7 @@ app.whenReady().then(async () => {
     releasePageUrl: RELEASES_URL,
     logPath: path.join(app.getPath('userData'), 'updater.log'),
     currentVersion: app.getVersion(),
-    isPackaged: app.isPackaged,
+    isPackaged: isPackagedRuntime,
     platform: process.platform,
     sendState: (state) => {
       if (mainWindow && !mainWindow.isDestroyed()) {

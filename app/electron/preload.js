@@ -21,7 +21,11 @@ contextBridge.exposeInMainWorld('electron', {
     return Promise.reject(new Error(`Invalid channel: `));
   },
   on: (channel, listener) => {
-    const validChannels = ['desktop-updater:state', 'window:full-screen-changed'];
+    const validChannels = [
+      'desktop-updater:state',
+      'virtual-camera:receiver-state',
+      'window:full-screen-changed'
+    ];
     if (!validChannels.includes(channel) || typeof listener !== 'function') {
       return () => {};
     }
