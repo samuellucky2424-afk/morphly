@@ -9,14 +9,14 @@ const migrationPath = path.resolve(
   currentDirectory,
   '../../supabase/20260723_onboarding_camera_referrals.sql',
 );
-const migration = fs.readFileSync(migrationPath, 'utf8');
+const migration = fs.readFileSync(migrationPath, 'utf8').replace(/\r\n/g, '\n');
 const signupCompatibilityHotfix = fs.readFileSync(
   path.resolve(
     currentDirectory,
     '../../supabase/20260723_fix_signup_transaction_schema.sql',
   ),
   'utf8',
-);
+).replace(/\r\n/g, '\n');
 
 test('Supabase extension functions are schema-qualified', () => {
   assert.match(migration, /CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions/);
