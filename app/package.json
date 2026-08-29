@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Morphly Desktop Electron package with bundled virtual camera install flow.",
   "author": "Morphly",
   "repository": {
@@ -48,7 +48,8 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "shared/**/*"
     ],
     "extraResources": [
       {

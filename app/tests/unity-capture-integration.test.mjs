@@ -96,6 +96,7 @@ test('packaging includes both upstream filters and registers a branded camera', 
   assert.match(installer, /MB_ICONSTOP\|MB_RETRYCANCEL/);
   assert.match(installer, /SetErrorLevel 1603[\s\S]*Quit/);
   assert.deepEqual(packageConfig.build.win.target, ['nsis']);
+  assert.ok(packageConfig.build.files.includes('shared/**/*'));
   assert.equal(packageConfig.build.nsis.perMachine, true);
   assert.equal(packageConfig.build.nsis.allowElevation, true);
   assert.match(releaseWorkflow, /Morphly-Setup-\$version\.exe/);

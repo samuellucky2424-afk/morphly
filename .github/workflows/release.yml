@@ -90,6 +90,13 @@ jobs:
 
         $appAsar = Join-Path $dir "win-unpacked/resources/app.asar"
         if (!(Test-Path $appAsar)) { throw "Missing packaged app archive: $appAsar" }
+        $asarEntries = @(npx --no-install asar list $appAsar)
+        if ($LASTEXITCODE -ne 0) { throw "Unable to inspect packaged app archive: $appAsar" }
+        foreach ($requiredEntry in @('\shared\load-environment.js')) {
+          if ($asarEntries -notcontains $requiredEntry) {
+            throw "Packaged app archive is missing required runtime module: $requiredEntry"
+          }
+        }
         if (Select-String -Path $appAsar -Pattern "FLWPUBK(?:_TEST)?-[A-Za-z0-9_-]+-X" -Quiet) {
           throw "Packaged app archive contains a baked Flutterwave public key. Payment keys must be loaded from runtime config."
         }
