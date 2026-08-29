@@ -3,7 +3,7 @@ import fs from "fs"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
 import { inspectAttr } from 'kimi-plugin-inspect-react'
-import { validatePublicBuildEnvironment } from './build/public-env-validation'
+import { validatePublicBuildEnvironment } from './src/lib/public-env-validation'
 
 // https://vite.dev/config/
 export default defineConfig(({ command, mode }) => {

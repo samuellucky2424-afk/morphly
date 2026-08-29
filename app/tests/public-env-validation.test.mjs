@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validatePublicBuildEnvironment } from '../build/public-env-validation.ts';
+import { validatePublicBuildEnvironment } from '../src/lib/public-env-validation.ts';
 
 const validEnvironment = {
   VITE_SUPABASE_URL: 'https://example.supabase.co',
