@@ -103,6 +103,8 @@ test('packaging includes both upstream filters and registers a branded camera', 
   assert.doesNotMatch(releaseWorkflow, /Missing portable build/);
   assert.match(releaseWorkflow, /run: npm run electron:build/);
   assert.match(releaseWorkflow, /Publish verified release/);
+  assert.match(releaseWorkflow, /app\/node_modules\/\.bin\/asar\.cmd/);
+  assert.match(releaseWorkflow, /\\shared\\load-environment\.js/);
   assert.doesNotMatch(releaseWorkflow, /run: npm run electron:release/);
   assert.ok(releaseWorkflow.indexOf('run: npm run electron:build') < releaseWorkflow.indexOf('Verify release artifacts'));
   assert.ok(releaseWorkflow.indexOf('Verify release artifacts') < releaseWorkflow.indexOf('Publish verified release'));

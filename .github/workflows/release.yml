@@ -90,7 +90,9 @@ jobs:
 
         $appAsar = Join-Path $dir "win-unpacked/resources/app.asar"
         if (!(Test-Path $appAsar)) { throw "Missing packaged app archive: $appAsar" }
-        $asarEntries = @(npx --no-install asar list $appAsar)
+        $asarCli = Join-Path $PWD "app/node_modules/.bin/asar.cmd"
+        if (!(Test-Path $asarCli)) { throw "Missing ASAR inspection CLI: $asarCli" }
+        $asarEntries = @(& $asarCli list $appAsar)
         if ($LASTEXITCODE -ne 0) { throw "Unable to inspect packaged app archive: $appAsar" }
         foreach ($requiredEntry in @('\shared\load-environment.js')) {
           if ($asarEntries -notcontains $requiredEntry) {
