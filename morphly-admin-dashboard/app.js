@@ -15,7 +15,7 @@ let systemLogs = [];
 
 const baseMetrics = {
   downloads: 0, signups: 0, activated: 0, buyers: 0, repeatBuyers: 0,
-  revenue: 0, decartCost: 0, fees: 0, refunds: 0, advertising: 0,
+  revenue: 0, providerCost: 0, fees: 0, refunds: 0, advertising: 0,
   sessions: 0, failedSessions: 0, crashes: 0, apiRequests: 0, apiErrors: 0,
   growthSeries: []
 };
@@ -263,7 +263,7 @@ function filteredMetrics() {
 
   data.growthSeries = (Array.isArray(baseMetrics.growthSeries) ? baseMetrics.growthSeries : [])
     .filter((item) => isWithinSelectedPeriod(item.date));
-  data.grossProfit = data.revenue - data.decartCost - data.fees - data.refunds - data.advertising;
+  data.grossProfit = data.revenue - data.providerCost - data.fees - data.refunds - data.advertising;
   data.successfulSessions = Math.max(0, data.sessions - data.failedSessions);
   return data;
 }
@@ -651,7 +651,7 @@ function renderLogs() {
 }
 function renderDeveloper() {
   const requirements = [
-    ["Decart written authorization", "Required before third-party integrations", "pending"],
+    ["Xmax temporary-key enforcement", "Permanent credentials remain server-side", "ready"],
     ["Morphly API keys", "Hash at rest and support rotation", "pending"],
     ["Prepaid credit reservation", "Prevent negative balances and duplicate billing", "pending"],
     ["Per-key rate limits", "Protect margin and stop abusive traffic", "pending"],
@@ -1186,7 +1186,7 @@ async function loadLiveData() {
       buyers: safeNumber(overview.buyers),
       repeatBuyers: safeNumber(overview.repeatBuyers),
       revenue: safeNumber(overview.revenue ?? overview.revenueNGN),
-      decartCost: safeNumber(overview.decartCost ?? overview.decartCostNGN),
+      providerCost: safeNumber(overview.providerCost ?? overview.xmaxCost ?? overview.decartCost),
       fees: safeNumber(overview.fees ?? overview.gatewayFeesNGN),
       refunds: safeNumber(overview.refunds ?? overview.refundsNGN),
       advertising: safeNumber(overview.advertising ?? overview.advertisingNGN),

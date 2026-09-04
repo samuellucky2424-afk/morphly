@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from '@/context/AuthContext';
 import { UIProvider } from '@/context/UIContext';
 import { AppProvider } from '@/context/AppContext';
@@ -22,6 +22,16 @@ const NotFound = lazy(() => import('@/pages/NotFound'));
 function DefaultRouteRedirect() {
   const { defaultRoute } = useAuth();
   return <Navigate to={defaultRoute} replace />;
+}
+
+function RouteAwareToaster() {
+  const { pathname } = useLocation();
+
+  if (pathname === ROUTES.PROTECTED.DASHBOARD) {
+    return null;
+  }
+
+  return <Toaster />;
 }
 
 function App() {
@@ -98,7 +108,7 @@ function App() {
                   <Route path="*" element={<NotFound />} />
                 </Routes>
               </Suspense>
-              <Toaster />
+              <RouteAwareToaster />
             </AppProvider>
           </UIProvider>
         </AuthProvider>

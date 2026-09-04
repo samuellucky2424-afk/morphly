@@ -74,9 +74,6 @@ jobs:
 
         if (!(Test-Path $dir)) { throw "Missing output directory: $dir" }
 
-        $blockmaps = Get-ChildItem -Path $dir -Filter "*.blockmap" -ErrorAction SilentlyContinue
-        if (!$blockmaps) { throw "Missing .blockmap files in $dir" }
-
         $installerCandidates = @(
           (Join-Path $dir "Morphly-Setup-$version.exe"),
           (Join-Path $dir "Morphly Setup $version.exe")
@@ -84,9 +81,17 @@ jobs:
         $exe1 = $installerCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
         if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
+        $maxReleaseAssetBytes = 2GB
+        if ((Get-Item $exe1).Length -gt $maxReleaseAssetBytes) {
+          throw "Installer exceeds GitHub's 2 GiB release-asset limit: $exe1"
+        }
 
         $bundledCameraDir = Join-Path $dir "win-unpacked/resources/unity-capture"
         if (!(Test-Path $bundledCameraDir)) { throw "Missing bundled camera directory: $bundledCameraDir" }
+        $bundledMediaFoundationCameraDir = Join-Path $dir "win-unpacked/resources/media-foundation-camera"
+        if (!(Test-Path $bundledMediaFoundationCameraDir)) {
+          throw "Missing bundled Media Foundation camera directory: $bundledMediaFoundationCameraDir"
+        }
 
         $appAsar = Join-Path $dir "win-unpacked/resources/app.asar"
         if (!(Test-Path $appAsar)) { throw "Missing packaged app archive: $appAsar" }
@@ -116,6 +121,22 @@ jobs:
         foreach ($artifact in $expectedArtifacts) {
           $artifactPath = Join-Path $bundledCameraDir $artifact
           if (!(Test-Path $artifactPath)) { throw "Missing bundled camera artifact: $artifactPath" }
+        }
+
+        foreach ($artifact in @("MorphlyVirtualCameraMF.dll", "morphly_cam_registrar.exe")) {
+          $artifactPath = Join-Path $bundledMediaFoundationCameraDir $artifact
+          if (!(Test-Path $artifactPath)) { throw "Missing bundled Media Foundation camera artifact: $artifactPath" }
+        }
+
+        $bundledVoiceRoot = Join-Path $dir "win-unpacked/resources/morphlyvc/runtime-40ms"
+        foreach ($artifact in @(
+          "python.exe",
+          "src/vc_pipeline_jit.py",
+          "models/18_asr_jit_warm.pt",
+          "models/hq1W_v2_40ms_40ms_gtm_32_run4_newasr_e18_l6_asr2_en_zh_alldata/model_750000_jit.pt"
+        )) {
+          $artifactPath = Join-Path $bundledVoiceRoot $artifact
+          if (!(Test-Path $artifactPath)) { throw "Missing bundled MorphlyVC artifact: $artifactPath" }
         }
 
     - name: Publish verified release

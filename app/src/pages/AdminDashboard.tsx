@@ -920,9 +920,9 @@ function AdminDashboard() {
                 <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
                   <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h4 className="text-lg font-semibold text-[#0f172a]">Decart usage by user</h4>
+                      <h4 className="text-lg font-semibold text-[#0f172a]">Plus usage by user</h4>
                       <p className="mt-1 text-sm text-[#64748b]">
-                        Recorded generation is confirmed by Morphly. Untracked exposure is the maximum connected time with a first frame but no matching usage ticks; it is a warning, not a confirmed Decart charge.
+                        Recorded generation is confirmed by Morphly. Untracked exposure is the maximum connected time with a first frame but no matching usage record; it is a warning, not a confirmed Plus charge.
                       </p>
                     </div>
                     <div className="rounded-full border border-[#dbe4ff] bg-white px-4 py-2 text-sm text-[#475569]">
@@ -946,7 +946,7 @@ function AdminDashboard() {
                       {usageData.users.length === 0 ? (
                         <TableRow className="border-[#e5e7eb] hover:bg-transparent">
                           <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-[#64748b]">
-                            No Decart sessions were recorded in this period.
+                            No Plus sessions were recorded in this period.
                           </TableCell>
                         </TableRow>
                       ) : usageData.users.map((entry) => (

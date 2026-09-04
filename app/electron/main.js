@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
 
-import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard, shell } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -10,6 +10,7 @@ import { createDesktopUpdater } from './updater.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
+import { createMeanVcRuntimeController } from '../server/meanvc-runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +26,8 @@ const MORPHLY_CAM_WINDOW_WIDTH = 640;
 const MORPHLY_CAM_WINDOW_HEIGHT = 360;
 const UNITY_CAPTURE_SENDER_EXE = 'morphly_unity_capture_sender.exe';
 const UNITY_CAPTURE_REGISTRY_TIMEOUT_MS = 5000;
+const MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE = 'morphly_cam_registrar.exe';
+const MEDIA_FOUNDATION_CAMERA_REGISTRAR_TIMEOUT_MS = 120000;
 const UNITY_CAPTURE_NAME = 'Morphly Virtual Camera';
 const VIDEO_INPUT_DEVICE_CATEGORY = '{860BB310-5D01-11d0-BD3B-00A0C911CE86}';
 const UNITY_CAPTURE_FILTERS = [
@@ -79,6 +82,7 @@ configureChromiumCachePaths();
 
 let mainWindow = null;
 let desktopUpdater = null;
+let morphlyVcRuntime = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
@@ -212,6 +216,121 @@ function resolveUnityCaptureSenderPath() {
   return match;
 }
 
+function getMediaFoundationCameraRegistrarCandidates() {
+  if (isPackagedRuntime) {
+    return [
+      path.join(
+        process.resourcesPath,
+        'media-foundation-camera',
+        MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE,
+      ),
+      path.join(process.resourcesPath, MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE),
+      path.join(path.dirname(process.execPath), MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE),
+    ];
+  }
+
+  return [
+    path.resolve(
+      __dirname,
+      '../../unity-capture-bridge/build/native-camera/Debug',
+      MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE,
+    ),
+    path.resolve(
+      __dirname,
+      '../../unity-capture-bridge/build/native-camera/Release',
+      MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE,
+    ),
+    path.resolve(
+      __dirname,
+      '../../unity-capture-bridge/build/native-camera/RelWithDebInfo',
+      MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE,
+    ),
+    path.resolve(
+      __dirname,
+      '../../unity-capture-bridge/build/native-camera',
+      MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE,
+    ),
+  ];
+}
+
+function resolveMediaFoundationCameraRegistrarPath() {
+  const match = getMediaFoundationCameraRegistrarCandidates()
+    .find((candidate) => fs.existsSync(candidate));
+  if (!match) {
+    throw new Error(
+      `Unable to locate ${MEDIA_FOUNDATION_CAMERA_REGISTRAR_EXE}. ` +
+      'Run npm run virtual-camera:build first.',
+    );
+  }
+
+  return match;
+}
+
+function runMediaFoundationCameraRegistrar(args) {
+  return new Promise((resolve) => {
+    let registrarPath;
+    try {
+      registrarPath = resolveMediaFoundationCameraRegistrarPath();
+    } catch (error) {
+      resolve({ ok: false, status: null, stdout: '', stderr: '', error });
+      return;
+    }
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timeout = null;
+    const child = spawn(registrarPath, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        ...result,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+      });
+    };
+
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.once('error', (error) => {
+      finish({ ok: false, status: null, error });
+    });
+    child.once('close', (status, signal) => {
+      finish({
+        ok: status === 0 && !signal,
+        status,
+        signal,
+        error: null,
+      });
+    });
+
+    timeout = setTimeout(() => {
+      child.kill();
+      finish({
+        ok: false,
+        status: null,
+        error: new Error(
+          `Media Foundation camera probe timed out after ` +
+          `${MEDIA_FOUNDATION_CAMERA_REGISTRAR_TIMEOUT_MS}ms.`,
+        ),
+      });
+    }, MEDIA_FOUNDATION_CAMERA_REGISTRAR_TIMEOUT_MS);
+    timeout.unref?.();
+  });
+}
+
 function queryRegistryString(registryKey, valueName, registryView) {
   return new Promise((resolve) => {
     let stdout = '';
@@ -331,6 +450,39 @@ async function ensureUnityCaptureRegistration() {
   }
 
   return { success: true, message: 'The upstream UnityCapture filters are registered.' };
+}
+
+async function ensureMediaFoundationCameraRegistration() {
+  if (process.platform !== 'win32') {
+    return { success: false, error: 'Media Foundation camera registration is only supported on Windows.' };
+  }
+
+  const probeResult = await runMediaFoundationCameraRegistrar(['probe']);
+  if (probeResult.ok) {
+    return { success: true, message: 'The WhatsApp-compatible Media Foundation camera is registered.' };
+  }
+
+  const detail = probeResult.stderr || probeResult.stdout || formatErrorMessage(probeResult.error);
+  return {
+    success: false,
+    error:
+      'Morphly Virtual Camera is not registered for WhatsApp and modern Windows apps. ' +
+      `Reinstall Morphly Desktop as Administrator.${detail ? ` ${detail}` : ''}`,
+  };
+}
+
+async function ensureVirtualCameraRegistration() {
+  const [unityCaptureResult, mediaFoundationResult] = await Promise.all([
+    ensureUnityCaptureRegistration(),
+    ensureMediaFoundationCameraRegistration(),
+  ]);
+
+  if (!unityCaptureResult.success) return unityCaptureResult;
+  if (!mediaFoundationResult.success) return mediaFoundationResult;
+  return {
+    success: true,
+    message: 'Morphly Virtual Camera is registered for legacy and modern Windows camera apps.',
+  };
 }
 
 function createVirtualCameraFrameHeader(profile, payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
@@ -459,10 +611,6 @@ async function publishLatestRendererFrame(controller) {
   const keepAliveDue = controller.receiverReady !== false && controller.lastPublishedFrame &&
     (now - controller.lastPublishedAt) >= VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS;
 
-  if (controller.receiverReady === false && !receiverProbeDue) {
-    return;
-  }
-
   const frameToPublish = hasFreshFrame
     ? latestFrame
     : (receiverProbeDue || keepAliveDue ? controller.lastPublishedFrame : null);
@@ -516,9 +664,11 @@ function scheduleMorphlyCamPublish(controller, delayMs = 0) {
     void publishLatestRendererFrame(controller).finally(() => {
       if (!controller.stopping) {
         const elapsedMs = Date.now() - startedAt;
-        const frameIntervalMs = controller.receiverReady === false
-          ? VIRTUAL_CAM_RECEIVER_PROBE_INTERVAL_MS
-          : Math.max(1, Math.floor(1000 / controller.profile.frameRate));
+        // Media Foundation consumers (including WhatsApp) read the shared
+        // frame bridge without opening the legacy DirectShow receiver. Keep
+        // polling at the configured frame rate so fresh renderer frames reach
+        // both camera paths even while DirectShow reports no receiver.
+        const frameIntervalMs = Math.max(1, Math.floor(1000 / controller.profile.frameRate));
         scheduleMorphlyCamPublish(controller, Math.max(0, frameIntervalMs - elapsedMs));
       }
     });
@@ -633,7 +783,10 @@ function ensureMorphlyCamPublisher() {
         console.info(`Morphly cam publisher: ${line}`);
         if (line.includes('Waiting for an application to open Morphly Virtual Camera.')) {
           setVirtualCameraReceiverState(controller, false);
-        } else if (line.includes('Connected to the UnityCapture virtual camera.')) {
+        } else if (
+          line.includes('Connected to the Morphly virtual camera.')
+          || line.includes('Connected to the UnityCapture virtual camera.')
+        ) {
           setVirtualCameraReceiverState(controller, true);
         }
       }
@@ -971,7 +1124,7 @@ function registerVirtualCameraHandlers() {
     const operationGeneration = ++virtualCameraOperationGeneration;
     virtualCameraEnabled = true;
 
-    const registrationResult = await ensureUnityCaptureRegistration();
+    const registrationResult = await ensureVirtualCameraRegistration();
     if (operationGeneration !== virtualCameraOperationGeneration || !virtualCameraEnabled) {
       return {
         success: true,
@@ -1081,6 +1234,75 @@ function registerClipboardHandlers() {
   });
 }
 
+function createMorphlyVcController() {
+  const dataRoot = isPackagedRuntime
+    ? path.join(app.getPath('userData'), 'morphlyvc')
+    : path.resolve(__dirname, '../.meanvc');
+  const bundledRuntimeRoot = isPackagedRuntime
+    ? path.join(process.resourcesPath, 'morphlyvc', 'runtime-40ms')
+    : path.join(dataRoot, 'runtime-40ms');
+  const bundledBridge = isPackagedRuntime
+    ? path.join(process.resourcesPath, 'morphlyvc', 'meanvc-realtime.py')
+    : path.resolve(__dirname, '../server/meanvc-realtime.py');
+
+  fs.mkdirSync(dataRoot, { recursive: true });
+  return createMeanVcRuntimeController({
+    repositoryRoot: path.resolve(__dirname, '../../third_party/MeanVC2'),
+    dataRoot,
+    bundledRuntimeRoot,
+    bundledBridge,
+  });
+}
+
+function registerMorphlyVcHandlers() {
+  const requireMainRenderer = (event) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
+      throw new Error('MorphlyVC controls are available only from the Morphly dashboard.');
+    }
+  };
+  const runtime = () => {
+    if (!morphlyVcRuntime) {
+      throw new Error('MorphlyVC is still starting.');
+    }
+    return morphlyVcRuntime;
+  };
+
+  ipcMain.handle('morphlyvc:status', (event) => {
+    requireMainRenderer(event);
+    return runtime().getStatus();
+  });
+  ipcMain.handle('morphlyvc:reference', (event, payload) => {
+    requireMainRenderer(event);
+    const bytes = payload?.data;
+    const fileName = typeof payload?.fileName === 'string' ? payload.fileName : 'reference.wav';
+    if (!(bytes instanceof Uint8Array) && !ArrayBuffer.isView(bytes) && !(bytes instanceof ArrayBuffer)) {
+      throw new Error('Choose a valid WAV reference recording.');
+    }
+    return runtime().saveReference(Buffer.from(bytes), fileName);
+  });
+  ipcMain.handle('morphlyvc:prepare', (event, payload) => {
+    requireMainRenderer(event);
+    return runtime().prepare(payload ?? {});
+  });
+  ipcMain.handle('morphlyvc:start', (event, payload) => {
+    requireMainRenderer(event);
+    return runtime().start(payload ?? {});
+  });
+  ipcMain.handle('morphlyvc:pitch', (event, payload) => {
+    requireMainRenderer(event);
+    return runtime().setPitch(payload ?? {});
+  });
+  ipcMain.handle('morphlyvc:stop', (event) => {
+    requireMainRenderer(event);
+    return runtime().stop();
+  });
+  ipcMain.handle('virtual-microphone:open-setup', async (event) => {
+    requireMainRenderer(event);
+    await shell.openExternal('https://vb-audio.com/Cable/');
+    return { success: true };
+  });
+}
+
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') {
     await systemPreferences.askForMediaAccess('camera');
@@ -1090,6 +1312,10 @@ app.whenReady().then(async () => {
   registerCameraHandlers();
   registerWindowHandlers();
   registerClipboardHandlers();
+  if (isPackagedRuntime) {
+    morphlyVcRuntime = createMorphlyVcController();
+  }
+  registerMorphlyVcHandlers();
 
   desktopUpdater = createDesktopUpdater({
     manifestUrl: resolveUpdateManifestUrl(),
@@ -1124,6 +1350,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopMorphlyCamPublisher();
+  morphlyVcRuntime?.shutdown();
 
   if (desktopUpdater) {
     desktopUpdater.dispose();

@@ -1,28 +1,58 @@
 // @ts-nocheck
 import crypto from 'crypto';
+import { createDecartClient } from '@decartai/sdk';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
-const DECART_API_BASE_URL = 'https://api.decart.ai';
+const XMAX_DEFAULT_API_BASE_URL = 'https://api.xmax.cloud/open/api/v1';
+const XMAX_REALTIME_MODEL = 'x2.0';
 const DECART_REALTIME_MODEL = 'lucy-2.5';
-const CLIENT_TOKEN_TTL_SECONDS = 300;
+const DEFAULT_REALTIME_PROVIDER = 'xmax';
+const DECART_CLIENT_TOKEN_GRACE_SECONDS = 120;
+const TEMPORARY_KEY_GRACE_SECONDS = 120;
 const DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS = 1800;
 const DEFAULT_UNVERIFIED_WALLET_LIMIT = 5000;
 const TOKEN_MINT_WINDOW_MINUTES = 10;
 const TOKEN_MINT_LIMIT_PER_WINDOW = 6;
+const DECART_TOKEN_MAX_ATTEMPTS = 2;
+const DECART_TOKEN_RETRY_DELAY_MS = 600;
+
+function getXmaxApiKey() {
+  return process.env.XMAX_API_KEY?.trim() || null;
+}
 
 function getDecartApiKey() {
   return process.env.DECART_API_KEY?.trim() || null;
 }
 
-function getRealtimeBaseUrl() {
-  return process.env.DECART_REALTIME_BASE_URL?.trim() || 'wss://api3.decart.ai';
+export function normalizeRealtimeProvider(value) {
+  return value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
 }
 
-function getProviderSessionLimitSeconds() {
-  const configured = Number(process.env.DECART_MAX_SESSION_SECONDS);
+function getProviderModel(provider) {
+  return provider === 'decart' ? DECART_REALTIME_MODEL : XMAX_REALTIME_MODEL;
+}
+
+function getProviderApiKey(provider) {
+  return provider === 'decart' ? getDecartApiKey() : getXmaxApiKey();
+}
+
+function getProviderPublicLabel(provider) {
+  return provider === 'decart' ? 'Pro' : 'Plus';
+}
+
+function getXmaxApiBaseUrl() {
+  return (process.env.XMAX_API_BASE_URL?.trim() || XMAX_DEFAULT_API_BASE_URL).replace(/\/$/, '');
+}
+
+function getProviderSessionLimitSeconds(provider) {
+  const configured = Number(
+    provider === 'decart'
+      ? process.env.DECART_MAX_SESSION_SECONDS
+      : process.env.XMAX_MAX_SESSION_SECONDS,
+  );
   if (!Number.isFinite(configured)) return DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS;
   return Math.min(7200, Math.max(60, Math.floor(configured)));
 }
@@ -60,33 +90,23 @@ export function getBrowserTokenOrigins(req, platform) {
   }
 }
 
-async function createDecartClientToken(
+async function createXmaxTemporaryKey(
   apiKey,
-  userId,
-  sessionId,
   maxSeconds,
-  installationId,
-  allowedOrigins,
 ) {
-  const safeMaxSeconds = Math.max(60, Math.min(Math.floor(Number(maxSeconds) || 1800), 7200));
-  const tokenPayload = {
-    expiresIn: CLIENT_TOKEN_TTL_SECONDS,
-    allowedModels: [DECART_REALTIME_MODEL],
-    ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
-    constraints: { realtime: { maxSessionDuration: safeMaxSeconds } },
-    metadata: {
-      morphlyUserId: userId,
-      morphlySessionId: sessionId,
-      ...(installationId ? { morphlyInstallationId: installationId } : {}),
-    },
+  const pointsLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 7200));
+  const expireSeconds = Math.max(60, pointsLimit + TEMPORARY_KEY_GRACE_SECONDS);
+  const keyPayload = {
+    expireSeconds,
+    pointsLimit,
   };
 
   let providerResponse;
   try {
-    providerResponse = await fetch(`${DECART_API_BASE_URL}/v1/client/tokens`, {
+    providerResponse = await fetch(`${getXmaxApiBaseUrl()}/temporary-api-key`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
-      body: JSON.stringify(tokenPayload),
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
+      body: JSON.stringify(keyPayload),
       signal: AbortSignal.timeout(15000),
     });
   } catch (error) {
@@ -95,20 +115,20 @@ async function createDecartClientToken(
       error: 'AI_SESSION_CREATION_FAILED',
       providerStatus: null,
       details: timedOut
-        ? 'Decart did not respond in time. Please try again.'
-        : 'Decart could not be reached. Check the connection and try again.',
+        ? 'Plus did not respond in time. Please try again.'
+        : 'Plus could not be reached. Check the connection and try again.',
     } };
   }
   const providerData = await providerResponse.json().catch(() => ({}));
 
   console.log('[AI_SESSION]', {
     providerStatus: providerResponse.status,
-    hasToken: Boolean(providerData.apiKey),
-    expiresAt: providerData.expiresAt ?? null,
-    providerError: providerData.error ?? null,
+    hasTemporaryKey: Boolean(providerData?.data?.temporaryApiKey),
+    expiresAt: providerData?.data?.expireTimestamp ?? null,
+    providerError: providerData?.message ?? null,
   });
 
-  if (!providerResponse.ok || !providerData.apiKey) {
+  if (!providerResponse.ok || !providerData?.data?.temporaryApiKey) {
     const errorDetails = typeof providerData?.error === 'string'
       ? providerData.error
       : providerData?.message || providerData?.error?.message || 'Unknown provider error';
@@ -119,7 +139,115 @@ async function createDecartClientToken(
     } };
   }
 
-  return { token: providerData.apiKey, expiresAt: providerData.expiresAt ?? null };
+  return {
+    token: providerData.data.temporaryApiKey,
+    expiresAt: providerData.data.expireTimestamp ?? null,
+    pointsLimit,
+    expireSeconds,
+  };
+}
+
+async function createDecartTemporaryKey(
+  apiKey,
+  maxSeconds,
+  allowedOrigins,
+  metadata,
+) {
+  const sessionLimit = Math.max(10, Math.min(Math.floor(Number(maxSeconds) || 10), 3600));
+  const tokenTtlSeconds = Math.min(3600, sessionLimit + DECART_CLIENT_TOKEN_GRACE_SECONDS);
+  const client = createDecartClient({ apiKey });
+
+  for (let attempt = 1; attempt <= DECART_TOKEN_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const providerToken = await client.tokens.create({
+        expiresIn: tokenTtlSeconds,
+        allowedModels: [DECART_REALTIME_MODEL],
+        ...(allowedOrigins.length > 0 ? { allowedOrigins } : {}),
+        constraints: {
+          realtime: {
+            maxSessionDuration: sessionLimit,
+          },
+        },
+        metadata,
+      });
+
+      return {
+        token: providerToken.apiKey,
+        expiresAt: providerToken.expiresAt,
+        sessionLimit,
+      };
+    } catch (error) {
+      const providerStatus = Number.isInteger(error?.status)
+        ? error.status
+        : Number.isInteger(error?.data?.status)
+          ? error.data.status
+          : null;
+      const providerCode = typeof error?.code === 'string' ? error.code : null;
+      const diagnostic = `${providerCode || ''} ${error?.message || ''}`.toLowerCase();
+      const timedOut = error?.name === 'TimeoutError'
+        || error?.name === 'AbortError'
+        || /timeout|timed out/.test(diagnostic);
+      const retryable = timedOut
+        || providerStatus === null
+        || providerStatus === 408
+        || providerStatus === 429
+        || providerStatus >= 500;
+
+      console.warn('[Decart] client token request failed', {
+        attempt,
+        providerStatus,
+        providerCode,
+        retryable,
+      });
+
+      if (retryable && attempt < DECART_TOKEN_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, DECART_TOKEN_RETRY_DELAY_MS));
+        continue;
+      }
+
+      const details = providerStatus === 401 || providerStatus === 403
+        ? 'Pro could not authenticate this session. Restart Morphly or contact support.'
+        : providerStatus === 429
+          ? 'Pro is limiting new sessions right now. Wait a moment, then try again.'
+          : retryable
+            ? 'Pro is temporarily unavailable. Check your connection, then try again.'
+            : 'Pro rejected this session configuration. Try Plus or contact support.';
+
+      return { error: {
+        error: 'AI_SESSION_CREATION_FAILED',
+        providerStatus,
+        providerCode,
+        details,
+      } };
+    }
+  }
+
+  return { error: {
+    error: 'AI_SESSION_CREATION_FAILED',
+    providerStatus: null,
+    providerCode: null,
+    details: 'Pro is temporarily unavailable. Check your connection, then try again.',
+  } };
+}
+
+async function createProviderTemporaryCredential({
+  provider,
+  apiKey,
+  maxSeconds,
+  allowedOrigins,
+  userId,
+  sessionId,
+  installationId,
+}) {
+  if (provider === 'decart') {
+    return createDecartTemporaryKey(apiKey, maxSeconds, allowedOrigins, {
+      morphlySessionId: sessionId,
+      morphlyUserId: userId,
+      installationId,
+    });
+  }
+
+  return createXmaxTemporaryKey(apiKey, maxSeconds);
 }
 
 function isMissingFunctionError(error, functionName) {
@@ -129,6 +257,8 @@ function isMissingFunctionError(error, functionName) {
 }
 
 async function recordProviderTokenAudit({
+  provider,
+  model,
   userId,
   sessionId,
   installationId,
@@ -144,11 +274,12 @@ async function recordProviderTokenAudit({
     installation_id: installationId,
     session_id: sessionId,
     platform,
-    event_name: status === 'issued' ? 'decart_token_issued' : 'decart_token_failed',
+    event_name: status === 'issued'
+      ? `${provider === 'decart' ? 'decart_token' : 'xmax_key'}_issued`
+      : `${provider === 'decart' ? 'decart_token' : 'xmax_key'}_failed`,
     metadata: {
-      provider: 'decart',
-      model: DECART_REALTIME_MODEL,
-      tokenTtlSeconds: CLIENT_TOKEN_TTL_SECONDS,
+      provider,
+      model,
       maxSessionSeconds: maxSeconds,
       expiresAt,
       requestFingerprint,
@@ -158,16 +289,7 @@ async function recordProviderTokenAudit({
   });
 
   if (error) {
-    console.warn('Failed to persist Decart token audit event:', error.message || error.code);
-  }
-}
-
-async function updateSessionProviderAudit(sessionId, values) {
-  const { error } = await supabaseAdmin.from('sessions').update(values).eq('id', sessionId);
-  if (error && !/PGRST204|provider_|client_installation_id|schema cache/i.test(
-    String(error.message || error.details || error.code || ''),
-  )) {
-    throw error;
+    console.warn(`Failed to persist ${provider} credential audit event:`, error.message || error.code);
   }
 }
 
@@ -177,7 +299,7 @@ async function getRecentTokenMintCount(userId) {
     supabaseAdmin.from('sessions').select('id', { count: 'exact', head: true })
       .eq('user_id', userId).gte('created_at', since),
     supabaseAdmin.from('analytics_events').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('event_name', 'decart_token_issued').gte('created_at', since),
+      .eq('user_id', userId).in('event_name', ['xmax_key_issued', 'decart_token_issued']).gte('created_at', since),
   ]);
 
   if (sessionCountResult.error) throw sessionCountResult.error;
@@ -331,6 +453,7 @@ async function createActiveSession(userId) {
 }
 
 export default async function handler(req, res) {
+  const requestStartedAt = Date.now();
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -343,13 +466,21 @@ export default async function handler(req, res) {
       return res.status(503).json({ allowed: false, error: supabaseAdminConfigError || 'Supabase admin is not configured' });
     }
 
-    const decartApiKey = getDecartApiKey();
-    if (!decartApiKey) {
-      return res.status(503).json({ allowed: false, error: 'Missing DECART_API_KEY in server environment' });
+    const provider = normalizeRealtimeProvider(req.body?.provider);
+    const providerModel = getProviderModel(provider);
+    const providerApiKey = getProviderApiKey(provider);
+    if (!providerApiKey) {
+      const environmentName = provider === 'decart' ? 'DECART_API_KEY' : 'XMAX_API_KEY';
+      return res.status(503).json({
+        allowed: false,
+        error: `${getProviderPublicLabel(provider)} is not configured on this server.`,
+        details: `Missing ${environmentName} in server environment`,
+      });
     }
 
     const authResult = await authenticateRequestUser(req, supabaseAdmin);
     if (authResult.error) return res.status(authResult.status).json({ allowed: false, error: authResult.error });
+    const authorizationMs = Date.now() - requestStartedAt;
     const userId = authResult.user.id;
     if (req.body?.userId && req.body.userId !== userId) return res.status(403).json({ allowed: false, error: 'User mismatch' });
     const installationId = normalizeClientLabel(req.body?.installationId, 120);
@@ -362,24 +493,28 @@ export default async function handler(req, res) {
       });
     }
 
-    const { data: profile, error: profileError } = await supabaseAdmin
-      .from('users').select('account_status').eq('id', userId).maybeSingle();
-    if (profileError) throw profileError;
-    if (profile?.account_status === 'suspended') {
-      return res.status(403).json({ allowed: false, error: 'Account suspended' });
-    }
-
     await logRequestEvent('start-session.request', {
       method: req.method,
       path: '/api/start-session',
       userId,
+      provider,
+      model: providerModel,
     });
 
-    // Fetch orphaned sessions and wallet in parallel
-    const [activeSessionsResult, walletResult] = await Promise.all([
+    const validationStartedAt = Date.now();
+    // Independent account, wallet, stale-session, and rate-limit checks share one
+    // network round trip instead of delaying startup in a serial chain.
+    const [profileResult, activeSessionsResult, walletResult, recentTokenMints] = await Promise.all([
+      supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle(),
       selectActiveSessions(userId),
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
+      getRecentTokenMintCount(userId),
     ]);
+
+    if (profileResult.error) throw profileResult.error;
+    if (profileResult.data?.account_status === 'suspended') {
+      return res.status(403).json({ allowed: false, error: 'Account suspended' });
+    }
 
     if (activeSessionsResult.error) {
       console.error('Failed to load active sessions:', activeSessionsResult.error);
@@ -446,7 +581,6 @@ export default async function handler(req, res) {
       });
     }
 
-    const recentTokenMints = await getRecentTokenMintCount(userId);
     if (recentTokenMints >= TOKEN_MINT_LIMIT_PER_WINDOW) {
       await logRequestEvent('start-session.rate_limited', {
         userId,
@@ -459,38 +593,39 @@ export default async function handler(req, res) {
       });
     }
 
+    const validationMs = Date.now() - validationStartedAt;
     const requestFingerprint = getRequestFingerprint(req);
     const maxSeconds = Math.min(
       Math.floor(userCredits / CREDITS_PER_SECOND),
-      getProviderSessionLimitSeconds(),
+      getProviderSessionLimitSeconds(provider),
     );
 
-    // Create the Morphly session first so the provider token can be tagged with
-    // the exact internal session ID. Never expose or log the permanent API key.
+    // Create the Morphly session first so temporary-key issuance can be attributed
+    // to the exact internal session ID. Never expose or log the permanent API key.
+    const sessionRecordStartedAt = Date.now();
     const { data: newSession, error: sessionError } = await createActiveSession(userId);
+    const sessionRecordMs = Date.now() - sessionRecordStartedAt;
 
     if (sessionError) {
       console.error('Failed to create session:', sessionError);
       return res.status(500).json({ allowed: false, error: 'Failed to create session' });
     }
 
-    await updateSessionProviderAudit(newSession.id, {
-      provider: 'decart',
-      provider_model: DECART_REALTIME_MODEL,
-      provider_max_seconds: maxSeconds,
-      client_installation_id: installationId,
-    });
-
-    const providerSession = await createDecartClientToken(
-      decartApiKey,
-      userId,
-      newSession.id,
+    const providerCredentialStartedAt = Date.now();
+    const providerSession = await createProviderTemporaryCredential({
+      provider,
+      apiKey: providerApiKey,
       maxSeconds,
-      installationId,
       allowedOrigins,
-    );
+      userId,
+      sessionId: newSession.id,
+      installationId,
+    });
+    const providerCredentialMs = Date.now() - providerCredentialStartedAt;
     if (providerSession.error) {
       await recordProviderTokenAudit({
+        provider,
+        model: providerModel,
         userId,
         sessionId: newSession.id,
         installationId,
@@ -505,22 +640,30 @@ export default async function handler(req, res) {
       return res.status(502).json({ allowed: false, ...providerSession.error });
     }
 
-    await Promise.all([
-      updateSessionProviderAudit(newSession.id, {
-        provider_token_issued_at: new Date().toISOString(),
-        provider_token_expires_at: providerSession.expiresAt,
-      }),
-      recordProviderTokenAudit({
-        userId,
-        sessionId: newSession.id,
-        installationId,
-        platform,
-        expiresAt: providerSession.expiresAt,
-        maxSeconds,
-        requestFingerprint,
-        status: 'issued',
-      }),
-    ]);
+    const auditStartedAt = Date.now();
+    // Provider attribution lives in analytics_events. The optional provider
+    // columns are absent from older session schemas and must not block startup.
+    await recordProviderTokenAudit({
+      provider,
+      model: providerModel,
+      userId,
+      sessionId: newSession.id,
+      installationId,
+      platform,
+      expiresAt: providerSession.expiresAt,
+      maxSeconds,
+      requestFingerprint,
+      status: 'issued',
+    });
+    const auditMs = Date.now() - auditStartedAt;
+    const startupTimings = {
+      totalMs: Date.now() - requestStartedAt,
+      authorizationMs,
+      validationMs,
+      sessionRecordMs,
+      providerCredentialMs,
+      auditMs,
+    };
 
     await logRequestEvent('start-session.started', {
       userId,
@@ -529,7 +672,16 @@ export default async function handler(req, res) {
       maxSeconds,
       installationId,
       requestFingerprint,
+      provider,
+      model: providerModel,
+      startupTimings,
     });
+
+    res.setHeader(
+      'Server-Timing',
+      `auth;dur=${authorizationMs}, validation;dur=${validationMs}, session;dur=${sessionRecordMs}, ` +
+      `credential;dur=${providerCredentialMs}, audit;dur=${auditMs}`,
+    );
 
     res.json({
       allowed: true,
@@ -538,8 +690,9 @@ export default async function handler(req, res) {
       maxSeconds,
       token: providerSession.token,
       expiresAt: providerSession.expiresAt,
-      websocketUrl: getRealtimeBaseUrl(),
-      model: DECART_REALTIME_MODEL,
+      provider,
+      model: providerModel,
+      startupTimings,
     });
   } catch (error) {
     console.error('start-session unexpected error:', error);

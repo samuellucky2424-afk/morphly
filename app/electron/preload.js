@@ -13,7 +13,14 @@ contextBridge.exposeInMainWorld('electron', {
       'open-release-page',
       'window:get-full-screen',
       'window:toggle-full-screen',
-      'clipboard:write-text'
+      'clipboard:write-text',
+      'morphlyvc:status',
+      'morphlyvc:reference',
+      'morphlyvc:prepare',
+      'morphlyvc:start',
+      'morphlyvc:pitch',
+      'morphlyvc:stop',
+      'virtual-microphone:open-setup'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);

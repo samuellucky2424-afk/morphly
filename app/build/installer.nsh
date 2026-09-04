@@ -1,6 +1,8 @@
 !macro customInstall
   StrCpy $0 "not run"
   StrCpy $1 "not run"
+  StrCpy $R0 "not run"
+  StrCpy $R1 "not run"
 
   ; Remove the retired Morphly DirectShow/Media Foundation camera during an
   ; in-place upgrade while its old registrar is still available.
@@ -22,22 +24,22 @@ unityCaptureInstallRetry:
 
   DetailPrint "Registering Morphly Virtual Camera with UnityCapture..."
   IfFileExists "$WINDIR\SysWOW64\regsvr32.exe" 0 unityCaptureRegister32System
-  nsExec::ExecToLog '"$WINDIR\SysWOW64\regsvr32.exe" /s "$INSTDIR\resources\unity-capture\UnityCaptureFilter32.dll" "/i:UnityCaptureName=Morphly Virtual Camera"'
+  nsExec::ExecToLog '"$WINDIR\SysWOW64\regsvr32.exe" /s "/i:UnityCaptureName=Morphly Virtual Camera" "$INSTDIR\resources\unity-capture\UnityCaptureFilter32.dll"'
   Pop $0
   Goto unityCaptureRegister64
 
 unityCaptureRegister32System:
-  nsExec::ExecToLog '"$WINDIR\System32\regsvr32.exe" /s "$INSTDIR\resources\unity-capture\UnityCaptureFilter32.dll" "/i:UnityCaptureName=Morphly Virtual Camera"'
+  nsExec::ExecToLog '"$WINDIR\System32\regsvr32.exe" /s "/i:UnityCaptureName=Morphly Virtual Camera" "$INSTDIR\resources\unity-capture\UnityCaptureFilter32.dll"'
   Pop $0
 
 unityCaptureRegister64:
   IfFileExists "$WINDIR\Sysnative\regsvr32.exe" 0 unityCaptureRegister64System
-  nsExec::ExecToLog '"$WINDIR\Sysnative\regsvr32.exe" /s "$INSTDIR\resources\unity-capture\UnityCaptureFilter64.dll" "/i:UnityCaptureName=Morphly Virtual Camera"'
+  nsExec::ExecToLog '"$WINDIR\Sysnative\regsvr32.exe" /s "/i:UnityCaptureName=Morphly Virtual Camera" "$INSTDIR\resources\unity-capture\UnityCaptureFilter64.dll"'
   Pop $1
   Goto unityCaptureCheckResult
 
 unityCaptureRegister64System:
-  nsExec::ExecToLog '"$WINDIR\System32\regsvr32.exe" /s "$INSTDIR\resources\unity-capture\UnityCaptureFilter64.dll" "/i:UnityCaptureName=Morphly Virtual Camera"'
+  nsExec::ExecToLog '"$WINDIR\System32\regsvr32.exe" /s "/i:UnityCaptureName=Morphly Virtual Camera" "$INSTDIR\resources\unity-capture\UnityCaptureFilter64.dll"'
   Pop $1
 
 unityCaptureCheckResult:
@@ -67,12 +69,32 @@ unityCaptureCheckResult:
   StrCmp $7 "Morphly Virtual Camera" 0 unityCaptureInstallFailed
   ReadRegStr $9 HKLM "SOFTWARE\Classes\CLSID\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\Instance\{5C2CD55C-92AD-4999-8666-912BD3E70010}" "CLSID"
   StrCmp $9 "{5C2CD55C-92AD-4999-8666-912BD3E70010}" 0 unityCaptureInstallFailed
-  Goto customInstallDone
+  Goto mediaFoundationInstall
 
 unityCaptureInstallFailed:
   SetRegView 64
   MessageBox MB_ICONSTOP|MB_RETRYCANCEL "Morphly Virtual Camera could not be registered and verified.$\r$\n$\r$\nMorphly will not finish installation without both the 32-bit and 64-bit camera components.$\r$\n$\r$\n32-bit exit code: $0$\r$\n64-bit exit code: $1" /SD IDCANCEL IDRETRY unityCaptureInstallRetry
   DetailPrint "Morphly Virtual Camera registration failed; stopping installation with error 1603."
+  SetErrorLevel 1603
+  Quit
+
+mediaFoundationInstall:
+  IfFileExists "$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" 0 mediaFoundationInstallFailed
+  IfFileExists "$INSTDIR\resources\media-foundation-camera\MorphlyVirtualCameraMF.dll" 0 mediaFoundationInstallFailed
+
+mediaFoundationInstallRetry:
+  DetailPrint "Registering the Media Foundation camera for WhatsApp and modern Windows apps..."
+  nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" install --all-users'
+  Pop $R0
+  StrCmp $R0 "0" 0 mediaFoundationInstallFailed
+
+  nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" probe'
+  Pop $R1
+  StrCmp $R1 "0" customInstallDone mediaFoundationInstallFailed
+
+mediaFoundationInstallFailed:
+  MessageBox MB_ICONSTOP|MB_RETRYCANCEL "Morphly's WhatsApp-compatible camera could not be registered and verified.$\r$\n$\r$\nExit code: $R0$\r$\nVerification code: $R1" /SD IDCANCEL IDRETRY mediaFoundationInstallRetry
+  DetailPrint "Media Foundation virtual camera registration failed; stopping installation with error 1603."
   SetErrorLevel 1603
   Quit
 
@@ -83,6 +105,12 @@ customInstallDone:
 
 !macro customUnInstall
   DetailPrint "Removing Morphly Virtual Camera..."
+
+  IfFileExists "$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" 0 mediaFoundationUnregisterDone
+  nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" remove --all-users --unregister-com'
+  Pop $R0
+
+mediaFoundationUnregisterDone:
 
   IfFileExists "$INSTDIR\resources\unity-capture\UnityCaptureFilter32.dll" 0 unityCaptureUnregister64
   IfFileExists "$WINDIR\SysWOW64\regsvr32.exe" 0 unityCaptureUnregister32System

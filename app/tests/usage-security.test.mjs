@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBrowserTokenOrigins } from '../server/api/start-session.ts';
+import { normalizeRealtimeProvider } from '../server/api/start-session.ts';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = path.resolve(currentDirectory, '../..');
@@ -55,23 +56,38 @@ test('AI billing RPCs are restricted to the service role', () => {
   assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.sessions FROM anon, authenticated/);
 });
 
-test('Decart client tokens are scoped, rate-limited and attributable', () => {
-  assert.match(startSession, /CLIENT_TOKEN_TTL_SECONDS = 300/);
-  assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
-  assert.match(startSession, /allowedOrigins/);
-  assert.match(startSession, /maxSessionDuration/);
+test('Xmax temporary keys are credit-capped, short-lived, rate-limited and attributable', () => {
+  assert.match(startSession, /\/temporary-api-key/);
+  assert.match(startSession, /expireSeconds/);
+  assert.match(startSession, /pointsLimit/);
+  assert.match(startSession, /'X-Api-Key': apiKey/);
   assert.match(startSession, /AbortSignal\.timeout\(15000\)/);
-  assert.doesNotMatch(startSession, /retrying with minimal token payload/i);
-  assert.doesNotMatch(startSession, /buildTokenPayload\(false\)/);
   assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);
-  assert.match(startSession, /morphlyUserId: userId/);
-  assert.match(startSession, /morphlySessionId: sessionId/);
-  assert.match(startSession, /event_name: status === 'issued' \? 'decart_token_issued'/);
+  assert.match(startSession, /'decart_token' : 'xmax_key'/);
+  assert.match(startSession, /provider === 'decart'/);
 });
 
-test('Decart web tokens are pinned only to canonical HTTP origins', () => {
+test('Decart receives only a short-lived, model-scoped client token', () => {
+  assert.match(startSession, /process\.env\.DECART_API_KEY/);
+  assert.match(startSession, /createDecartClient\(\{ apiKey \}\)/);
+  assert.match(startSession, /client\.tokens\.create/);
+  assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
+  assert.match(startSession, /maxSessionDuration: sessionLimit/);
+  assert.match(startSession, /allowedOrigins\.length > 0/);
+  assert.match(startSession, /DECART_CLIENT_TOKEN_GRACE_SECONDS = 120/);
+  assert.match(startSession, /Math\.min\(3600, sessionLimit \+ DECART_CLIENT_TOKEN_GRACE_SECONDS\)/);
+  assert.match(startSession, /decart_token/);
+});
+
+test('Xmax remains the default realtime provider', () => {
+  assert.equal(normalizeRealtimeProvider(undefined), 'xmax');
+  assert.equal(normalizeRealtimeProvider('unknown'), 'xmax');
+  assert.equal(normalizeRealtimeProvider('decart'), 'decart');
+});
+
+test('Xmax web session issuance requires a canonical HTTP origin', () => {
   assert.deepEqual(
     getBrowserTokenOrigins({ headers: { origin: 'https://morphly.example' } }, 'web'),
     ['https://morphly.example'],
@@ -90,9 +106,11 @@ test('Decart web tokens are pinned only to canonical HTTP origins', () => {
   );
 });
 
-test('Decart cumulative generation ticks are no longer truncated to ten seconds', () => {
-  assert.match(dashboard, /MAX_GENERATION_TICK_DELTA_SECONDS = 60/);
-  assert.doesNotMatch(dashboard, /pendingBillableSecondsRef\.current \+= Math\.min\(secondsDelta, 10\)/);
+test('Xmax generation time is metered only from visible running sessions', () => {
+  assert.match(dashboard, /connectionState !== 'generating'/);
+  assert.match(dashboard, /recordBillableGenerationTime/);
+  assert.match(dashboard, /!isStreaming \|\| !hasRemoteFrame/);
+  assert.doesNotMatch(dashboard, /generationTick/);
 });
 
 test('private admin portal exposes per-user AI credit and generation-time reporting', () => {

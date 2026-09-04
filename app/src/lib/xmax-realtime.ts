@@ -1,50 +1,37 @@
-export type DecartTransformState<TImage extends Blob = File> = {
+export type XmaxTransformState<TImage extends Blob = File> = {
   prompt: string;
-  enhance: boolean;
   image: TImage | null;
 };
 
-export type DecartSessionUpdate<TImage extends Blob = File> = {
-  prompt?: string;
-  enhance: boolean;
-  image: TImage | null;
+export type XmaxRealtimeContext = {
+  prompt: string;
+  refImageUrl?: string | null;
 };
 
-export const DECART_REALTIME_MODEL = 'lucy-2.5' as const;
-export const DECART_REALTIME_RESOLUTION = '720p' as const;
-export const DECART_REFERENCE_INPUT_LIMIT_BYTES = 15 * 1024 * 1024;
-export const DECART_REFERENCE_UPLOAD_TARGET_BYTES = 5 * 1024 * 1024;
-export const DECART_REFERENCE_MAX_DIMENSION = 2048;
+export const XMAX_REALTIME_MODEL = 'x2.0' as const;
+export const XMAX_REFERENCE_INPUT_LIMIT_BYTES = 15 * 1024 * 1024;
+export const XMAX_REFERENCE_UPLOAD_TARGET_BYTES = 5 * 1024 * 1024;
+export const XMAX_REFERENCE_MAX_DIMENSION = 2048;
+export const XMAX_PASSTHROUGH_PROMPT =
+  'Preserve the person, clothing, background, lighting, framing, and natural camera appearance exactly as the input.';
 
-const DECART_REFERENCE_MIME_TYPES = new Set([
+const XMAX_REFERENCE_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
   'image/webp',
 ]);
 
-export function buildDecartConnectInitialState() {
-  // Establish the media path first. Sending image/prompt state during the room
-  // handshake can fail asynchronously while the SDK still reports "connected".
-  return { passthrough: true } as const;
-}
-
-export function buildDecartSessionUpdate<TImage extends Blob>(
-  transform: DecartTransformState<TImage>,
-): DecartSessionUpdate<TImage> | null {
-  const prompt = transform.prompt.trim();
-
-  if (!prompt && !transform.image) {
-    return null;
-  }
-
+export function buildXmaxRealtimeContext(
+  transform: XmaxTransformState,
+  refImageUrl?: string | null,
+): XmaxRealtimeContext {
   return {
-    ...(prompt ? { prompt } : {}),
-    enhance: transform.enhance,
-    image: transform.image,
+    prompt: transform.prompt.trim() || XMAX_PASSTHROUGH_PROMPT,
+    refImageUrl: transform.image ? refImageUrl ?? null : null,
   };
 }
 
-export function getDecartRealtimeUserMessage(
+export function getXmaxRealtimeUserMessage(
   error: unknown,
   fallback = 'Morphly could not update the AI video. Please try again.',
 ): string {
@@ -72,25 +59,30 @@ export function getDecartRealtimeUserMessage(
   switch (code) {
     case 'INVALID_API_KEY':
       return 'The AI session expired. Stop the stream and start it again.';
-    case 'MODEL_NOT_FOUND':
-      return 'The selected AI model is temporarily unavailable. Please try again.';
+    case 'INVALID_MODEL':
+      return 'Plus is temporarily unavailable. Please try again.';
     case 'INVALID_INPUT':
-      return 'Decart could not apply that prompt or reference image. Check it and try again.';
+      return 'Plus could not apply that prompt or reference image. Check it and try again.';
+    case 'UNSUPPORTED_MEDIA':
+    case 'MEDIA_PROCESSING_ERROR':
+      return 'Plus could not process that reference image. Select another image and try again.';
+    case 'NETWORK_ERROR':
     case 'WEB_RTC_ERROR':
+    case 'SESSION_ERROR':
       return 'The AI video connection was interrupted. Morphly is trying to recover it.';
     default:
       return fallback;
   }
 }
 
-export function shouldNormalizeDecartReference(
+export function shouldNormalizeXmaxReference(
   file: Pick<File, 'size' | 'type'>,
   width: number,
   height: number,
 ): boolean {
-  return !DECART_REFERENCE_MIME_TYPES.has(file.type.toLowerCase())
-    || file.size > DECART_REFERENCE_UPLOAD_TARGET_BYTES
-    || Math.max(width, height) > DECART_REFERENCE_MAX_DIMENSION;
+  return !XMAX_REFERENCE_MIME_TYPES.has(file.type.toLowerCase())
+    || file.size > XMAX_REFERENCE_UPLOAD_TARGET_BYTES
+    || Math.max(width, height) > XMAX_REFERENCE_MAX_DIMENSION;
 }
 
 function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob> {
@@ -99,29 +91,29 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob>
       if (blob) {
         resolve(blob);
       } else {
-        reject(new Error('Morphly could not prepare this image for Decart.'));
+        reject(new Error('Morphly could not prepare this image for Plus.'));
       }
     }, 'image/jpeg', quality);
   });
 }
 
-export async function prepareDecartReferenceImage(file: File): Promise<File> {
+export async function prepareXmaxReferenceImage(file: File): Promise<File> {
   if (!file.type.startsWith('image/')) {
     throw new Error('Select a valid image file.');
   }
 
-  if (file.size > DECART_REFERENCE_INPUT_LIMIT_BYTES) {
+  if (file.size > XMAX_REFERENCE_INPUT_LIMIT_BYTES) {
     throw new Error('The reference image must be 15 MB or smaller.');
   }
 
   const bitmap = await createImageBitmap(file);
 
   try {
-    if (!shouldNormalizeDecartReference(file, bitmap.width, bitmap.height)) {
+    if (!shouldNormalizeXmaxReference(file, bitmap.width, bitmap.height)) {
       return file;
     }
 
-    const scale = Math.min(1, DECART_REFERENCE_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
+    const scale = Math.min(1, XMAX_REFERENCE_MAX_DIMENSION / Math.max(bitmap.width, bitmap.height));
     const width = Math.max(1, Math.round(bitmap.width * scale));
     const height = Math.max(1, Math.round(bitmap.height * scale));
     const canvas = document.createElement('canvas');
@@ -130,7 +122,7 @@ export async function prepareDecartReferenceImage(file: File): Promise<File> {
 
     const context = canvas.getContext('2d', { alpha: false });
     if (!context) {
-      throw new Error('Morphly could not prepare this image for Decart.');
+      throw new Error('Morphly could not prepare this image for Plus.');
     }
 
     context.drawImage(bitmap, 0, 0, width, height);

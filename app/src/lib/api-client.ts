@@ -21,7 +21,9 @@ function getApiBase(): string {
     return LOCAL_API_BASE;
   }
 
-  const configuredBase = normalizeApiBase(import.meta.env.VITE_API_URL);
+  const configuredBase = normalizeApiBase(
+    import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL,
+  );
 
   if (configuredBase && configuredBase.startsWith('/') && isFileProtocol()) {
     return `${DEPLOYED_APP_ORIGIN}/api`;

@@ -26,7 +26,7 @@ test('UnityCapture is pinned as an upstream submodule', () => {
   assert.ok(fs.existsSync(path.join(repositoryDirectory, 'third_party/UnityCapture/Install/UnityCaptureFilter64.dll')));
 });
 
-test('the bridge publishes RGBA frames with UnityCapture shared memory', () => {
+test('the bridge publishes one adaptive frame to DirectShow and Media Foundation consumers', () => {
   const sender = readRepositoryFile('unity-capture-bridge/src/main.cpp');
 
   assert.match(sender, /#include "shared\.inl"/);
@@ -35,6 +35,10 @@ test('the bridge publishes RGBA frames with UnityCapture shared memory', () => {
   assert.match(sender, /SharedImageMemory::RESIZEMODE_LINEAR/);
   assert.match(sender, /SENDRES_WARN_FRAMESKIP/);
   assert.match(sender, /kSkippedFramesBeforeReceiverIsInactive/);
+  assert.match(sender, /morphly::Publisher mediaFoundationPublisher/);
+  assert.match(sender, /ConvertBottomUpRgbaToTopDownBgra/);
+  assert.match(sender, /IsMediaFoundationReceiverActive/);
+  assert.match(sender, /kMediaFoundationProbeIntervalMilliseconds/);
   assert.doesNotMatch(sender, /IMFVirtualCamera|MFCreateVirtualCamera|CSourceStream/);
 });
 
@@ -58,7 +62,9 @@ test('Electron starts the UnityCapture sender with an adaptive latest-frame publ
   assert.match(mainProcess, /if \(morphlyCamPublisher === controller\) \{[\s\S]*sendVirtualCameraReceiverState\(false\)/);
   assert.match(mainProcess, /operationGeneration !== virtualCameraOperationGeneration/);
   assert.match(mainProcess, /ensureUnityCaptureRegistration\(\)/);
-  assert.doesNotMatch(mainProcess, /morphly_cam_registrar|MorphlyVirtualCameraMF|MFCreateVirtualCamera/);
+  assert.match(mainProcess, /ensureMediaFoundationCameraRegistration\(\)/);
+  assert.match(mainProcess, /morphly_cam_registrar\.exe/);
+  assert.match(mainProcess, /media-foundation-camera/);
 });
 
 test('the renderer publishes one decoded-frame path without an extra typed-array copy', () => {
@@ -67,9 +73,25 @@ test('the renderer publishes one decoded-frame path without an extra typed-array
 
   assert.match(dashboard, /requestVideoFrameCallback\(renderFrame\)/);
   assert.match(dashboard, /pixels: imageData\.data/);
-  assert.match(dashboard, /virtualCameraReceiverConnectedRef\.current !== false/);
+  assert.doesNotMatch(dashboard, /virtualCameraReceiverConnectedRef\.current !== false/);
+  assert.match(dashboard, /drawBottomUpVirtualCameraFrame/);
+  assert.match(dashboard, /context\.translate\(0, targetHeight\)/);
+  assert.match(dashboard, /context\.scale\(1, -1\)/);
   assert.doesNotMatch(dashboard, /new Uint8ClampedArray\(imageData\.data\)/);
   assert.equal(publisherCalls.length, 1);
+});
+
+test('Media Foundation consumers receive continuous frames without a legacy receiver', () => {
+  const mainProcess = readRepositoryFile('app/electron/main.js');
+
+  assert.doesNotMatch(
+    mainProcess,
+    /if \(controller\.receiverReady === false && !receiverProbeDue\) \{\s*return;/,
+  );
+  assert.match(
+    mainProcess,
+    /const frameIntervalMs = Math\.max\(1, Math\.floor\(1000 \/ controller\.profile\.frameRate\)\)/,
+  );
 });
 
 test('packaging includes both upstream filters and registers a branded camera', () => {
@@ -82,9 +104,24 @@ test('packaging includes both upstream filters and registers a branded camera', 
   assert.match(afterPack, /UnityCaptureFilter32\.dll/);
   assert.match(afterPack, /UnityCaptureFilter64\.dll/);
   assert.match(afterPack, /morphly_unity_capture_sender\.exe/);
+  assert.match(afterPack, /MorphlyVirtualCameraMF\.dll/);
+  assert.match(afterPack, /morphly_cam_registrar\.exe/);
+  assert.match(afterPack, /media-foundation-camera/);
   assert.match(registrationScript, /VIDEO_INPUT_DEVICE_CATEGORY/);
   assert.match(registrationScript, /normalizeWindowsPath\(registeredFilterPath\) === normalizeWindowsPath\(expectedFilterPath\)/);
   assert.match(installer, /UnityCaptureName=Morphly Virtual Camera/g);
+  assert.match(
+    registrationScript,
+    /\['\/s', `\/i:UnityCaptureName=\$\{CAMERA_NAME\}`, filterPath\]/,
+  );
+  assert.match(
+    installer,
+    /regsvr32\.exe" \/s "\/i:UnityCaptureName=Morphly Virtual Camera" "\$INSTDIR\\resources\\unity-capture\\UnityCaptureFilter32\.dll"/,
+  );
+  assert.match(
+    installer,
+    /regsvr32\.exe" \/s "\/i:UnityCaptureName=Morphly Virtual Camera" "\$INSTDIR\\resources\\unity-capture\\UnityCaptureFilter64\.dll"/,
+  );
   assert.match(installer, /SysWOW64\\regsvr32\.exe/);
   assert.match(installer, /Sysnative\\regsvr32\.exe/);
   assert.match(installer, /\/s \/u/);
@@ -95,6 +132,8 @@ test('packaging includes both upstream filters and registers a branded camera', 
   assert.match(installer, /FriendlyName/);
   assert.match(installer, /MB_ICONSTOP\|MB_RETRYCANCEL/);
   assert.match(installer, /SetErrorLevel 1603[\s\S]*Quit/);
+  assert.match(installer, /morphly_cam_registrar\.exe" install --all-users/);
+  assert.match(installer, /morphly_cam_registrar\.exe" probe/);
   assert.deepEqual(packageConfig.build.win.target, ['nsis']);
   assert.ok(packageConfig.build.files.includes('shared/**/*'));
   assert.equal(packageConfig.build.nsis.perMachine, true);
@@ -187,7 +226,7 @@ test('desktop development builds the native sender before launching Electron', (
   );
   assert.equal(
     packageConfig.scripts['virtual-camera:ensure'],
-    'node scripts/ensure-unity-capture-registration.cjs',
+    'node scripts/ensure-unity-capture-registration.cjs && node scripts/ensure-media-foundation-camera-registration.cjs',
   );
   assert.match(packageConfig.scripts['electron:dev:wait:live'], /tcp:127\.0\.0\.1:5173/);
   assert.doesNotMatch(packageConfig.scripts['electron:dev:wait:live'], /3000/);
@@ -203,16 +242,22 @@ test('desktop development builds the native sender before launching Electron', (
   assert.match(viteConfig, /runtimeEnv\.VITE_API_PROXY_TARGET/);
 });
 
-test('the retired custom camera source tree and packaged camera DLLs are gone', () => {
-  assert.equal(fs.existsSync(path.join(repositoryDirectory, 'native-camera')), false);
+test('the Media Foundation source is restored without the retired renderer service', () => {
+  assert.equal(fs.existsSync(path.join(repositoryDirectory, 'native-camera')), true);
   assert.equal(fs.existsSync(path.join(appDirectory, 'src/services/VirtualCameraService.ts')), false);
-  assert.equal(
-    fs.existsSync(
-      path.join(
-        appDirectory,
-        'release-virtual-camera/win-unpacked/resources/morphly-cam/MorphlyVirtualCameraMF.dll'
-      )
-    ),
-    false
+  const mediaSource = readRepositoryFile('native-camera/src/virtualcam/mf_virtual_camera_source.cpp');
+  const protocol = readRepositoryFile('native-camera/include/morphly/morphly_protocol.h');
+
+  assert.match(
+    mediaSource,
+    /CreateVideoType\(MFVideoFormat_NV12[\s\S]*CreateVideoType\(MFVideoFormat_YUY2[\s\S]*mediaTypePointers\[\] = \{ nv12MediaType\.Get\(\), yuy2MediaType\.Get\(\) \}/,
   );
+  assert.match(mediaSource, /consumerHeartbeatTickMs/);
+  assert.match(mediaSource, /GENERIC_READ \| GENERIC_WRITE/);
+  assert.match(mediaSource, /ResizeBgraNearest/);
+  assert.match(mediaSource, /sharedConfig\.width != width \|\| sharedConfig\.height != height/);
+  assert.doesNotMatch(mediaSource, /\[Stream::RequestSample\] called/);
+  assert.doesNotMatch(mediaSource, /sampleFrameIndex_ % 90/);
+  assert.match(protocol, /kProtocolVersion = 2/);
+  assert.match(protocol, /consumerHeartbeatTickMs/);
 });

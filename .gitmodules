@@ -1,3 +1,6 @@
 [submodule "third_party/UnityCapture"]
 	path = third_party/UnityCapture
 	url = https://github.com/schellingb/UnityCapture.git
+[submodule "third_party/MeanVC2"]
+	path = third_party/MeanVC2
+	url = https://github.com/ASLP-lab/MeanVC2.git

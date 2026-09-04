@@ -1,8 +1,8 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.4.3",
-  "description": "Morphly Desktop Electron package with bundled virtual camera install flow.",
+  "version": "2.5.0",
+  "description": "Morphly Desktop with bundled MorphlyVC voice engine and virtual camera support.",
   "author": "Morphly",
   "repository": {
     "type": "git",
@@ -31,10 +31,10 @@
     "electron:dev:wait:live": "wait-on tcp:127.0.0.1:5173 && node scripts/launch-branded-electron-dev.cjs",
     "clean:build": "node scripts/clean-build.cjs",
     "virtual-camera:build": "cmake -S ../unity-capture-bridge -B ../unity-capture-bridge/build -A x64 && cmake --build ../unity-capture-bridge/build --config Release",
-    "virtual-camera:ensure": "node scripts/ensure-unity-capture-registration.cjs",
-    "virtual-camera:install": "node scripts/unity-capture-registration.cjs install",
-    "virtual-camera:uninstall": "node scripts/unity-capture-registration.cjs uninstall",
-    "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe",
+    "virtual-camera:ensure": "node scripts/ensure-unity-capture-registration.cjs && node scripts/ensure-media-foundation-camera-registration.cjs",
+    "virtual-camera:install": "node scripts/unity-capture-registration.cjs install && node scripts/media-foundation-camera-registration.cjs install",
+    "virtual-camera:uninstall": "node scripts/media-foundation-camera-registration.cjs uninstall && node scripts/unity-capture-registration.cjs uninstall",
+    "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe && node scripts/media-foundation-camera-registration.cjs probe",
     "electron:build": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish never",
     "electron:build:dir": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win dir",
     "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always"
@@ -42,6 +42,10 @@
   "build": {
     "appId": "com.morphly.app",
     "productName": "Morphly Desktop",
+    "compression": "maximum",
+    "toolsets": {
+      "winCodeSign": "1.1.0"
+    },
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -49,12 +53,26 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "server/meanvc-runtime.js",
       "shared/**/*"
     ],
     "extraResources": [
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": ".meanvc/runtime-40ms",
+        "to": "morphlyvc/runtime-40ms",
+        "filter": [
+          "**/*",
+          "!PySide6{,/**/*}",
+          "!shiboken6{,/**/*}"
+        ]
+      },
+      {
+        "from": "server/meanvc-realtime.py",
+        "to": "morphlyvc/meanvc-realtime.py"
       }
     ],
     "afterPack": "build/afterPack.cjs",
@@ -68,6 +86,7 @@
     "nsis": {
       "artifactName": "Morphly-Setup-${version}.${ext}",
       "include": "build/installer.nsh",
+      "differentialPackage": false,
       "oneClick": false,
       "perMachine": true,
       "allowElevation": true,
@@ -86,7 +105,7 @@
     ]
   },
   "dependencies": {
-    "@decartai/sdk": "^0.1.21",
+    "@decartai/sdk": "^0.1.22",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -115,6 +134,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.100.1",
+    "@xmaxai/sdk-global": "^1.1.7",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

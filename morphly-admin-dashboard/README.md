@@ -10,7 +10,7 @@ Open `index.html` directly in a browser, or run a static server:
 npx serve .
 ```
 
-The dashboard is connected to Morphly's authenticated backend. It signs administrators in with Supabase Auth and sends the access token to protected admin endpoints. No service-role or Decart key is included in the browser.
+The dashboard is connected to Morphly's authenticated backend. It signs administrators in with Supabase Auth and sends the access token to protected admin endpoints. No service-role or permanent Xmax key is included in the browser.
 
 ## Files
 

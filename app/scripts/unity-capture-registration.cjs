@@ -74,7 +74,7 @@ function registerFilter(filter, uninstall = false) {
   const filterPath = path.join(upstreamInstallDirectory, filter.file);
   const args = uninstall
     ? ['/s', '/u', filterPath]
-    : ['/s', filterPath, `/i:UnityCaptureName=${CAMERA_NAME}`];
+    : ['/s', `/i:UnityCaptureName=${CAMERA_NAME}`, filterPath];
   const result = run(filter.regsvr32, args);
 
   if (result.status !== 0) {

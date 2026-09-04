@@ -45,16 +45,6 @@ export default defineConfig(({ command, mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
-    // Decart creates frame-metadata-worker.js through import.meta.url at
-    // runtime. Pre-bundling the SDK moves the parent module into .vite/deps
-    // without copying that sibling worker, which breaks every realtime start.
-    optimizeDeps: {
-      exclude: ['@decartai/sdk'],
-      // The excluded SDK imports p-retry, which in turn default-imports its
-      // CommonJS-only retry dependency. Optimize that exact nested copy so
-      // the browser receives a valid ESM interop wrapper.
-      include: ['@decartai/sdk > p-retry > retry'],
-    },
     server: {
       host: '127.0.0.1',
       proxy: {

@@ -19,11 +19,18 @@ release/
 *.snap
 
 # Electron build artifacts
+/build/
 app/release/
+app/release-*/
+app/release-morphlyvc-validation*/
 app/release-virtual-camera/
 .push-fix/app/release/
 app/.cache/
+app/.meanvc/
 unity-capture-bridge/build/
+unity-capture-bridge/build-*/
+app/server/__pycache__/
+*.pyc
 
 # Debug / probe artifacts from development
 .edge-probe-profile/

@@ -34,16 +34,17 @@ Packaging:
   npm run electron:build      Builds the Windows installer from the current dist/electron folders.
   npm run electron:build:dir  Builds the unpacked Windows app for packaging smoke tests.
 
-UnityCapture virtual camera:
+Windows virtual camera:
   git submodule update --init --recursive
   npm run virtual-camera:build
   npm run virtual-camera:install  # Run from an Administrator terminal for local development
 
   The Windows installer bundles the pinned upstream UnityCapture 32-bit and
-  64-bit filters plus Morphly's frame sender, then registers the device as
-  "Morphly Virtual Camera".
+  64-bit filters, Morphly's adaptive frame sender, and a Media Foundation/NV12
+  source for WhatsApp. All paths are registered as "Morphly Virtual Camera".
 
 Release outputs:
   release/Morphly Setup 1.2.33.exe
   release/Morphly 1.2.33.exe
   release/win-unpacked/resources/unity-capture/
+  release/win-unpacked/resources/media-foundation-camera/

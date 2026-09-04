@@ -6,6 +6,10 @@ const UNITY_CAPTURE_FILTERS = [
   'UnityCaptureFilter64.dll'
 ];
 const SENDER_EXE = 'morphly_unity_capture_sender.exe';
+const MEDIA_FOUNDATION_CAMERA_ARTIFACTS = [
+  'MorphlyVirtualCameraMF.dll',
+  'morphly_cam_registrar.exe'
+];
 const BUILD_CONFIGS = ['Release', 'RelWithDebInfo', 'Debug'];
 
 function getSenderBuildRoots(appDir) {
@@ -50,6 +54,42 @@ async function resolveSender(appDir) {
   );
 }
 
+async function resolveMediaFoundationCameraArtifacts(appDir) {
+  const buildRoots = getSenderBuildRoots(appDir);
+  const artifacts = {};
+
+  for (const artifactName of MEDIA_FOUNDATION_CAMERA_ARTIFACTS) {
+    let resolved = null;
+    for (const buildRoot of buildRoots) {
+      const candidateDirectories = [
+        path.join(buildRoot, 'native-camera'),
+        ...BUILD_CONFIGS.map((config) => path.join(buildRoot, 'native-camera', config)),
+        buildRoot,
+        ...BUILD_CONFIGS.map((config) => path.join(buildRoot, config))
+      ];
+
+      for (const candidateDirectory of candidateDirectories) {
+        const candidate = path.join(candidateDirectory, artifactName);
+        if (await fileExists(candidate)) {
+          resolved = candidate;
+          break;
+        }
+      }
+
+      if (resolved) break;
+    }
+
+    if (!resolved) {
+      throw new Error(
+        `Unable to locate ${artifactName}. Run "npm run virtual-camera:build" before packaging.`
+      );
+    }
+    artifacts[artifactName] = resolved;
+  }
+
+  return artifacts;
+}
+
 async function resolveUnityCaptureArtifacts(appDir) {
   const upstreamInstallDirectory = path.resolve(
     appDir,
@@ -81,14 +121,27 @@ async function resolveUnityCaptureArtifacts(appDir) {
 module.exports = async function afterPack(context) {
   const appDirectory = context.packager?.info?.appDir ?? context.packager?.projectDir ?? process.cwd();
   const artifacts = await resolveUnityCaptureArtifacts(appDirectory);
+  const mediaFoundationArtifacts = await resolveMediaFoundationCameraArtifacts(appDirectory);
   const destinationDirectory = path.join(context.appOutDir, 'resources', 'unity-capture');
-
-  await fs.mkdir(destinationDirectory, { recursive: true });
-  await Promise.all(
-    Object.entries(artifacts).map(([artifactName, sourcePath]) =>
-      fs.copyFile(sourcePath, path.join(destinationDirectory, artifactName))
-    )
+  const mediaFoundationDestinationDirectory = path.join(
+    context.appOutDir,
+    'resources',
+    'media-foundation-camera'
   );
 
-  console.log(`[afterPack] Bundled the Morphly sender and upstream UnityCapture filters into ${destinationDirectory}`);
+  await fs.mkdir(destinationDirectory, { recursive: true });
+  await fs.mkdir(mediaFoundationDestinationDirectory, { recursive: true });
+  await Promise.all([
+    ...Object.entries(artifacts).map(([artifactName, sourcePath]) =>
+      fs.copyFile(sourcePath, path.join(destinationDirectory, artifactName))
+    ),
+    ...Object.entries(mediaFoundationArtifacts).map(([artifactName, sourcePath]) =>
+      fs.copyFile(sourcePath, path.join(mediaFoundationDestinationDirectory, artifactName))
+    )
+  ]);
+
+  console.log(
+    `[afterPack] Bundled UnityCapture into ${destinationDirectory} and ` +
+    `the Media Foundation camera into ${mediaFoundationDestinationDirectory}`
+  );
 };

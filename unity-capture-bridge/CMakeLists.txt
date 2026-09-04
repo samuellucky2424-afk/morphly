@@ -27,12 +27,21 @@ if(NOT EXISTS "${UNITY_CAPTURE_SOURCE_DIR}/shared.inl")
     )
 endif()
 
+add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../native-camera"
+    "${CMAKE_CURRENT_BINARY_DIR}/native-camera"
+)
+
 add_executable(morphly_unity_capture_sender
     src/main.cpp
 )
 
 target_include_directories(morphly_unity_capture_sender PRIVATE
     "${UNITY_CAPTURE_SOURCE_DIR}"
+)
+
+target_link_libraries(morphly_unity_capture_sender PRIVATE
+    morphly_publisher
 )
 
 target_compile_definitions(morphly_unity_capture_sender PRIVATE

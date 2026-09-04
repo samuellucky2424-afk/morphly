@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@decartai/sdk": "^0.1.21",
     "@supabase/supabase-js": "^2.100.1",
+    "@xmaxai/sdk-global": "^1.1.7",
     "concurrently": "^9.2.1"
   },
   "scripts": {

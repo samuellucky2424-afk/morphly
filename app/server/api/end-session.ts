@@ -96,7 +96,7 @@ async function updateEndedSession(sessionId, secondsUsed, creditsUsed) {
     .eq('status', 'active');
 }
 
-// Bills only seconds already recorded from Decart generation ticks.
+// Bills only generation seconds already recorded while Xmax X2 was running.
 async function billAndCloseSession(session, userId, finalSecondsDelta = 0) {
   const { data: walletData, error: walletError } = await supabaseAdmin
     .from('wallets').select('credits').eq('user_id', userId).maybeSingle();

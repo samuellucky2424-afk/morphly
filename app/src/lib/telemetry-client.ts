@@ -9,7 +9,7 @@ type TelemetryEventName =
   | 'payment_started'
   | 'payment_succeeded'
   | 'payment_failed'
-  | 'decart_token_requested'
+  | 'xmax_key_requested'
   | 'connection_started'
   | 'connection_failed'
   | 'first_frame_received'

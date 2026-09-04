@@ -6,17 +6,21 @@ type QualityProfile = {
   height: number;
   targetFps: number;
   maxFps: number;
+  maxKbps: number;
+  contentHint: 'motion' | 'detail';
 };
 
 export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
-  // Lower modes are connection fallbacks, but stay at the same 16:9 aspect
-  // ratio as Lucy 2.5 so the browser never crops or stretches the source.
+  // Lower modes remain available as explicit user choices. The default HD mode
+  // explicitly publishes a standard 16:9 720p stream to the Plus engine.
   fast: {
     label: 'Fast',
     width: 640,
     height: 360,
     targetFps: 24,
     maxFps: 30,
+    maxKbps: 700,
+    contentHint: 'detail',
   },
   balanced: {
     label: 'Balanced',
@@ -24,13 +28,17 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
     height: 540,
     targetFps: 30,
     maxFps: 30,
+    maxKbps: 1000,
+    contentHint: 'detail',
   },
   hd: {
-    label: 'HD 720p',
+    label: 'Plus 720p',
     width: 1280,
     height: 720,
-    targetFps: 30,
-    maxFps: 30,
+    targetFps: 24,
+    maxFps: 24,
+    maxKbps: 1200,
+    contentHint: 'detail',
   },
 };
 

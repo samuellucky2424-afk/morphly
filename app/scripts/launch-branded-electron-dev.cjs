@@ -1,4 +1,5 @@
 const fs = require('fs');
+const net = require('net');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
@@ -135,32 +136,106 @@ function prepareBrandedExecutable() {
   }
 }
 
-prepareBrandedExecutable();
-
-const childEnvironment = { ...process.env };
-childEnvironment.MORPHLY_DESKTOP_DEV = '1';
-delete childEnvironment.ELECTRON_RUN_AS_NODE;
-
-const electronProcess = spawn(brandedExecutable, [appDirectory], {
-  cwd: appDirectory,
-  env: childEnvironment,
-  stdio: 'inherit',
-  windowsHide: false,
-});
-
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.on(signal, () => {
-    if (!electronProcess.killed) {
-      electronProcess.kill();
-    }
+function canConnect(port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const finish = (available) => {
+      socket.destroy();
+      resolve(available);
+    };
+    socket.setTimeout(500);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
   });
 }
 
-electronProcess.on('error', (error) => {
-  console.error('Unable to launch the branded Morphly Electron runtime:', error);
-  process.exitCode = 1;
-});
+async function waitForPort(port, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await canConnect(port)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Local Morphly service did not open port ${port}.`);
+}
 
-electronProcess.on('exit', (code) => {
-  process.exitCode = code ?? 0;
+async function ensureService(port, argumentsList) {
+  if (await canConnect(port)) {
+    return null;
+  }
+
+  const serviceEnvironment = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+  const service = spawn(sourceExecutable, argumentsList, {
+    cwd: appDirectory,
+    env: serviceEnvironment,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  await waitForPort(port);
+  return service;
+}
+
+async function launch() {
+  prepareBrandedExecutable();
+
+  const ownedServices = [];
+  const apiService = await ensureService(3000, [
+    path.join(appDirectory, 'node_modules', 'tsx', 'dist', 'cli.mjs'),
+    path.join(appDirectory, 'server.js'),
+  ]);
+  if (apiService) ownedServices.push(apiService);
+
+  const rendererService = await ensureService(5173, [
+    path.join(appDirectory, 'node_modules', 'vite', 'bin', 'vite.js'),
+    '--host',
+    '127.0.0.1',
+  ]);
+  if (rendererService) ownedServices.push(rendererService);
+
+  const childEnvironment = { ...process.env };
+  childEnvironment.MORPHLY_DESKTOP_DEV = '1';
+  delete childEnvironment.ELECTRON_RUN_AS_NODE;
+
+  const electronProcess = spawn(brandedExecutable, [appDirectory], {
+    cwd: appDirectory,
+    env: childEnvironment,
+    stdio: 'inherit',
+    windowsHide: false,
+  });
+
+  const shutdown = () => {
+    if (!electronProcess.killed) {
+      electronProcess.kill();
+    }
+    for (const service of ownedServices) {
+      if (!service.killed) {
+        service.kill();
+      }
+    }
+  };
+
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, shutdown);
+  }
+
+  electronProcess.on('error', (error) => {
+    console.error('Unable to launch the branded Morphly Electron runtime:', error);
+    process.exitCode = 1;
+  });
+
+  electronProcess.on('exit', (code) => {
+    for (const service of ownedServices) {
+      if (!service.killed) {
+        service.kill();
+      }
+    }
+    process.exitCode = code ?? 0;
+  });
+}
+
+launch().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
 });

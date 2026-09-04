@@ -1,9 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { createDecartClient, models, type RealTimeClient } from '@decartai/sdk';
+import { createXmaxClient, models, type RealtimeSession } from '@xmaxai/sdk-global';
 import {
-  Briefcase,
-  Home,
-  Trees,
   Camera,
   VideoOff,
   Loader2,
@@ -12,91 +9,14 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetchWithAuth } from '@/lib/api-client';
+import { BACKGROUND_PRESETS } from '@/lib/background-presets';
 import {
-  DECART_REALTIME_MODEL,
-  DECART_REALTIME_RESOLUTION,
-} from '@/lib/decart-realtime';
+  XMAX_PASSTHROUGH_PROMPT,
+  XMAX_REALTIME_MODEL,
+} from '@/lib/xmax-realtime';
 
-export interface BackgroundPreset {
-  id: string;
-  label: string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
-  prompt: string;
-  avatarPrompt?: string;
-  snippet?: string;
-}
-
-export const BACKGROUND_PRESETS: BackgroundPreset[] = [
-  {
-    id: 'original',
-    label: 'Original Room (Natural Camera)',
-    description: 'Keep your real camera background',
-    icon: Camera,
-    prompt: '',
-    avatarPrompt: 'Substitute the character in the video with the person in the reference image.',
-    snippet: '',
-  },
-  {
-    id: 'office',
-    label: 'Executive Office (Sitting at Desk)',
-    description: 'Sitting in black leather chair at wooden desk with laptop & paperwork',
-    icon: Briefcase,
-    prompt: 'Change the background to a realistic executive office with a black leather desk chair, wooden desk with laptop and paperwork, window blinds, and natural warm indoor lighting, photorealistic real photo camera shot.',
-    avatarPrompt: 'Substitute the character in the video with the person in the reference image sitting naturally upright in a black leather executive office chair behind a wooden desk with an open laptop, notebooks, pen, window blinds, and natural warm indoor lighting, photorealistic candid webcam shot.',
-    snippet: 'a realistic executive office with a black leather desk chair, wooden desk with laptop and paperwork, window blinds, and natural warm indoor lighting, photorealistic real photo.',
-  },
-  {
-    id: 'room',
-    label: 'Modern Living Room (Sunlit Interior)',
-    description: 'Inside a bright modern home with wooden staircase and sunlit glass doors',
-    icon: Home,
-    prompt: 'Change the background to a bright modern home interior with an open wooden staircase, tall glass patio doors, clean architecture, indoor potted plants, and natural soft daylight, photorealistic real photo camera shot.',
-    avatarPrompt: 'Substitute the character in the video with the person in the reference image naturally inside a clean modern home interior with an open wooden staircase, tall sunlit glass doors, indoor potted plants, and soft natural daylight, photorealistic candid home webcam shot.',
-    snippet: 'a bright modern home interior with an open wooden staircase, tall glass patio doors, clean architecture, and natural soft daylight, photorealistic real photo.',
-  },
-  {
-    id: 'garden',
-    label: 'Sunny Garden (Outdoor Lawn)',
-    description: 'Sitting outdoors in a lush green backyard garden with trees and sunlight',
-    icon: Trees,
-    prompt: 'Change the background to a lush green backyard garden with leafy trees, blooming flowers, manicured green grass lawn, low wall, and warm natural outdoor sunlight, photorealistic real photo camera shot.',
-    avatarPrompt: 'Substitute the character in the video with the person in the reference image sitting comfortably outdoors in a lush green backyard garden with leafy green trees, grass lawn, low wall, and warm natural outdoor sunlight, photorealistic candid outdoor shot.',
-    snippet: 'a lush green backyard garden with leafy trees, blooming flowers, manicured green grass lawn, and warm natural outdoor sunlight, photorealistic real photo.',
-  },
-];
-
-export function buildDecartTransformPrompt(
-  hasReferenceImage: boolean,
-  presetId: string,
-  customText: string = '',
-): string {
-  const customTrimmed = customText.trim();
-  if (customTrimmed) {
-    const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
-    if (hasReferenceImage) {
-      return `Substitute the character in the video with the person in the reference image, and change the background to ${cleanCustom}, natural room lighting, photorealistic candid shot.`;
-    }
-    return `Change the background to ${cleanCustom}, natural room lighting, photorealistic candid shot.`;
-  }
-
-  const preset = BACKGROUND_PRESETS.find((p) => p.id === presetId) || BACKGROUND_PRESETS[0];
-  if (preset.id === 'original' || !preset.prompt) {
-    return hasReferenceImage
-      ? 'Substitute the character in the video with the person in the reference image.'
-      : '';
-  }
-
-  if (hasReferenceImage && preset.avatarPrompt) {
-    return preset.avatarPrompt;
-  }
-
-  if (hasReferenceImage && preset.snippet) {
-    return `Substitute the character in the video with the person in the reference image naturally fitting into ${preset.snippet}`;
-  }
-
-  return preset.prompt;
-}
+export { BACKGROUND_PRESETS, buildXmaxTransformPrompt } from '@/lib/background-presets';
+export type { BackgroundPreset } from '@/lib/background-presets';
 
 export interface BackgroundReplacerProps {
   onStreamStateChange?: (isStreaming: boolean) => void;
@@ -114,7 +34,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
 
   const outputVideoRef = useRef<HTMLVideoElement>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const realtimeClientRef = useRef<RealTimeClient | null>(null);
+  const realtimeSessionRef = useRef<RealtimeSession | null>(null);
 
   const fetchClientToken = async (): Promise<{ token: string; websocketUrl?: string }> => {
     const response = await apiFetchWithAuth('/start-session', {
@@ -137,13 +57,11 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
   };
 
   const stopStream = useCallback(() => {
-    if (realtimeClientRef.current) {
-      try {
-        realtimeClientRef.current.disconnect();
-      } catch (e) {
-        console.warn('Error disconnecting realtime client:', e);
-      }
-      realtimeClientRef.current = null;
+    if (realtimeSessionRef.current) {
+      void realtimeSessionRef.current.disconnect().catch((error) => {
+        console.warn('Error disconnecting Xmax realtime session:', error);
+      });
+      realtimeSessionRef.current = null;
     }
 
     if (localStreamRef.current) {
@@ -174,68 +92,70 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
     setStatusMessage('Accessing camera...');
 
     try {
-      const model = models.realtime(DECART_REALTIME_MODEL);
+      const model = models.realtime(XMAX_REALTIME_MODEL);
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: model.width },
-          height: { ideal: model.height },
-          frameRate: model.fps,
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 24, max: 24 },
         },
         audio: false,
       });
       localStreamRef.current = stream;
 
       setStatusMessage('Creating AI session...');
-      const { token, websocketUrl } = await fetchClientToken();
+      const { token } = await fetchClientToken();
 
-      setStatusMessage('Connecting to Decart Realtime...');
-      const client = createDecartClient({
+      setStatusMessage('Connecting to Plus...');
+      const client = createXmaxClient({
         apiKey: token,
-        ...(websocketUrl ? { realtimeBaseUrl: websocketUrl } : {}),
       });
 
       const initialPreset = BACKGROUND_PRESETS.find((p) => p.id === activePreset);
-      const initialPrompt = customPrompt.trim() || initialPreset?.prompt || BACKGROUND_PRESETS[0].prompt;
+      const initialPrompt = customPrompt.trim()
+        || initialPreset?.prompt
+        || XMAX_PASSTHROUGH_PROMPT;
 
-      const rtClient = await client.realtime.connect(stream, {
+      const realtimeSession = await client.realtime.connect(stream, {
         model,
-        mirror: 'auto',
-        resolution: DECART_REALTIME_RESOLUTION,
-        initialState: {
-          prompt: {
-            text: initialPrompt,
-            enhance: true,
-          },
+        stream: {
+          width: 1280,
+          height: 720,
+          fps: 24,
+          maxKbps: 1200,
+          contentHint: 'motion',
         },
+        audio: { publish: false, subscribe: false },
+        context: { prompt: initialPrompt },
+        autoStart: true,
         onRemoteStream: (remoteStream: MediaStream) => {
           if (outputVideoRef.current) {
             outputVideoRef.current.srcObject = remoteStream;
             void outputVideoRef.current.play().catch(console.error);
           }
         },
-      });
-
-      rtClient.on('connectionChange', (state) => {
-        setConnectionState(state);
-        if (state === 'disconnected') {
+        onStateChange: (state) => {
+          setConnectionState(state === 'running' ? 'generating' : state);
+        },
+        onDisconnect: () => {
+          realtimeSessionRef.current = null;
           stopStream();
-        }
+        },
+        onError: (message, error) => {
+          console.error('[Xmax Realtime Error]', error);
+          setError(message || 'Stream error');
+        },
       });
 
-      rtClient.on('error', (err: { message: string }) => {
-        console.error('[Decart Realtime Error]', err);
-        setError(err.message || 'Stream error');
-      });
-
-      realtimeClientRef.current = rtClient;
+      realtimeSessionRef.current = realtimeSession;
       setIsStreaming(true);
       setStatusMessage('Live');
       onStreamStateChange?.(true);
       toast.success('Live background replacement active!');
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Background replacer error:', err);
-      const msg = err.message || 'Failed to start background replacement';
+      const msg = err instanceof Error ? err.message : 'Failed to start background replacement';
       setError(msg);
       toast.error(msg);
       stopStream();
@@ -250,13 +170,16 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
     const preset = BACKGROUND_PRESETS.find((p) => p.id === presetId);
     if (!preset) return;
 
-    if (realtimeClientRef.current && isStreaming) {
+    if (realtimeSessionRef.current && isStreaming) {
       try {
         setStatusMessage(`Switching to ${preset.label}...`);
-        await realtimeClientRef.current.setPrompt(preset.prompt, { enhance: true });
+        await realtimeSessionRef.current.set({
+          prompt: preset.prompt || XMAX_PASSTHROUGH_PROMPT,
+          refImageUrl: null,
+        });
         setStatusMessage('Live');
         toast.success(`Background updated: ${preset.label}`);
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Failed to update prompt:', err);
         setError('Failed to switch background. Please try another.');
       }
@@ -268,18 +191,18 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
     if (!customPrompt.trim()) return;
 
     setActivePreset('custom');
-    if (realtimeClientRef.current && isStreaming) {
+    if (realtimeSessionRef.current && isStreaming) {
       try {
         setStatusMessage('Applying custom background...');
         const fullPrompt = customPrompt.toLowerCase().startsWith('change the background to')
           ? customPrompt
           : `Change the background to ${customPrompt}`;
-        await realtimeClientRef.current.setPrompt(fullPrompt, { enhance: true });
+        await realtimeSessionRef.current.set({ prompt: fullPrompt, refImageUrl: null });
         setStatusMessage('Live');
         toast.success('Custom background applied!');
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error('Failed to apply custom prompt:', err);
-        setError(err.message || 'Failed to apply custom background');
+        setError(err instanceof Error ? err.message : 'Failed to apply custom background');
       }
     }
   };
@@ -292,7 +215,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
             <Sparkles className="w-5 h-5 text-blue-400" />
             AI Live Background Replacement
           </h2>
-          <p className="text-xs text-zinc-400">Decart Realtime API • Sub-500ms zero-latency video restyling</p>
+          <p className="text-xs text-zinc-400">Plus realtime video transformation</p>
         </div>
         <div className="flex items-center gap-3">
           {connectionState !== 'disconnected' && (

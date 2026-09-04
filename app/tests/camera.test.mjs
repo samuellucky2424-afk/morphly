@@ -87,13 +87,15 @@ test('camera constraints always use the exact selected deviceId', () => {
   assert.equal(constraints.audio, false);
 });
 
-test('HD camera input matches Lucy 2.5 native 720p dimensions and frame rate', () => {
+test('default Plus input publishes a standard 720p profile', () => {
   assert.deepEqual(QUALITY_MODE_PROFILES.hd, {
-    label: 'HD 720p',
+    label: 'Plus 720p',
     width: 1280,
     height: 720,
-    targetFps: 30,
-    maxFps: 30,
+    targetFps: 24,
+    maxFps: 24,
+    maxKbps: 1200,
+    contentHint: 'detail',
   });
 });
 

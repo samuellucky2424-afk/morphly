@@ -495,13 +495,13 @@ function getSessionDurationSeconds(session, nowMs) {
 }
 
 /**
- * Admin-only Decart usage report.
+ * Admin-only AI provider usage report.
  *
  * "Untracked exposure" is intentionally not presented as confirmed billing. It
  * is the portion of a session that had a first-frame event but was not covered
  * by recorded generation ticks, capped by the provider session limit. This
  * makes client heartbeat failures and possible token replay visible without
- * claiming that every wall-clock second was billed by Decart.
+ * claiming that every wall-clock second was billed by the provider.
  */
 export async function listAdminUsage(supabaseAdmin, options = {}) {
   const filters = normalizeReportOptions(options);
@@ -535,7 +535,7 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
       () => supabaseAdmin.from('analytics_events')
         .select('user_id, session_id, installation_id, event_name, metadata, created_at')
         .gte('created_at', filters.since)
-        .in('event_name', ['first_frame_received', 'decart_token_issued'])
+        .in('event_name', ['first_frame_received', 'xmax_key_issued', 'decart_token_issued'])
         .order('created_at', { ascending: false }),
       'analytics_events',
     ),
@@ -587,7 +587,7 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
     if (event.session_id && event.installation_id && !installationBySessionId.has(event.session_id)) {
       installationBySessionId.set(event.session_id, event.installation_id);
     }
-    if (event.event_name === 'decart_token_issued' && event.user_id) {
+    if (['xmax_key_issued', 'decart_token_issued'].includes(event.event_name) && event.user_id) {
       tokenEventsByUserId.set(event.user_id, (tokenEventsByUserId.get(event.user_id) || 0) + 1);
     }
   }
@@ -626,7 +626,8 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
       untrackedExposureSeconds,
       untrackedExposureCredits: untrackedExposureSeconds * 2,
       providerMaxSeconds,
-      providerModel: session.provider_model || 'lucy-2.5',
+      provider: session.provider || 'unknown',
+      providerModel: session.provider_model || (session.provider === 'xmax' ? 'x2.0' : 'unknown'),
       installationId: session.client_installation_id || installationBySessionId.get(session.id) || null,
       sawFirstFrame,
     };
