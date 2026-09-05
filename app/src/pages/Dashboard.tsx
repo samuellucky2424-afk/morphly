@@ -164,12 +164,12 @@ const FREEZE_RESTART_THRESHOLD_MS = 12000;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
-  xmax: 45000,
+  xmax: 30000,
   decart: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
-  xmax: 3,
+  xmax: 2,
   // The Pro SDK already retries WebRTC internally with exponential backoff.
   decart: 1,
 };
