@@ -79,6 +79,14 @@ unityCaptureInstallFailed:
   Quit
 
 mediaFoundationInstall:
+  ; MFCreateVirtualCamera is available starting with Windows 11 build 22000.
+  ; Do not fail a Windows 10 installation because this API cannot load there.
+  ReadRegStr $R2 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" "CurrentBuildNumber"
+  IntCmp $R2 22000 mediaFoundationInstallSupported mediaFoundationUnsupported mediaFoundationInstallSupported
+mediaFoundationUnsupported:
+  DetailPrint "Windows 10: legacy camera registered; modern MF camera requires Windows 11."
+  Goto vbCableInstall
+mediaFoundationInstallSupported:
   IfFileExists "$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" 0 mediaFoundationInstallFailed
   IfFileExists "$INSTDIR\resources\media-foundation-camera\MorphlyVirtualCameraMF.dll" 0 mediaFoundationInstallFailed
 
@@ -88,7 +96,8 @@ mediaFoundationInstallRetry:
   Pop $R0
   StrCmp $R0 "0" 0 mediaFoundationInstallFailed
 
-  nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" probe'
+  ; Registration checks must not contend with WhatsApp for a live camera stream.
+  nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" probe-registration'
   Pop $R1
   StrCmp $R1 "0" vbCableInstall mediaFoundationInstallFailed
 
@@ -120,6 +129,12 @@ customInstallDone:
 !macroend
 
 !macro customUnInstall
+  ; The incoming installer refreshes registrations. Removing system-lifetime
+  ; camera devices during an update can leave other apps with stale identities.
+  ${if} ${isUpdated}
+    DetailPrint "Preserving Morphly camera registrations during update."
+    Goto customUnInstallDone
+  ${endif}
   DetailPrint "Removing Morphly Virtual Camera..."
 
   IfFileExists "$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" 0 mediaFoundationUnregisterDone

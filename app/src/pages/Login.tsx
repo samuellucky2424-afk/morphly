@@ -1,19 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Video, Loader2, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
-import { toast } from 'sonner';
 import { supabase } from '@/lib/supabase';
+import { CONFIRM_EMAIL_MESSAGE, getPasswordResetUrl, normalizeEmail, RESET_REQUEST_MESSAGE } from '@/lib/auth-flow';
 import { validateReferralCode } from '@/lib/account';
 import {
   getReferralCodeFormatError,
   normalizeReferralCode,
 } from '@/utils/referralCode';
-
-const PASSWORD_RESET_URL = 'https://morphly-alpha.vercel.app/reset-password';
 
 function Login() {
   const location = useLocation();
@@ -24,6 +22,10 @@ function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const feedbackRef = useRef<HTMLParagraphElement>(null);
+  const requestInFlight = useRef(false);
   const [referralCode, setReferralCode] = useState('');
   const [referralError, setReferralError] = useState<string | null>(null);
   const [referralValid, setReferralValid] = useState(false);
@@ -32,6 +34,9 @@ function Login() {
   useEffect(() => {
     const signupMode = location.pathname === '/signup';
     setIsLogin(!signupMode);
+    if (!signupMode && new URLSearchParams(location.search).get('reset') === '1') {
+      setNotice('Enter your email address, then select Forgot password to request a new reset link.');
+    }
 
     if (signupMode) {
       const queryCode = normalizeReferralCode(new URLSearchParams(location.search).get('ref') || '');
@@ -40,29 +45,32 @@ function Login() {
   }, [location.pathname, location.search]);
 
   const handleForgotPassword = async () => {
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!normalizedEmail) {
-      toast.error('Enter your email address first.');
+    if (requestInFlight.current || loading) return;
+    clearError(); setRequestError(null); setNotice(null);
+    const normalizedEmail = normalizeEmail(email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setRequestError('Enter a valid email address, then select Forgot password.');
       return;
     }
+    requestInFlight.current = true;
     setResetLoading(true);
     try {
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo: PASSWORD_RESET_URL });
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+        redirectTo: getPasswordResetUrl(import.meta.env.VITE_AUTH_SITE_URL),
+      });
       if (resetError) throw resetError;
-      toast.success('Password reset email sent. Check your inbox and spam folder.');
+      setNotice(RESET_REQUEST_MESSAGE);
     } catch (resetError) {
-      toast.error(resetError instanceof Error ? resetError.message : 'Unable to send password reset email.');
+      setRequestError(resetError instanceof Error ? resetError.message : 'Unable to send the reset request. Please try again.');
     } finally {
       setResetLoading(false);
+      requestInFlight.current = false;
     }
   };
 
   useEffect(() => {
-    if (error) {
-      toast.error(error);
-      clearError();
-    }
-  }, [error, clearError]);
+    if (error || requestError || notice) feedbackRef.current?.focus();
+  }, [error, requestError, notice]);
 
   const checkReferralCode = async (): Promise<boolean> => {
     const normalized = normalizeReferralCode(referralCode);
@@ -99,18 +107,24 @@ function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+    if (requestInFlight.current || loading) return;
+    requestInFlight.current = true;
+    clearError(); setRequestError(null); setNotice(null);
     try {
       if (isLogin) {
         await login(email, password);
-        toast.success('Welcome back!');
       } else {
         if (!(await checkReferralCode())) return;
-        await register(email, name, password, referralCode);
-        toast.success('Account created successfully!');
+        const outcome = await register(email, name, password, referralCode);
+        if (outcome === 'confirmation_required') {
+          setPassword('');
+          setNotice(CONFIRM_EMAIL_MESSAGE);
+        }
       }
     } catch (_err) {
-      // Error is handled by the auth context and shown via toast
+      // The auth context retains the error; render it next to the form.
+    } finally {
+      requestInFlight.current = false;
     }
   };
 
@@ -118,43 +132,51 @@ function Login() {
     setIsLogin((current) => !current);
     setReferralError(null);
     setReferralValid(false);
+    setNotice(null); setRequestError(null); setPassword('');
     clearError();
   };
 
   return (
-    <div className="min-h-screen bg-[#0f0f10] flex items-center justify-center p-4">
+    <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <div className="w-full max-w-[400px]">
         <div className="flex items-center justify-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-lg bg-[#1a1a1b] flex items-center justify-center">
-            <Video className="w-5 h-5 text-white" />
+          <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center">
+            <Video className="w-5 h-5 text-primary-foreground" />
           </div>
-          <span className="text-xl font-semibold text-white tracking-tight">Morphly</span>
+          <span className="text-xl font-semibold text-foreground tracking-tight">Morphly</span>
         </div>
 
-        <Card className="bg-[#18181b] border-[#27272a]">
+        <Card className="bg-background border-border">
           <CardHeader className="pb-6">
-            <CardTitle className="text-xl font-semibold text-white text-center">
+            <CardTitle className="text-xl font-semibold text-foreground text-center">
               {isLogin ? 'Sign in to your account' : 'Create your account'}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {(error || requestError || notice) && <p id="auth-feedback" ref={feedbackRef} tabIndex={-1}
+                role={error || requestError ? 'alert' : 'status'}
+                className={`rounded-md border bg-background p-3 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring ${error || requestError ? 'border-destructive/25 text-destructive' : 'border-border text-foreground'}`}>
+                {error || requestError || notice}
+              </p>}
               {!isLogin && (
                 <>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#a1a1aa]">Full Name</label>
+                    <label htmlFor="auth-name" className="text-sm font-medium text-muted-foreground">Full Name</label>
                     <Input
+                      id="auth-name"
+                      autoComplete="name"
                       type="text"
                       placeholder="Jane Doe"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="h-11 bg-[#27272a] border-[#3f3f46] text-white placeholder:text-[#71717a]"
+                      className="h-11 bg-background border-border text-foreground placeholder:text-muted-foreground"
                       disabled={loading}
                       required={!isLogin}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label htmlFor="referral-code" className="text-sm font-medium text-[#a1a1aa]">
+                    <label htmlFor="referral-code" className="text-sm font-medium text-muted-foreground">
                       Referral code (optional)
                     </label>
                     <Input
@@ -174,23 +196,23 @@ function Login() {
                       onBlur={() => void checkReferralCode()}
                       aria-invalid={Boolean(referralError)}
                       aria-describedby="referral-code-help referral-code-status"
-                      className={`h-11 bg-[#27272a] text-white placeholder:text-[#71717a] ${
+                      className={`h-11 bg-background text-foreground placeholder:text-muted-foreground ${
                         referralError
-                          ? 'border-red-500 focus-visible:ring-red-500/30'
+                          ? 'border-destructive/25 focus-visible:ring-destructive/30'
                           : referralValid
-                            ? 'border-emerald-500 focus-visible:ring-emerald-500/30'
-                            : 'border-[#3f3f46]'
+                            ? 'border-success/25 focus-visible:ring-success/30'
+                            : 'border-border'
                       }`}
                       disabled={loading || validatingReferral}
                     />
-                    <p id="referral-code-help" className="text-xs leading-5 text-[#71717a]">
+                    <p id="referral-code-help" className="text-xs leading-5 text-muted-foreground">
                       Have a referral code? Enter it here. Your referrer receives 200 credits after
                       your first successful credit purchase.
                     </p>
                     <p
                       id="referral-code-status"
                       className={`min-h-4 text-xs ${
-                        referralError ? 'text-red-400' : referralValid ? 'text-emerald-400' : 'text-[#71717a]'
+                        referralError ? 'text-destructive' : referralValid ? 'text-success' : 'text-muted-foreground'
                       }`}
                     >
                       {validatingReferral
@@ -201,24 +223,28 @@ function Login() {
                 </>
               )}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-[#a1a1aa]">Email</label>
+                <label htmlFor="auth-email" className="text-sm font-medium text-muted-foreground">Email</label>
                 <Input
+                  id="auth-email"
+                  autoComplete="email"
+                  autoCapitalize="none"
                   type="email"
                   placeholder="you@company.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="h-11 bg-[#27272a] border-[#3f3f46] text-white placeholder:text-[#71717a]"
-                  disabled={loading}
+                  className="h-11 bg-background border-border text-foreground placeholder:text-muted-foreground"
+                  disabled={loading || resetLoading}
+                  aria-describedby={error || requestError || notice ? 'auth-feedback' : undefined}
                   required
                 />
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-[#a1a1aa]">Password</label>
+                  <label htmlFor="auth-password" className="text-sm font-medium text-muted-foreground">Password</label>
                   {isLogin && (
                     <button 
                       type="button" 
-                      className="text-sm text-[#2563eb] hover:text-[#3b82f6]"
+                      className="text-sm text-primary hover:text-primary"
                       onClick={handleForgotPassword}
                       disabled={loading || resetLoading}
                     >
@@ -228,11 +254,13 @@ function Login() {
                 </div>
                 <div className="relative">
                   <Input
+                    id="auth-password"
+                    autoComplete={isLogin ? 'current-password' : 'new-password'}
                     type={showPassword ? 'text' : 'password'}
                     placeholder="Enter your password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="h-11 bg-[#27272a] border-[#3f3f46] text-white placeholder:text-[#71717a] pr-10"
+                    className="h-11 bg-background border-border text-foreground placeholder:text-muted-foreground pr-10"
                     disabled={loading}
                     required
                     minLength={6}
@@ -240,7 +268,9 @@ function Login() {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#71717a] hover:text-white transition-colors"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -248,8 +278,8 @@ function Login() {
               </div>
               <Button
                 type="submit"
-                disabled={loading || validatingReferral}
-                className="w-full h-11 bg-[#2563eb] hover:bg-[#1d4ed8] text-white font-medium disabled:opacity-50"
+                disabled={loading || validatingReferral || resetLoading}
+                className="w-full h-11 bg-primary hover:bg-primary-hover text-primary-foreground font-medium disabled:opacity-50"
               >
                 {loading ? (
                   <span className="flex items-center gap-2">
@@ -263,13 +293,13 @@ function Login() {
             </form>
 
             <div className="mt-6 text-center">
-              <span className="text-sm text-[#71717a]">
+              <span className="text-sm text-muted-foreground">
                 {isLogin ? "Don't have an account? " : 'Already have an account? '}
                 <button
                   type="button"
                   onClick={toggleMode}
-                  className="text-[#2563eb] hover:text-[#3b82f6] font-medium"
-                  disabled={loading}
+                  className="text-primary hover:text-primary font-medium"
+                  disabled={loading || resetLoading || validatingReferral}
                 >
                   {isLogin ? 'Create account' : 'Sign in'}
                 </button>
@@ -278,7 +308,7 @@ function Login() {
             <div className="mt-4 text-center">
               <Link 
                 to="/subscription" 
-                className="text-sm text-[#71717a] hover:text-white transition-colors"
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 View pricing plans
               </Link>

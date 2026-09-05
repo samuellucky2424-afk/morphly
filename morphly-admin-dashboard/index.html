@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/private/morphly/login/styles.css?v=20260827-1">
+  <link rel="stylesheet" href="/private/morphly/login/engagement.css?v=20260905">
   <script src="/private/morphly/login/supabase.js"></script>
 </head>
 <body>
@@ -30,6 +31,7 @@
       </a>
 
       <nav class="nav" aria-label="Admin navigation">
+        <button class="nav-item" type="button" data-view="communications"><span class="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-3 3V11.5A8.5 8.5 0 0 1 9.5 3h3a8.5 8.5 0 0 1 8.5 8.5Z"/></svg></span><span>Feedback & notices</span></button>
         <button class="nav-item active" type="button" data-view="overview">
           <span class="nav-icon">⌂</span><span>Overview</span>
         </button>
@@ -227,6 +229,31 @@
           </div>
         </section>
 
+        <section class="view" id="communicationsView" data-view-panel="communications">
+          <div class="admin-engagement">
+            <div class="engagement-heading"><div><h3>Customer communications</h3><p>Read feedback and keep users informed.</p></div><button id="engagementRefresh" type="button">Refresh</button></div>
+            <p id="engagementError" class="engagement-error" role="alert" hidden></p>
+            <p id="engagementSuccess" class="engagement-success" role="status" hidden></p>
+            <p id="engagementEmailStatus" class="engagement-email-status">Loading email configuration…</p>
+            <div class="engagement-grid">
+              <article class="engagement-panel"><h4>Publish an announcement</h4><p>A small, dismissible notice at the top of every user dashboard.</p>
+                <form id="engagementAnnouncementForm">
+                  <label>Type<select name="kind"><option value="maintenance">Maintenance</option><option value="update">Product update</option></select></label>
+                  <label>Title<input name="title" maxlength="100" required placeholder="Scheduled maintenance"></label>
+                  <label>Message<textarea name="message" rows="3" maxlength="500" required placeholder="What is affected, and when should users return?"></textarea></label>
+                  <label>Starts at <small>(optional; local time)</small><input name="startsAt" type="datetime-local"></label>
+                  <label>Expected end <small>(optional; local time)</small><input name="endsAt" type="datetime-local"></label>
+                  <p class="engagement-help">Set an end time to show a countdown. The notice expires automatically; it does not switch engines on or off.</p>
+                  <div class="engagement-preview"><strong id="engagementPreviewTitle">Announcement preview</strong><span id="engagementPreviewMessage">Your message will appear here.</span></div>
+                  <button type="submit" class="engagement-primary">Publish to all users</button>
+                </form>
+              </article>
+              <article class="engagement-panel"><h4>Recent announcements</h4><div id="engagementAnnouncements">Loading announcements…</div></article>
+            </div>
+            <article class="engagement-panel"><h4>Customer reviews</h4><p>Experience reports, problems and feature requests from signed-in users.</p><div id="engagementReviews">Loading reviews…</div><div class="engagement-pagination"><button id="engagementPrevious" type="button" disabled>Previous</button><span id="engagementPage"></span><button id="engagementNext" type="button" disabled>Next</button></div></article>
+            <article class="engagement-panel"><h4>Recent email activity</h4><p>“Sent” means accepted by Resend. Failed messages remain visible for investigation.</p><div id="engagementEmailJobs"></div></article>
+          </div>
+        </section>
         <section class="view" id="logsView" data-view-panel="logs">
           <div class="metric-grid compact" id="logMetrics"></div>
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">Reliability</p><h2>System event logs</h2></div><select id="logSeverityFilter" aria-label="Filter log severity"><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Information</option></select></div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Details</th><th>Platform</th><th>User</th><th>Count</th><th>Severity</th><th>Last seen</th></tr></thead><tbody id="logTableBody"></tbody></table></div></article>
@@ -285,5 +312,6 @@
   </template>
 
   <script src="/private/morphly/login/app.js?v=20260827-1"></script>
+  <script src="/private/morphly/login/engagement.js?v=20260905"></script>
 </body>
 </html>

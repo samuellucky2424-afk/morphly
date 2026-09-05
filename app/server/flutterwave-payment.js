@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { supabaseAdmin } from './supabase-admin.js';
+import { tryDeliverCustomerEmails } from './customer-engagement.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
@@ -413,6 +414,7 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, packa
     duplicate: Boolean(normalizedData.duplicate),
   });
 
+  await tryDeliverCustomerEmails(supabaseAdmin, { userId, sourceId: normalizedData.transactionId || null });
   return {
     status: 'success',
     message: normalizedData.duplicate ? 'Payment already processed' : 'Payment verified and credits applied',

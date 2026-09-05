@@ -25,7 +25,7 @@ export const dashboardTourSteps: Step[] = [
           HP Integrated Camera, Integrated Webcam, Lenovo EasyCamera, Dell Webcam or another built-in
           or USB camera connected to your computer.
         </p>
-        <p className="rounded-lg border border-amber-400/30 bg-amber-400/10 p-2.5 text-amber-100">
+        <p className="rounded-lg border border-warning/30 bg-warning-soft p-2.5 text-warning">
           Do not select Morphly Virtual Camera, Avatar Mimic Real Time Windows Virtual Camera, OBS
           Virtual Camera, VB-CABLE or any other virtual camera.
         </p>
@@ -57,7 +57,7 @@ export const dashboardTourSteps: Step[] = [
           After selecting your physical laptop camera and uploading an image, click Start. Morphly
           will process your camera feed and publish the transformed output through the Morphly virtual camera.
         </p>
-        <p className="font-semibold text-amber-200">
+        <p className="font-semibold text-warning">
           Input = physical laptop camera. Output = Morphly virtual camera.
         </p>
       </div>

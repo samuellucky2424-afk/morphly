@@ -1,19 +1,23 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
 
-import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard, shell } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard, shell, nativeTheme } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import fs from 'fs';
+import os from 'node:os';
 import { createDesktopUpdater } from './updater.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
+import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
 import { createMeanVcRuntimeController } from '../server/meanvc-runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+// Morphly's approved light theme is independent of the operating-system theme.
+nativeTheme.themeSource = 'light';
 // The branded development launcher runs a renamed electron.exe. Electron treats
 // that executable as packaged, so use the launcher's explicit marker as the
 // source of truth for development-only paths and behaviour.
@@ -87,6 +91,8 @@ let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
 let virtualCameraOperationGeneration = 0;
+let virtualCameraLiveSession = false;
+let cameraRepairOperation = null;
 
 function formatErrorMessage(error) {
   if (error instanceof Error) {
@@ -445,7 +451,7 @@ async function ensureUnityCaptureRegistration() {
   if (missingViews.length > 0) {
     return {
       success: false,
-      error: `Morphly Virtual Camera is not registered for ${missingViews.join(' and ')} applications. Reinstall Morphly Desktop as Administrator.`
+      error: `Morphly Virtual Camera needs repair for ${missingViews.join(' and ')} applications. Open Settings → Virtual Camera → Repair camera.`
     };
   }
 
@@ -457,7 +463,10 @@ async function ensureMediaFoundationCameraRegistration() {
     return { success: false, error: 'Media Foundation camera registration is only supported on Windows.' };
   }
 
-  const probeResult = await runMediaFoundationCameraRegistrar(['probe']);
+  if (!supportsMediaFoundationCamera(process.platform, os.release())) {
+    return { success: true, supported: false, warning: 'Modern Windows virtual-camera support requires Windows 11. Legacy camera apps can still use Morphly Virtual Camera.' };
+  }
+  const probeResult = await runMediaFoundationCameraRegistrar(['probe-registration']);
   if (probeResult.ok) {
     return { success: true, message: 'The WhatsApp-compatible Media Foundation camera is registered.' };
   }
@@ -467,7 +476,7 @@ async function ensureMediaFoundationCameraRegistration() {
     success: false,
     error:
       'Morphly Virtual Camera is not registered for WhatsApp and modern Windows apps. ' +
-      `Reinstall Morphly Desktop as Administrator.${detail ? ` ${detail}` : ''}`,
+      `Open Settings → Virtual Camera → Repair camera.${detail ? ` ${detail}` : ''}`,
   };
 }
 
@@ -477,13 +486,26 @@ async function ensureVirtualCameraRegistration() {
     ensureMediaFoundationCameraRegistration(),
   ]);
 
-  if (!unityCaptureResult.success) return unityCaptureResult;
-  if (!mediaFoundationResult.success) return mediaFoundationResult;
+  if (!unityCaptureResult.success) return { ...unityCaptureResult, canRepair: process.platform === 'win32' };
+  if (!mediaFoundationResult.success) return { ...mediaFoundationResult, canRepair: process.platform === 'win32' };
   return {
     success: true,
-    message: 'Morphly Virtual Camera is registered for legacy and modern Windows camera apps.',
+    canRepair: process.platform === 'win32',
+    warning: mediaFoundationResult.warning,
+    message: mediaFoundationResult.supported === false ? 'Legacy virtual-camera registration verified.' : 'Morphly Virtual Camera is registered for legacy and modern Windows camera apps.',
   };
 }
+
+const cameraRepairService = createCameraRepairService({
+  probe: ensureVirtualCameraRegistration,
+  repair: async () => {
+    const supported = supportsMediaFoundationCamera(process.platform, os.release());
+    const filters = UNITY_CAPTURE_FILTERS.map(filter => ({ bits: Number(filter.registryView), path: getExpectedUnityCaptureFilterPath(filter) }));
+    const registrar = supported ? resolveMediaFoundationCameraRegistrarPath() : null;
+    if (filters.some(filter => !fs.existsSync(filter.path))) throw new Error('Camera components are missing from this installation. Run the latest Morphly installer.');
+    return executeCameraRepair(buildCameraRepairCommand({ windowsDirectory: process.env.SystemRoot || 'C:\\Windows', filters, registrar, mediaFoundationSupported: supported }));
+  },
+});
 
 function createVirtualCameraFrameHeader(profile, payloadBytes, timestampHundredsOfNs = getTimestampHundredsOfNs()) {
   const header = Buffer.alloc(VIRTUAL_CAM_PIPE_HEADER_BYTES);
@@ -877,23 +899,23 @@ function buildLoadFailureHtml(failedUrl, errorCode, errorDescription) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Morphly Startup Error</title>
     <style>
-      :root { color-scheme: dark; }
+      :root { color-scheme: light; }
       body {
         margin: 0;
         min-height: 100vh;
         display: grid;
         place-items: center;
-        background: radial-gradient(circle at top left, #151b2e, #05070d 60%);
-        color: #f2f4ff;
+        background: #ffffff;
+        color: #20252d;
         font-family: Segoe UI, Tahoma, sans-serif;
       }
       .card {
         width: min(720px, 92vw);
-        border: 1px solid #2b3154;
-        background: rgba(10, 14, 26, 0.9);
+        border: 1px solid #e1e4e9;
+        background: #ffffff;
         border-radius: 14px;
         padding: 24px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        box-shadow: 0 8px 24px rgba(32, 37, 45, 0.06);
       }
       h1 {
         margin: 0 0 8px;
@@ -901,19 +923,19 @@ function buildLoadFailureHtml(failedUrl, errorCode, errorDescription) {
       }
       p {
         margin: 0 0 12px;
-        color: #c6cde8;
+        color: #626b78;
       }
       code {
-        color: #d7ddff;
-        background: #11162a;
-        border: 1px solid #2f3b64;
+        color: #c82436;
+        background: #fff3f4;
+        border: 1px solid #eab7bd;
         padding: 2px 6px;
         border-radius: 6px;
       }
       ul {
         margin: 10px 0 0;
         padding-left: 20px;
-        color: #d9dff9;
+        color: #626b78;
       }
       li { margin: 6px 0; }
     </style>
@@ -975,7 +997,7 @@ function createMorphlyCamWindowOptions() {
     height: MORPHLY_CAM_WINDOW_HEIGHT,
     minWidth: 360,
     minHeight: 220,
-    backgroundColor: '#000000',
+    backgroundColor: '#ffffff',
     transparent: false,
     autoHideMenuBar: true,
     alwaysOnTop: false,
@@ -1045,7 +1067,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 720,
-    backgroundColor: '#000000',
+    backgroundColor: '#ffffff',
     autoHideMenuBar: true,
     icon: windowIcon.isEmpty() ? iconPath : windowIcon,
     webPreferences: {
@@ -1120,9 +1142,25 @@ function createWindow() {
 }
 
 function registerVirtualCameraHandlers() {
+  const fromMainWindow = (event) => mainWindow && !mainWindow.isDestroyed()
+    && event.sender.id === mainWindow.webContents.id && event.senderFrame === event.sender.mainFrame;
+  ipcMain.handle('virtual-camera:status', async (event) => fromMainWindow(event)
+    ? cameraRepairService.status() : { success: false, error: 'Camera access is restricted to the main window.' });
+  ipcMain.handle('virtual-camera:repair', async (event) => {
+    if (!fromMainWindow(event)) return { success: false, error: 'Camera repair is restricted to the main window.' };
+    if (cameraRepairOperation) return cameraRepairOperation;
+    if (virtualCameraLiveSession) return { success: false, error: 'Stop live streaming before repairing the camera.' };
+    virtualCameraEnabled = false;
+    virtualCameraOperationGeneration += 1;
+    stopMorphlyCamPublisher();
+    cameraRepairOperation = cameraRepairService.repair().finally(() => { cameraRepairOperation = null; });
+    return cameraRepairOperation;
+  });
   ipcMain.handle('virtual-camera:start', async () => {
+    if (cameraRepairOperation) return { success: false, error: 'Wait for camera repair to finish before starting a stream.' };
     const operationGeneration = ++virtualCameraOperationGeneration;
     virtualCameraEnabled = true;
+    virtualCameraLiveSession = true;
 
     const registrationResult = await ensureVirtualCameraRegistration();
     if (operationGeneration !== virtualCameraOperationGeneration || !virtualCameraEnabled) {
@@ -1135,15 +1173,19 @@ function registerVirtualCameraHandlers() {
     }
 
     if (!registrationResult.success) {
+      virtualCameraLiveSession = false;
       virtualCameraEnabled = false;
       stopMorphlyCamPublisher();
       return registrationResult;
     }
 
-    return ensureMorphlyCamPublisher();
+    const result = ensureMorphlyCamPublisher();
+    if (!result.success) virtualCameraLiveSession = false;
+    return result;
   });
 
   ipcMain.handle('virtual-camera:stop', async () => {
+    virtualCameraLiveSession = false;
     virtualCameraOperationGeneration += 1;
     virtualCameraEnabled = false;
     return stopMorphlyCamPublisher();

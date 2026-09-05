@@ -1,0 +1,59 @@
+/* Approved Morphly light theme. Shared by every route and portal-mounted control. */
+:root {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 217 17% 15%;
+  --card: 0 0% 100%;
+  --card-foreground: var(--foreground);
+  --popover: 0 0% 100%;
+  --popover-foreground: var(--foreground);
+  --primary: 353.4146 69.4915% 46.2745%;
+  --primary-foreground: 0 0% 100%;
+  --primary-hover: 353 74% 39%;
+  --secondary: 353 100% 98%;
+  --secondary-foreground: var(--primary);
+  --muted: 220 20% 97%;
+  --muted-foreground: 217 10% 41%;
+  --accent: 353 100% 97%;
+  --accent-foreground: var(--primary);
+  --destructive: 0 72% 42%;
+  --destructive-foreground: 0 0% 100%;
+  --danger-soft: 0 100% 97%;
+  --success: 153 67% 26%;
+  --success-soft: 145 50% 96%;
+  --warning: 38 71% 28%;
+  --warning-soft: 42 100% 97%;
+  --border: 218 16% 88%;
+  --input: 216 17% 73%;
+  --ring: var(--primary);
+  --radius: .5rem;
+  --sidebar-background: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+html, body, #root { background: hsl(var(--background)); color: hsl(var(--foreground)); }
+html { accent-color: hsl(var(--primary)); }
+button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
+button, a, input, textarea, select { -webkit-tap-highlight-color: hsl(var(--primary) / .12); }
+select, option, optgroup { color-scheme: light; }
+option, optgroup { background: hsl(var(--popover)); color: hsl(var(--popover-foreground)); }
+::selection { background: hsl(var(--primary) / .16); color: hsl(var(--foreground)); }
+* { scrollbar-color: hsl(var(--input)) hsl(var(--muted)); scrollbar-width: thin; }
+
+/* Keep nested icons on filled actions legible, including conditional buttons. */
+.bg-primary, .bg-destructive { color: hsl(var(--primary-foreground)); }
+:is(.bg-primary, .bg-destructive) :is(.text-foreground, .text-muted-foreground, .text-inherit) { color: inherit; }
+.bg-primary:hover { background-color: hsl(var(--primary-hover)); }
+[data-slot="button"][data-variant="outline"] { color: hsl(var(--primary)); border-color: hsl(var(--primary) / .3); }
+[data-slot="button"][data-variant="outline"]:hover { background: hsl(var(--accent)); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+  .animate-in, .animate-out, [data-slot="dialog-content"], [data-slot="select-content"], [data-slot="dropdown-menu-content"] { animation: none !important; transition: none !important; }
+}

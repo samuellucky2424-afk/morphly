@@ -62,7 +62,12 @@ test('MorphlyVC controls use local preload, preparation, start, and stop endpoin
   assert.match(runtimeController, /'--steps', '2'/);
   assert.match(bridge, /class BufferedVoiceStream/);
   assert.match(bridge, /morphlyvc-audio-worker/);
-  assert.match(bridge, /self\.output_queue\.qsize\(\) < 2/);
+  assert.match(bridge, /self\.output_queue\.qsize\(\) < self\.target_output_blocks/);
+  assert.match(bridge, /self\.target_output_blocks = 1/);
+  assert.match(bridge, /queue\.Queue\(maxsize=1\)/);
+  assert.match(bridge, /queue\.Queue\(maxsize=2\)/);
+  assert.match(bridge, /latency="low"/);
+  assert.match(bridge, /WasapiSettings\(auto_convert=True\)/);
   assert.match(bridge, /quality="HQ"/);
   assert.match(bridge, /MODEL_BLOCK_MS = 80/);
   assert.match(bridge, /AUDIO_BLOCK_MS = 160/);

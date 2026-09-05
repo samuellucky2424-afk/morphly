@@ -7,6 +7,12 @@ export default {
   theme: {
     extend: {
       colors: {
+        'primary-hover': 'hsl(var(--primary-hover) / <alpha-value>)',
+        success: 'hsl(var(--success) / <alpha-value>)',
+        'success-soft': 'hsl(var(--success-soft) / <alpha-value>)',
+        warning: 'hsl(var(--warning) / <alpha-value>)',
+        'warning-soft': 'hsl(var(--warning-soft) / <alpha-value>)',
+        'danger-soft': 'hsl(var(--danger-soft) / <alpha-value>)',
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",

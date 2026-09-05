@@ -13,14 +13,14 @@ export function Loading({ size = 'md', fullScreen = false, text }: LoadingProps)
 
   const spinner = (
     <div className="flex flex-col items-center justify-center gap-3">
-      <div className={`${sizeClasses[size]} rounded-full border-blue-500 border-t-transparent animate-spin`} />
-      {text && <p className="text-sm text-[#71717a]">{text}</p>}
+      <div className={`${sizeClasses[size]} rounded-full border-primary/25 border-t-transparent animate-spin`} />
+      {text && <p className="text-sm text-muted-foreground">{text}</p>}
     </div>
   );
 
   if (fullScreen) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         {spinner}
       </div>
     );

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { CustomerEngagement } from '@/components/CustomerEngagement';
 import { useNavigate } from 'react-router-dom';
 import {
   Upload,
@@ -414,6 +415,7 @@ const decartSdkReadyPromise = import('@decartai/sdk');
 
 function Dashboard() {
   const { user, logout } = useAuth();
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
   const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
 
@@ -690,7 +692,8 @@ function Dashboard() {
       })
       .catch((error) => {
         console.warn('Unable to load guided-tour state:', error);
-      });
+      })
+      .finally(() => { if (!cancelled) setOnboardingChecked(true); });
 
     return () => {
       cancelled = true;
@@ -1062,7 +1065,7 @@ function Dashboard() {
               width: 100%;
               height: 100%;
               margin: 0;
-              background: #000;
+              background: #fff;
               overflow: hidden;
               font-family: Arial, sans-serif;
             }
@@ -1077,14 +1080,14 @@ function Dashboard() {
               position: relative;
               width: 100vw;
               height: 100vh;
-              background: #000;
+              background: #fff;
             }
 
             #morphly-cam-output {
               width: 100%;
               height: 100%;
               object-fit: contain;
-              background: #000;
+              background: #fff;
             }
 
             #morphly-cam-video {
@@ -1103,10 +1106,8 @@ function Dashboard() {
               justify-content: center;
               padding: 24px;
               text-align: center;
-              color: #f4f4f5;
-              background:
-                radial-gradient(circle at top, rgba(59, 130, 246, 0.16), transparent 52%),
-                linear-gradient(180deg, rgba(10, 10, 10, 0.82), rgba(0, 0, 0, 0.92));
+              color: #20252d;
+              background: #f6f7f9;
               font-size: 14px;
               line-height: 1.7;
               letter-spacing: 0.01em;
@@ -1119,10 +1120,10 @@ function Dashboard() {
               bottom: 24px;
               transform: translateX(-50%);
               padding: 10px 14px;
-              border: 1px solid rgba(255, 255, 255, 0.12);
+              border: 1px solid #e1e4e9;
               border-radius: 999px;
-              background: rgba(10, 10, 10, 0.7);
-              color: #f4f4f5;
+              background: rgba(255, 255, 255, 0.95);
+              color: #20252d;
               font-size: 12px;
               letter-spacing: 0.04em;
               backdrop-filter: blur(10px);
@@ -3028,13 +3029,14 @@ function Dashboard() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#090b10] font-sans text-zinc-100">
-      <main className="flex min-h-0 flex-1 overflow-hidden bg-[#090b10]">
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background font-sans text-foreground">
+      <CustomerEngagement paused={!onboardingChecked || isTourRunning || isStreaming || isLoading || isUpdaterBlocking} />
+      <main className="flex min-h-0 flex-1 overflow-hidden bg-background">
         <MeanVcPanel />
         <section
           data-tour="dashboard"
           aria-label="Live streaming preview"
-              className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-[#080a0e]"
+              className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-background"
         >
           <UpdateBanner />
         <video
@@ -3059,11 +3061,11 @@ function Dashboard() {
 
         {!isStreaming && !isLoading && (
               <div className="flex max-w-xs flex-col items-center justify-center px-8 py-7 text-center">
-                <div className="grid size-10 place-items-center rounded-md border border-[#2d313a] bg-[#111319] text-zinc-600">
+                <div className="grid size-10 place-items-center rounded-md border border-border bg-background text-muted-foreground">
                   <Monitor aria-hidden="true" className="size-5 stroke-[1.4]" />
                 </div>
-                <h2 className="mt-3 text-xs font-semibold text-zinc-300">Preview offline</h2>
-                <p className="mt-1.5 text-[11px] leading-4 text-zinc-600">Choose a camera and image to begin.</p>
+                <h2 className="mt-3 text-xs font-semibold text-foreground">Preview offline</h2>
+                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">Choose a camera and image to begin.</p>
           </div>
         )}
 
@@ -3088,16 +3090,16 @@ function Dashboard() {
               aria-labelledby="dashboard-error-title"
               aria-describedby="dashboard-error-message"
               tabIndex={-1}
-              className="pointer-events-auto flex w-full max-w-xl items-start gap-3 rounded-lg border border-red-200 bg-white p-3.5 text-zinc-950 shadow-[0_18px_45px_rgba(0,0,0,0.32)] outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[#080a0e]"
+              className="pointer-events-auto flex w-full max-w-xl items-start gap-3 rounded-lg border border-destructive/25 bg-background p-3.5 text-foreground shadow-[0_18px_45px_rgba(0,0,0,0.32)] outline-none focus-visible:ring-2 focus-visible:ring-destructive focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
-              <span className="grid size-10 shrink-0 place-items-center rounded-md bg-red-50 text-red-600">
+              <span className="grid size-10 shrink-0 place-items-center rounded-md bg-danger-soft text-destructive">
                 <CircleAlert aria-hidden="true" className="size-5" />
               </span>
               <div className="min-w-0 flex-1 py-0.5">
-                <h2 id="dashboard-error-title" className="text-sm font-semibold leading-5 text-zinc-950">
+                <h2 id="dashboard-error-title" className="text-sm font-semibold leading-5 text-foreground">
                   {dashboardError.title}
                 </h2>
-                <p id="dashboard-error-message" className="mt-1 text-xs leading-5 text-zinc-600">
+                <p id="dashboard-error-message" className="mt-1 text-xs leading-5 text-muted-foreground">
                   {dashboardError.message}
                 </p>
               </div>
@@ -3107,7 +3109,7 @@ function Dashboard() {
                     type="button"
                     onClick={() => void handleStart()}
                     disabled={Boolean(startBlockReason)}
-                    className="min-h-11 rounded-md bg-zinc-950 px-3 text-xs font-semibold text-white transition-colors hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="min-h-11 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Try again
                   </button>
@@ -3117,7 +3119,7 @@ function Dashboard() {
                   onClick={() => setDashboardError(null)}
                   aria-label="Dismiss error"
                   title="Dismiss error"
-                  className="grid size-11 place-items-center rounded-md text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-950"
+                  className="grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <X aria-hidden="true" className="size-4" />
                 </button>
@@ -3128,8 +3130,8 @@ function Dashboard() {
 
         {(isStreaming || isLoading) && (isLoading || isSyncingTransform || connectionState === 'reconnecting' || !hasRemoteFrame) && (
           <div className="pointer-events-none absolute inset-x-0 bottom-8 z-20 flex justify-center px-6">
-                <div className="inline-flex items-center gap-2 rounded-md border border-blue-400/20 bg-[#111319]/90 px-3 py-2 text-[11px] font-medium text-zinc-200 backdrop-blur-md">
-                  <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-blue-300" />
+                <div className="inline-flex items-center gap-2 rounded-md border border-primary/20 bg-background px-3 py-2 text-[11px] font-medium text-foreground backdrop-blur-md">
+                  <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-primary" />
               <span>
                 {isSyncingTransform
                   ? 'Applying prompt/image changes without reconnecting...'
@@ -3141,11 +3143,11 @@ function Dashboard() {
           </div>
         )}
 
-            <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-md border border-white/10 bg-[#101218]/90 px-3 py-2 backdrop-blur-md">
-              <span className={`size-1.5 rounded-full ${isStreaming ? 'bg-emerald-300' : 'bg-zinc-600'}`} />
+            <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 backdrop-blur-md">
+              <span className={`size-1.5 rounded-full ${isStreaming ? 'bg-success' : 'bg-muted'}`} />
               <span className="flex flex-col">
-                <span className="text-[11px] font-semibold text-zinc-200">Live output</span>
-                <span className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">
+                <span className="text-[11px] font-semibold text-foreground">Live output</span>
+                <span className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
                   {activeProviderLabel} realtime
                 </span>
           </span>
@@ -3157,7 +3159,7 @@ function Dashboard() {
             title={isFullScreen ? 'Exit full screen' : 'Full screen'}
             aria-label={isFullScreen ? 'Exit full screen' : 'Switch to full screen'}
             onClick={() => void handleFullScreenToggle()}
-                className="inline-flex h-9 items-center gap-2 rounded-md border border-white/10 bg-[#101218]/90 px-3 text-[11px] font-medium text-zinc-400 backdrop-blur-md transition-colors duration-200 hover:bg-[#191c24] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[11px] font-medium text-muted-foreground backdrop-blur-md transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             {isFullScreen ? <Minimize aria-hidden="true" className="size-4" /> : <Maximize aria-hidden="true" className="size-4" />}
             <span>{isFullScreen ? 'Exit Full Screen' : 'Full Screen'}</span>
@@ -3167,7 +3169,7 @@ function Dashboard() {
             title="Settings"
             aria-label="Open Settings"
             onClick={() => navigate('/settings')}
-                className="grid size-9 place-items-center rounded-md border border-white/10 bg-[#101218]/90 text-zinc-500 backdrop-blur-md transition-colors duration-200 hover:bg-[#191c24] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                className="grid size-9 place-items-center rounded-md border border-border bg-background text-muted-foreground backdrop-blur-md transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             <Settings aria-hidden="true" className="size-4" />
           </button>
@@ -3175,19 +3177,19 @@ function Dashboard() {
         </section>
       </main>
 
-      <footer aria-label="Live session controls" className="relative z-10 flex flex-col gap-1 border-t border-[#252833] bg-[#101217] px-3 py-2">
+      <footer aria-label="Live session controls" className="relative z-10 flex flex-col gap-1 border-t border-border bg-background px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <div className="flex shrink-0 items-center gap-1.5 border-r border-[#292d38] pr-2">
+            <div className="flex shrink-0 items-center gap-1.5 border-r border-border pr-2">
             <button
               data-tour="start-stream"
               onClick={handleStart}
               disabled={Boolean(startBlockReason)}
               title={startBlockReason || 'Start live stream'}
-              className={`flex h-9 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300/50 disabled:cursor-not-allowed ${
+              className={`flex h-9 items-center gap-2 rounded-md border px-3 text-[11px] font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-success/50 disabled:cursor-not-allowed ${
                 startBlockReason
-                  ? 'border-[#303542] bg-[#20232c] text-zinc-500'
-                  : 'border-emerald-300/30 bg-emerald-400 text-[#07110d] shadow-[0_6px_18px_rgba(52,211,153,0.16)] hover:bg-emerald-300'
+                  ? 'border-border bg-background text-muted-foreground'
+                  : 'border-primary bg-primary text-primary-foreground hover:bg-primary-hover'
               }`}
             >
               {isLoading ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <Play aria-hidden="true" className="size-3.5 fill-current" />}
@@ -3198,7 +3200,7 @@ function Dashboard() {
               data-tour="stop-stream"
               onClick={() => void handleStop()}
               disabled={!isStreaming}
-              className="flex h-9 items-center gap-2 rounded-md border border-[#30343e] bg-[#181a21] px-3 text-[11px] font-medium text-zinc-300 transition-colors duration-200 hover:bg-[#21242c] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50 disabled:cursor-not-allowed disabled:opacity-40"
+              className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[11px] font-medium text-foreground transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Square aria-hidden="true" className="size-3 fill-current opacity-70" />
               <span>Stop</span>
@@ -3207,9 +3209,9 @@ function Dashboard() {
             <button
               data-tour="upload-image"
               onClick={() => fileInputRef.current?.click()}
-              className="flex h-9 items-center gap-2 rounded-md border border-[#30343e] bg-[#181a21] px-3 text-[11px] font-medium text-zinc-300 transition-colors duration-200 hover:bg-[#21242c] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+              className="flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[11px] font-medium text-foreground transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             >
-              <Upload aria-hidden="true" className="size-3.5 text-zinc-400" />
+              <Upload aria-hidden="true" className="size-3.5 text-muted-foreground" />
               <span>{referenceImage ? 'Change Image' : 'Upload Image'}</span>
             </button>
 
@@ -3222,7 +3224,7 @@ function Dashboard() {
                     fileInputRef.current.value = '';
                   }
                 }}
-                className="flex h-9 items-center rounded-md border border-[#30343e] bg-[#181a21] px-3 text-[11px] font-medium text-zinc-400 transition-colors duration-200 hover:border-red-400/25 hover:bg-red-400/[0.06] hover:text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40"
+                className="flex h-9 items-center rounded-md border border-border bg-background px-3 text-[11px] font-medium text-muted-foreground transition-colors duration-200 hover:border-destructive/25 hover:bg-danger-soft hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
               >
                 <span>Clear Avatar</span>
               </button>
@@ -3237,7 +3239,7 @@ function Dashboard() {
                 ? 'Stop the live session before switching engines'
                 : 'Select realtime video engine'}
               aria-label="Realtime video engine"
-              className="h-9 min-w-[104px] rounded-md border border-[#30343e] bg-[#181a21] px-2.5 text-[11px] font-semibold text-zinc-200 transition-colors hover:bg-[#21242c] focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 min-w-[104px] rounded-md border border-border bg-background px-2.5 text-[11px] font-semibold text-foreground transition-colors hover:bg-background focus:border-primary/25 focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {REALTIME_PROVIDER_OPTIONS.map((provider) => (
                 <option key={provider.value} value={provider.value}>
@@ -3254,7 +3256,7 @@ function Dashboard() {
                 ? 'Pro uses its optimized 720p profile'
                 : 'Select performance mode'}
               aria-label="Select performance mode"
-              className="h-9 min-w-[108px] rounded-md border border-[#30343e] bg-[#181a21] px-2.5 text-[11px] font-medium text-zinc-200 transition-colors hover:bg-[#21242c] focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 min-w-[108px] rounded-md border border-border bg-background px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-background focus:border-primary/25 focus:outline-none focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="fast">Fast Mode</option>
               <option value="balanced">Balanced Mode</option>
@@ -3265,10 +3267,10 @@ function Dashboard() {
             {/* Input Camera Dropdown */}
             <div
               data-tour="camera-selector"
-              className="flex h-10 min-w-[170px] max-w-[215px] flex-1 flex-col justify-center rounded-md border border-[#30343e] bg-[#15171d] px-2.5"
+              className="flex h-10 min-w-[170px] max-w-[215px] flex-1 flex-col justify-center rounded-md border border-border bg-background px-2.5"
             >
               <div className="mb-0.5 flex items-center justify-between gap-2 leading-none">
-                <label htmlFor="physical-camera-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                <label htmlFor="physical-camera-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                   Input camera
                 </label>
                 <button
@@ -3277,7 +3279,7 @@ function Dashboard() {
                   disabled={isRefreshingCameras || isStreaming || isLoading}
                   title="Refresh cameras"
                   aria-label="Refresh camera list"
-                  className="inline-flex size-4 items-center justify-center rounded text-zinc-600 transition-colors hover:bg-white/[0.05] hover:text-blue-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50 disabled:opacity-40"
+                  className="inline-flex size-4 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-40"
                 >
                   <RefreshCw aria-hidden="true" className={`size-3 ${isRefreshingCameras ? 'animate-spin' : ''}`} />
                 </button>
@@ -3288,7 +3290,7 @@ function Dashboard() {
                 onChange={(event) => handleCameraChange(event.target.value)}
                 title="Select your physical laptop or USB camera"
                 aria-label="Input camera: select your physical laptop or USB camera"
-                className="h-5 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-medium text-zinc-200 outline-none focus:text-white"
+                className="h-5 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-medium text-foreground outline-none focus:text-foreground"
               >
                 <option value="">Select camera</option>
                 {cameraDevices.map((device, index) => (
@@ -3311,13 +3313,13 @@ function Dashboard() {
             {/* AI Background Dropdown Selector */}
             <div
               data-tour="background-selector"
-              className="flex h-10 min-w-[180px] max-w-[220px] flex-1 flex-col justify-center rounded-md border border-[#30343e] bg-[#15171d] px-2.5"
+              className="flex h-10 min-w-[180px] max-w-[220px] flex-1 flex-col justify-center rounded-md border border-border bg-background px-2.5"
             >
               <div className="mb-0.5 flex items-center justify-between gap-2 leading-none">
-                <label htmlFor="background-preset-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">
+                <label htmlFor="background-preset-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
                   AI background
                 </label>
-                <span className={`text-[10px] font-semibold tabular-nums ${isBlendedMode ? 'text-amber-300' : 'text-zinc-500'}`}>
+                <span className={`text-[10px] font-semibold tabular-nums ${isBlendedMode ? 'text-warning' : 'text-muted-foreground'}`}>
                   {currentCreditRate} cr/s
                 </span>
               </div>
@@ -3331,7 +3333,7 @@ function Dashboard() {
                 }}
                 title="Select AI background"
                 aria-label="Select AI background"
-                className="h-5 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-medium text-zinc-200 outline-none focus:text-white"
+                className="h-5 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-medium text-foreground outline-none focus:text-foreground"
               >
                 {BACKGROUND_PRESETS.map((preset) => (
                   <option key={preset.id} value={preset.id}>
@@ -3343,23 +3345,23 @@ function Dashboard() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <div className="flex h-10 items-center gap-2.5 rounded-md border border-[#30343e] bg-[#15171d] px-2.5">
+            <div className="flex h-10 items-center gap-2.5 rounded-md border border-border bg-background px-2.5">
               <div className="flex flex-col gap-1">
                 <div className="flex items-center justify-between gap-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-500">Credits</span>
-                  <span className={`text-[10px] font-semibold ${isBlendedMode ? 'text-amber-300' : 'text-zinc-500'}`}>
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Credits</span>
+                  <span className={`text-[10px] font-semibold ${isBlendedMode ? 'text-warning' : 'text-muted-foreground'}`}>
                     ({currentCreditRate} cr/s)
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Coins aria-hidden="true" className="size-3.5 text-blue-300" />
-                  <span className="text-xs font-semibold tabular-nums text-zinc-100">{Math.round(credits).toLocaleString()}</span>
+                  <Coins aria-hidden="true" className="size-3.5 text-primary" />
+                  <span className="text-xs font-semibold tabular-nums text-foreground">{Math.round(credits).toLocaleString()}</span>
                 </div>
               </div>
               <button
                 data-tour="buy-credits"
                 onClick={() => navigate('/subscription')}
-                className="flex h-7 items-center gap-1 rounded bg-blue-600 px-2.5 text-[11px] font-semibold text-white transition-colors duration-200 hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+                className="flex h-7 items-center gap-1 rounded bg-primary px-2.5 text-[11px] font-semibold text-primary-foreground transition-colors duration-200 hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               >
                 <Plus aria-hidden="true" className="size-3.5 stroke-[2.5]" />
                 Buy
@@ -3370,8 +3372,8 @@ function Dashboard() {
         <div
           className={`flex min-h-6 items-center rounded border px-2.5 text-[10px] leading-4 ${
             startBlockReason
-              ? 'border-amber-400/15 bg-amber-400/[0.05] text-amber-100/85'
-              : 'border-emerald-400/15 bg-emerald-400/[0.05] text-emerald-200/85'
+              ? 'border-warning/15 bg-warning-soft text-warning'
+              : 'border-success/15 bg-success-soft text-success'
           }`}
           role="status"
           aria-live="polite"

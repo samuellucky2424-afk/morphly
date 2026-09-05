@@ -23,9 +23,11 @@ export default defineConfig(({ command, mode }) => {
       const source = path.resolve(__dirname, '../morphly-admin-dashboard');
       const destination = path.resolve(__dirname, 'dist/private/morphly/login');
       fs.mkdirSync(destination, { recursive: true });
-      for (const fileName of ['index.html', 'styles.css', 'app.js']) {
+      for (const fileName of ['index.html', 'styles.css', 'app.js', 'engagement.js']) {
         fs.copyFileSync(path.join(source, fileName), path.join(destination, fileName));
       }
+      fs.copyFileSync(path.resolve(__dirname, 'src/components/admin-engagement.css'), path.join(destination, 'engagement.css'));
+      fs.copyFileSync(path.resolve(__dirname, 'src/styles/theme.css'), path.join(destination, 'theme.css'));
       fs.copyFileSync(
         path.resolve(__dirname, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js'),
         path.join(destination, 'supabase.js'),
@@ -33,6 +35,9 @@ export default defineConfig(({ command, mode }) => {
       const resetDestination = path.resolve(__dirname, 'dist/reset-password');
       fs.mkdirSync(resetDestination, { recursive: true });
       fs.copyFileSync(path.join(source, 'reset-password.html'), path.join(resetDestination, 'index.html'));
+      for (const fileName of ['reset-password.js', 'password-recovery.mjs']) {
+        fs.copyFileSync(path.join(source, fileName), path.join(resetDestination, fileName));
+      }
     },
   };
 

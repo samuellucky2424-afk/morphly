@@ -718,7 +718,7 @@ function setView(view) {
   const titles = { overview: "Business overview", users: "User management", usage: "AI credits usage", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
   $$("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
-  $("#pageTitle").textContent = titles[view] || "Morphly admin";
+  $("#pageTitle").textContent = view === 'communications' ? 'Customer communications' : titles[view] || "Morphly admin";
   $("#sidebar").classList.remove("open");
   if (view === "users") renderUsers();
   if (view === "usage") renderUsage();
@@ -1240,11 +1240,18 @@ async function init() {
     catch (appError) { $("#loginError").textContent = appError.message; }
   });
   $("#adminForgotPassword").addEventListener("click", async () => {
+    const button = $("#adminForgotPassword");
+    if (button.disabled) return;
     const email = $("#adminEmail").value.trim().toLowerCase();
-    if (!email) { $("#loginError").textContent = "Enter your email address first."; return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $("#loginError").textContent = "Enter a valid email address first."; return; }
+    button.disabled = true;
     $("#loginError").textContent = "Sending reset email…";
-    const { error } = await window.morphlySupabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` });
-    $("#loginError").textContent = error ? error.message : "Password reset email sent. Check your inbox and spam folder.";
+    try {
+      const { error } = await window.morphlySupabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` });
+      if (error) throw error;
+      $("#loginError").textContent = "If an account exists for this email, you will receive a reset link. Check your inbox and spam folder.";
+    } catch (error) { $("#loginError").textContent = error.message || "Unable to send the reset request. Please try again."; }
+    finally { button.disabled = false; }
   });
 }
 

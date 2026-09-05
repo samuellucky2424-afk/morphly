@@ -1,0 +1,28 @@
+.admin-engagement { color:#17202e; display:flex; flex-direction:column; gap:20px; font-size:14px; line-height:1.6; }
+.engagement-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; }
+.admin-engagement h3 { font-size:21px; font-weight:600; }
+.admin-engagement h4 { font-size:16px; font-weight:600; margin-bottom:4px; }
+.admin-engagement p, .engagement-meta { color:#526071; }
+.engagement-grid { display:grid; grid-template-columns:minmax(280px,1fr) minmax(280px,1fr); gap:20px; }
+.engagement-panel { border:1px solid #dce1e8; background:#fff; border-radius:8px; padding:20px; min-width:0; }
+.engagement-panel form { display:flex; flex-direction:column; gap:14px; margin-top:16px; }
+.engagement-panel label { display:flex; flex-direction:column; gap:6px; font-size:13px; font-weight:600; }
+.engagement-panel small { font-weight:400; color:#526071; }
+.admin-engagement :is(input,select,textarea) { color:#17202e; background:#fff; font:inherit; min-width:0; border:1px solid #b5bfcc; padding:9px 10px; border-radius:5px; }
+.admin-engagement textarea { resize:vertical; }
+.admin-engagement button { border:1px solid #bcc5d0; padding:8px 14px; border-radius:5px; font-size:13px; font-weight:600; }
+.admin-engagement button:hover { background:#edf1f6; }
+.admin-engagement button:disabled { opacity:.5; cursor:not-allowed; }
+.admin-engagement :is(button,input,select,textarea):focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:2px; }
+.admin-engagement .engagement-primary { background:hsl(var(--primary)); border-color:hsl(var(--primary)); color:white; }
+.admin-engagement .engagement-primary:hover { background:hsl(var(--primary-hover)); }
+.engagement-help, .engagement-email-status { font-size:12px; }
+.engagement-preview { display:flex; flex-direction:column; gap:4px; padding:12px; border:1px solid #dce1e8; border-radius:5px; background:#f7f9fc; overflow-wrap:anywhere; }
+.engagement-entry { padding:14px 0; border-bottom:1px solid #e5e7eb; overflow-wrap:anywhere; }
+.engagement-entry > button { display:block; margin-top:10px; }
+.engagement-meta { display:block; font-size:12px; }
+.engagement-review-text { white-space:pre-wrap; margin-top:10px; }
+.engagement-pagination { display:flex; gap:12px; align-items:center; margin-top:16px; }
+.admin-engagement .engagement-error { color:#9a2323; background:#fff5f5; border:1px solid #eec3c3; padding:12px; border-radius:6px; }
+.admin-engagement .engagement-success { color:#166534; background:#f0fdf4; border:1px solid #bbf7d0; padding:12px; border-radius:6px; }
+@media(max-width:900px) { .engagement-grid { grid-template-columns:1fr; } }

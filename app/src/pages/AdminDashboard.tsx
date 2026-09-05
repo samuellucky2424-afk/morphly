@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AdminEngagement } from '@/components/AdminEngagement';
 import {
   Activity,
   AlertTriangle,
@@ -247,13 +248,13 @@ function summarizeAuditEntry(entry: AuditLogEntry) {
 function getChannelBadgeClass(channel: string | undefined) {
   switch (channel) {
     case 'error':
-      return 'border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]';
+      return 'border-destructive/25 bg-danger-soft text-destructive';
     case 'payment':
-      return 'border-[#d9f99d] bg-[#f7fee7] text-[#4d7c0f]';
+      return 'border-success/25 bg-success-soft text-success';
     case 'db-query':
-      return 'border-[#c7d2fe] bg-[#eef2ff] text-[#4338ca]';
+      return 'border-primary/25 bg-accent text-primary';
     default:
-      return 'border-[#dbe4ff] bg-[#eff6ff] text-[#1d4ed8]';
+      return 'border-primary/25 bg-accent text-primary';
   }
 }
 
@@ -408,42 +409,42 @@ function AdminDashboard() {
       value: overview.totalUsers.toLocaleString(),
       description: 'Registered accounts',
       icon: Users,
-      iconClassName: 'bg-[#eff6ff] text-[#2563eb]',
+      iconClassName: 'bg-accent text-primary',
     },
     {
       title: 'Blocked',
       value: overview.blockedUsers.toLocaleString(),
       description: 'Restricted accounts',
       icon: Ban,
-      iconClassName: 'bg-[#fff1f2] text-[#dc2626]',
+      iconClassName: 'bg-danger-soft text-destructive',
     },
     {
       title: 'Total credits',
       value: overview.totalCredits.toLocaleString(),
       description: 'Wallet balance outstanding',
       icon: Coins,
-      iconClassName: 'bg-[#ecfdf5] text-[#059669]',
+      iconClassName: 'bg-success-soft text-success',
     },
     {
       title: 'Revenue (NGN)',
       value: formatCurrency(overview.revenueNGN),
       description: 'Successful credit sales',
       icon: DollarSign,
-      iconClassName: 'bg-[#f8fafc] text-[#0f172a]',
+      iconClassName: 'bg-muted text-foreground',
     },
     {
       title: 'Active sessions',
       value: overview.activeSessions.toLocaleString(),
       description: 'Currently consuming credits',
       icon: Activity,
-      iconClassName: 'bg-[#f5f3ff] text-[#7c3aed]',
+      iconClassName: 'bg-accent text-primary',
     },
     {
       title: 'Live packages',
       value: activePackageCount.toLocaleString(),
       description: 'Visible on the pricing page',
       icon: WalletCards,
-      iconClassName: 'bg-[#fff7ed] text-[#ea580c]',
+      iconClassName: 'bg-warning-soft text-warning',
     },
   ];
 
@@ -625,9 +626,9 @@ function AdminDashboard() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#f5f7fb] px-6">
-        <div className="flex flex-col items-center gap-4 rounded-[24px] border border-[#e5e7eb] bg-white px-10 py-12 text-[#64748b] shadow-[0_30px_90px_-50px_rgba(15,23,42,0.25)]">
-          <Loader2 className="h-10 w-10 animate-spin text-[#2563eb]" />
+      <div className="flex min-h-screen items-center justify-center bg-muted px-6">
+        <div className="flex flex-col items-center gap-4 rounded-[24px] border border-border bg-background px-10 py-12 text-muted-foreground shadow-[0_30px_90px_-50px_rgba(15,23,42,0.25)]">
+          <Loader2 className="h-10 w-10 animate-spin text-primary" />
           <p className="text-sm font-medium">Loading admin dashboard...</p>
         </div>
       </div>
@@ -635,31 +636,31 @@ function AdminDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f5f7fb] text-[#0f172a]">
-      <header className="border-b border-[#e5e7eb] bg-white/95 backdrop-blur">
+    <div className="min-h-screen bg-muted text-foreground">
+      <header className="border-b border-border bg-muted backdrop-blur">
         <div className="mx-auto flex max-w-[1280px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#111827] text-white shadow-[0_20px_40px_-25px_rgba(15,23,42,0.6)]">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-background text-foreground shadow-[0_20px_40px_-25px_rgba(15,23,42,0.6)]">
               <ShieldCheck className="h-6 w-6" />
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-[#64748b]">Morphly</p>
-              <h1 className="text-lg font-semibold tracking-tight text-[#0f172a]">Admin Console</h1>
+              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-muted-foreground">Morphly</p>
+              <h1 className="text-lg font-semibold tracking-tight text-foreground">Admin Console</h1>
             </div>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <Badge variant="outline" className="justify-center rounded-full border-[#dcfce7] bg-[#f0fdf4] px-3 py-1 text-[#15803d]">
+            <Badge variant="outline" className="justify-center rounded-full border-success/25 bg-success-soft px-3 py-1 text-success">
               Online
             </Badge>
             <div className="text-right">
-              <p className="text-sm font-medium text-[#0f172a]">{user?.email || 'Admin session'}</p>
-              <p className="text-xs uppercase tracking-[0.24em] text-[#64748b]">RLS protected</p>
+              <p className="text-sm font-medium text-foreground">{user?.email || 'Admin session'}</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">RLS protected</p>
             </div>
             <Button
               variant="outline"
               onClick={() => void logout()}
-              className="h-10 rounded-full border-[#dbe4ff] bg-white px-4 text-[#0f172a] hover:bg-[#f8fafc]"
+              className="h-10 rounded-full border-primary/25 bg-background px-4 text-foreground hover:bg-muted"
             >
               <LogOut className="h-4 w-4" />
               Sign out
@@ -669,26 +670,26 @@ function AdminDashboard() {
       </header>
 
       <main className="mx-auto max-w-[1280px] px-4 py-8 sm:px-6 lg:px-8">
-        <section className="relative overflow-hidden rounded-[30px] border border-[#e5e7eb] bg-white shadow-[0_35px_90px_-55px_rgba(15,23,42,0.35)]">
-          <div className="absolute inset-x-0 top-0 h-32 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.12),_transparent_45%),radial-gradient(circle_at_top_right,_rgba(16,185,129,0.1),_transparent_35%)]" />
+        <section className="relative overflow-hidden rounded-[30px] border border-border bg-background shadow-[0_35px_90px_-55px_rgba(15,23,42,0.35)]">
+          <div className="absolute inset-x-0 top-0 h-1 bg-primary" />
           <div className="relative px-6 py-6 sm:px-8 sm:py-8">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.34em] text-[#64748b]">Overview</p>
-                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-[#0f172a]">Operations Dashboard</h2>
-                <p className="mt-2 max-w-2xl text-sm text-[#64748b]">
+                <p className="text-xs font-semibold uppercase tracking-[0.34em] text-muted-foreground">Overview</p>
+                <h2 className="mt-3 text-3xl font-semibold tracking-tight text-foreground">Operations Dashboard</h2>
+                <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
                   Monitor balances, live sessions, and pricing controls from a single protected workspace.
                 </p>
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <div className="rounded-2xl border border-[#e5e7eb] bg-[#f8fafc] px-4 py-3 text-sm text-[#475569]">
-                  Signed in as <span className="font-semibold text-[#0f172a]">{user?.email || 'admin user'}</span>
+                <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+                  Signed in as <span className="font-semibold text-foreground">{user?.email || 'admin user'}</span>
                 </div>
                 <Button
                   onClick={() => void loadDashboardData({ silent: true })}
                   disabled={isRefreshing}
-                  className="h-11 rounded-full bg-[#0f172a] px-5 text-white hover:bg-[#1e293b]"
+                  className="h-11 rounded-full bg-primary px-5 text-primary-foreground hover:bg-primary-hover"
                 >
                   {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                   Refresh data
@@ -696,20 +697,20 @@ function AdminDashboard() {
               </div>
             </div>
 
-            <div className="mt-8 grid overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-white md:grid-cols-2 xl:grid-cols-3">
+            <div className="mt-8 grid overflow-hidden rounded-[24px] border border-border bg-background md:grid-cols-2 xl:grid-cols-3">
               {overviewCards.map((card) => {
                 const Icon = card.icon;
 
                 return (
                   <div
                     key={card.title}
-                    className="border-b border-[#e5e7eb] p-6 md:[&:nth-last-child(-n+2)]:border-b-0 xl:[&:nth-last-child(-n+3)]:border-b-0 xl:border-r xl:[&:nth-child(3n)]:border-r-0"
+                    className="border-b border-border p-6 md:[&:nth-last-child(-n+2)]:border-b-0 xl:[&:nth-last-child(-n+3)]:border-b-0 xl:border-r xl:[&:nth-child(3n)]:border-r-0"
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">{card.title}</p>
-                        <p className="mt-4 text-3xl font-semibold tracking-tight text-[#0f172a]">{card.value}</p>
-                        <p className="mt-2 text-sm text-[#64748b]">{card.description}</p>
+                        <p className="text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">{card.title}</p>
+                        <p className="mt-4 text-3xl font-semibold tracking-tight text-foreground">{card.value}</p>
+                        <p className="mt-2 text-sm text-muted-foreground">{card.description}</p>
                       </div>
                       <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${card.iconClassName}`}>
                         <Icon className="h-5 w-5" />
@@ -722,44 +723,45 @@ function AdminDashboard() {
           </div>
         </section>
 
-        <section className="mt-8 overflow-hidden rounded-[30px] border border-[#e5e7eb] bg-white shadow-[0_35px_90px_-55px_rgba(15,23,42,0.35)]">
+        <section className="mt-8 overflow-hidden rounded-[30px] border border-border bg-background shadow-[0_35px_90px_-55px_rgba(15,23,42,0.35)]">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="gap-0">
-            <div className="border-b border-[#e5e7eb] px-6 py-5 sm:px-8">
+            <div className="border-b border-border px-6 py-5 sm:px-8">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.34em] text-[#64748b]">Workspace</p>
-                  <h3 className="mt-3 text-2xl font-semibold tracking-tight text-[#0f172a]">Operations Controls</h3>
-                  <p className="mt-2 text-sm text-[#64748b]">Users, pricing, and backend audit trails aligned in one admin surface.</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.34em] text-muted-foreground">Workspace</p>
+                  <h3 className="mt-3 text-2xl font-semibold tracking-tight text-foreground">Operations Controls</h3>
+                  <p className="mt-2 text-sm text-muted-foreground">Users, pricing, and backend audit trails aligned in one admin surface.</p>
                 </div>
 
-                <TabsList className="h-auto flex-wrap rounded-2xl bg-[#f1f5f9] p-1">
+                <TabsList className="h-auto flex-wrap rounded-2xl bg-muted p-1">
+                  <TabsTrigger value="communications" className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:bg-background data-[state=active]:text-foreground">Feedback & notices</TabsTrigger>
                   <TabsTrigger
                     value="users"
-                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                    className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
                   >
                     Users
                   </TabsTrigger>
                   <TabsTrigger
                     value="usage"
-                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                    className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
                   >
                     AI Usage
                   </TabsTrigger>
                   <TabsTrigger
                     value="referrals"
-                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                    className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
                   >
                     Referrals
                   </TabsTrigger>
                   <TabsTrigger
                     value="pricing"
-                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                    className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
                   >
                     Pricing
                   </TabsTrigger>
                   <TabsTrigger
                     value="audit"
-                    className="rounded-full px-4 py-2.5 text-sm text-[#64748b] data-[state=active]:border-transparent data-[state=active]:bg-white data-[state=active]:text-[#0f172a] data-[state=active]:shadow-none"
+                    className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
                   >
                     Audit Log
                   </TabsTrigger>
@@ -767,18 +769,19 @@ function AdminDashboard() {
               </div>
             </div>
 
+            <TabsContent value="communications" className="m-0 p-6 sm:p-8"><AdminEngagement /></TabsContent>
             <TabsContent value="users" className="m-0 p-6 sm:p-8">
-              <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                <div className="border-b border-[#e5e7eb] px-5 py-5">
+              <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                <div className="border-b border-border px-5 py-5">
                   <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                     <div>
-                      <h4 className="text-lg font-semibold text-[#0f172a]">Users</h4>
-                      <p className="mt-1 text-sm text-[#64748b]">Inspect balances, apply credits, and remove access when required.</p>
+                      <h4 className="text-lg font-semibold text-foreground">Users</h4>
+                      <p className="mt-1 text-sm text-muted-foreground">Inspect balances, apply credits, and remove access when required.</p>
                     </div>
 
                     <div className="flex flex-col gap-3 md:flex-row md:items-center">
                       <div className="relative w-full md:w-[320px]">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#94a3b8]" />
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                         <Input
                           value={searchInput}
                           onChange={(event) => setSearchInput(event.target.value)}
@@ -788,13 +791,13 @@ function AdminDashboard() {
                             }
                           }}
                           placeholder="Search by name or email"
-                          className="h-11 rounded-full border-[#dbe4ff] bg-white pl-10 text-[#0f172a]"
+                          className="h-11 rounded-full border-primary/25 bg-background pl-10 text-foreground"
                         />
                       </div>
                       <Button
                         variant="outline"
                         onClick={() => setAppliedSearch(searchInput)}
-                        className="h-11 rounded-full border-[#dbe4ff] bg-white px-5 text-[#0f172a] hover:bg-[#f8fafc]"
+                        className="h-11 rounded-full border-primary/25 bg-background px-5 text-foreground hover:bg-muted"
                       >
                         Search
                       </Button>
@@ -804,7 +807,7 @@ function AdminDashboard() {
                           setSearchInput('');
                           setAppliedSearch('');
                         }}
-                        className="h-11 rounded-full px-4 text-[#64748b] hover:bg-[#eef2ff] hover:text-[#0f172a]"
+                        className="h-11 rounded-full px-4 text-muted-foreground hover:bg-accent hover:text-foreground"
                       >
                         Reset
                       </Button>
@@ -812,52 +815,52 @@ function AdminDashboard() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-2 border-b border-[#e5e7eb] px-5 py-3 text-sm text-[#64748b] sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Search via admin directory</p>
+                <div className="flex flex-col gap-2 border-b border-border px-5 py-3 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Search via admin directory</p>
                   <p>{filteredUsers.length.toLocaleString()} visible records</p>
                 </div>
 
                 <Table className="min-w-[920px]">
                   <TableHeader>
-                    <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Email</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Credits</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Status</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Joined</TableHead>
-                      <TableHead className="px-5 py-4 text-right text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Actions</TableHead>
+                    <TableRow className="border-border bg-background hover:bg-background">
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Email</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Credits</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Status</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Joined</TableHead>
+                      <TableHead className="px-5 py-4 text-right text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {filteredUsers.length === 0 ? (
-                      <TableRow className="border-[#e5e7eb] hover:bg-transparent">
-                        <TableCell colSpan={5} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableCell colSpan={5} className="px-5 py-16 text-center text-sm text-muted-foreground">
                           No users match the current filter.
                         </TableCell>
                       </TableRow>
                     ) : (
                       filteredUsers.map((entry) => (
-                        <TableRow key={entry.id} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                        <TableRow key={entry.id} className="border-border bg-background hover:bg-muted">
                           <TableCell className="px-5 py-4 align-top whitespace-normal">
                             <div className="min-w-[220px]">
                               <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-medium text-[#0f172a]">{entry.email}</p>
+                                <p className="font-medium text-foreground">{entry.email}</p>
                                 {entry.isAdmin && (
-                                  <Badge variant="outline" className="rounded-full border-[#fde68a] bg-[#fffbeb] text-[#92400e]">
+                                  <Badge variant="outline" className="rounded-full border-warning/25 bg-warning-soft text-warning">
                                     {entry.adminRole || 'admin'}
                                   </Badge>
                                 )}
                               </div>
-                              <p className="mt-1 text-sm text-[#64748b]">{entry.name}</p>
-                              <p className="mt-2 text-xs text-[#94a3b8]">Last sign in {formatDateTime(entry.lastSignInAt)}</p>
+                              <p className="mt-1 text-sm text-muted-foreground">{entry.name}</p>
+                              <p className="mt-2 text-xs text-muted-foreground">Last sign in {formatDateTime(entry.lastSignInAt)}</p>
                             </div>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm font-semibold text-[#0f172a]">{entry.credits.toLocaleString()}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm font-semibold text-foreground">{entry.credits.toLocaleString()}</TableCell>
                           <TableCell className="px-5 py-4">
-                            <Badge variant="outline" className="rounded-full border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]">
+                            <Badge variant="outline" className="rounded-full border-success/25 bg-success-soft text-success">
                               Active
                             </Badge>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDate(entry.createdAt)}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">{formatDate(entry.createdAt)}</TableCell>
                           <TableCell className="px-5 py-4 text-right">
                             <div className="flex flex-wrap justify-end gap-2">
                               <Button
@@ -868,7 +871,7 @@ function AdminDashboard() {
                                   setCreditAmount('');
                                   setCreditReason('');
                                 }}
-                                className="h-9 rounded-full border-[#dbe4ff] bg-white px-4 text-[#0f172a] hover:bg-[#f8fafc]"
+                                className="h-9 rounded-full border-primary/25 bg-background px-4 text-foreground hover:bg-muted"
                               >
                                 Credits
                               </Button>
@@ -876,7 +879,7 @@ function AdminDashboard() {
                                 variant="outline"
                                 onClick={() => void handleDeleteUser(entry)}
                                 disabled={deletingUserId === entry.id || entry.isAdmin}
-                                className="h-9 rounded-full border-[#fecaca] bg-white px-4 text-[#b91c1c] hover:bg-[#fff1f2] disabled:cursor-not-allowed disabled:opacity-50"
+                                className="h-9 rounded-full border-destructive/25 bg-background px-4 text-destructive hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 {deletingUserId === entry.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                                 Delete
@@ -900,16 +903,16 @@ function AdminDashboard() {
                     ['Untracked exposure', formatDuration(usageData.totals.untrackedExposureSeconds), `${usageData.totals.untrackedExposureCredits.toLocaleString()} potential credits`],
                     ['Users with gaps', usageData.totals.usersWithUsageGaps.toLocaleString(), `${usageData.totals.auditedTokenMints.toLocaleString()} audited token mints`],
                   ].map(([label, value, detail]) => (
-                    <div key={label} className="rounded-2xl border border-[#e5e7eb] bg-[#fcfcfd] p-4">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">{label}</p>
-                      <p className="mt-2 text-2xl font-semibold text-[#0f172a]">{value}</p>
-                      <p className="mt-1 text-xs text-[#64748b]">{detail}</p>
+                    <div key={label} className="rounded-2xl border border-border bg-muted p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
+                      <p className="mt-2 text-2xl font-semibold text-foreground">{value}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
                     </div>
                   ))}
                 </div>
 
                 {!usageData.dataHealth.tokenAuditEnabled && (
-                  <div className="flex items-start gap-3 rounded-2xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
+                  <div className="flex items-start gap-3 rounded-2xl border border-warning/25 bg-warning-soft px-4 py-3 text-sm text-warning">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                     <p>
                       Historical rows predate server-side token auditing. Session rows are used as the token-mint estimate until the new audit events arrive.
@@ -917,82 +920,82 @@ function AdminDashboard() {
                   </div>
                 )}
 
-                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                  <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                  <div className="flex flex-col gap-3 border-b border-border px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h4 className="text-lg font-semibold text-[#0f172a]">Plus usage by user</h4>
-                      <p className="mt-1 text-sm text-[#64748b]">
+                      <h4 className="text-lg font-semibold text-foreground">Plus usage by user</h4>
+                      <p className="mt-1 text-sm text-muted-foreground">
                         Recorded generation is confirmed by Morphly. Untracked exposure is the maximum connected time with a first frame but no matching usage record; it is a warning, not a confirmed Plus charge.
                       </p>
                     </div>
-                    <div className="rounded-full border border-[#dbe4ff] bg-white px-4 py-2 text-sm text-[#475569]">
+                    <div className="rounded-full border border-primary/25 bg-background px-4 py-2 text-sm text-muted-foreground">
                       Last {usageData.periodDays} days · as of {formatDateTime(usageData.asOf)}
                     </div>
                   </div>
 
                   <Table className="min-w-[1180px]">
                     <TableHeader>
-                      <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">User</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Sessions / tokens</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Recorded usage</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Untracked exposure</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Installations</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Last activity</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Risk</TableHead>
+                      <TableRow className="border-border bg-background hover:bg-background">
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">User</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Sessions / tokens</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Recorded usage</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Untracked exposure</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Installations</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Last activity</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Risk</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {usageData.users.length === 0 ? (
-                        <TableRow className="border-[#e5e7eb] hover:bg-transparent">
-                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                        <TableRow className="border-border hover:bg-transparent">
+                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-muted-foreground">
                             No Plus sessions were recorded in this period.
                           </TableCell>
                         </TableRow>
                       ) : usageData.users.map((entry) => (
-                        <TableRow key={entry.userId} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                        <TableRow key={entry.userId} className="border-border bg-background hover:bg-muted">
                           <TableCell className="px-5 py-4 whitespace-normal">
-                            <p className="font-medium text-[#0f172a]">{entry.email}</p>
-                            <p className="mt-1 font-mono text-[11px] text-[#64748b]">{entry.userId}</p>
-                            <p className="mt-1 text-xs text-[#64748b]">{entry.walletCredits.toLocaleString()} wallet credits</p>
+                            <p className="font-medium text-foreground">{entry.email}</p>
+                            <p className="mt-1 font-mono text-[11px] text-muted-foreground">{entry.userId}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{entry.walletCredits.toLocaleString()} wallet credits</p>
                             {entry.unexplainedBalanceCredits >= 5000 && !entry.isAdmin && (
-                              <p className="mt-1 text-xs font-semibold text-[#b91c1c]">
+                              <p className="mt-1 text-xs font-semibold text-destructive">
                                 {entry.unexplainedBalanceCredits.toLocaleString()} lack purchase/grant proof
                               </p>
                             )}
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
-                            <p><span className="font-semibold text-[#0f172a]">{entry.sessions}</span> sessions</p>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">
+                            <p><span className="font-semibold text-foreground">{entry.sessions}</span> sessions</p>
                             <p className="mt-1">{entry.tokenMints} token mints</p>
-                            {entry.activeSessions > 0 && <p className="mt-1 text-[#b91c1c]">{entry.activeSessions} active</p>}
+                            {entry.activeSessions > 0 && <p className="mt-1 text-destructive">{entry.activeSessions} active</p>}
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
-                            <p className="font-semibold text-[#0f172a]">{entry.recordedCredits.toLocaleString()} credits</p>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">
+                            <p className="font-semibold text-foreground">{entry.recordedCredits.toLocaleString()} credits</p>
                             <p className="mt-1">{formatDuration(entry.recordedSeconds)}</p>
                           </TableCell>
                           <TableCell className="px-5 py-4 text-sm">
-                            <p className={entry.untrackedExposureSeconds > 0 ? 'font-semibold text-[#b45309]' : 'text-[#475569]'}>
+                            <p className={entry.untrackedExposureSeconds > 0 ? 'font-semibold text-warning' : 'text-muted-foreground'}>
                               {formatDuration(entry.untrackedExposureSeconds)}
                             </p>
-                            <p className="mt-1 text-xs text-[#64748b]">{entry.untrackedExposureCredits.toLocaleString()} potential credits</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{entry.untrackedExposureCredits.toLocaleString()} potential credits</p>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">
-                            <p className="font-semibold text-[#0f172a]">{entry.installationCount}</p>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">
+                            <p className="font-semibold text-foreground">{entry.installationCount}</p>
                             <p className="mt-1 max-w-40 truncate font-mono text-[11px]" title={entry.installationIds.join(', ')}>
                               {entry.installationIds[0] || 'Unknown'}
                             </p>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDateTime(entry.lastActivityAt)}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">{formatDateTime(entry.lastActivityAt)}</TableCell>
                           <TableCell className="px-5 py-4 whitespace-normal">
                             {entry.suspicious ? (
                               <div className="max-w-64">
-                                <Badge variant="outline" className="rounded-full border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]">
+                                <Badge variant="outline" className="rounded-full border-destructive/25 bg-danger-soft text-destructive">
                                   Review
                                 </Badge>
-                                <p className="mt-2 text-xs text-[#b91c1c]">{entry.suspiciousReasons.join('; ')}</p>
+                                <p className="mt-2 text-xs text-destructive">{entry.suspiciousReasons.join('; ')}</p>
                               </div>
                             ) : (
-                              <Badge variant="outline" className="rounded-full border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]">
+                              <Badge variant="outline" className="rounded-full border-success/25 bg-success-soft text-success">
                                 Normal
                               </Badge>
                             )}
@@ -1014,21 +1017,21 @@ function AdminDashboard() {
                     ['Referral credits issued', referralData.totals.referralCreditsIssued],
                     ['Signup bonuses issued', referralData.totals.signupBonusesIssued],
                   ].map(([label, value]) => (
-                    <div key={String(label)} className="rounded-2xl border border-[#e5e7eb] bg-[#fcfcfd] p-4">
-                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">{label}</p>
-                      <p className="mt-2 text-2xl font-semibold text-[#0f172a]">{Number(value).toLocaleString()}</p>
+                    <div key={String(label)} className="rounded-2xl border border-border bg-muted p-4">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{label}</p>
+                      <p className="mt-2 text-2xl font-semibold text-foreground">{Number(value).toLocaleString()}</p>
                     </div>
                   ))}
                 </div>
 
-                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                  <div className="flex flex-col gap-4 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                  <div className="flex flex-col gap-4 border-b border-border px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                     <div>
-                      <h4 className="flex items-center gap-2 text-lg font-semibold text-[#0f172a]">
-                        <Gift className="h-5 w-5 text-[#d97706]" />
+                      <h4 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+                        <Gift className="h-5 w-5 text-warning" />
                         Referral administration
                       </h4>
-                      <p className="mt-1 text-sm text-[#64748b]">
+                      <p className="mt-1 text-sm text-muted-foreground">
                         Inspect referral codes, qualifying purchases, rewards, refunds and suspicious records.
                       </p>
                     </div>
@@ -1047,8 +1050,8 @@ function AdminDashboard() {
                           onClick={() => setReferralFilter(value)}
                           className={`h-9 rounded-full px-3 text-xs ${
                             referralFilter === value
-                              ? 'border-[#f59e0b] bg-[#fffbeb] text-[#92400e]'
-                              : 'border-[#dbe4ff] bg-white text-[#475569]'
+                              ? 'border-warning/25 bg-warning-soft text-warning'
+                              : 'border-primary/25 bg-background text-muted-foreground'
                           }`}
                         >
                           {label}
@@ -1059,63 +1062,63 @@ function AdminDashboard() {
 
                   <Table className="min-w-[1280px]">
                     <TableHeader>
-                      <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Code / Referrer</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Referred user</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Registered</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Status</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">First qualifying purchase</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Reward transaction</TableHead>
-                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-[#94a3b8]">Flags</TableHead>
+                      <TableRow className="border-border bg-background hover:bg-background">
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Code / Referrer</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Referred user</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Registered</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Status</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">First qualifying purchase</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Reward transaction</TableHead>
+                        <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Flags</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredReferrals.length === 0 ? (
-                        <TableRow className="border-[#e5e7eb] hover:bg-transparent">
-                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                        <TableRow className="border-border hover:bg-transparent">
+                          <TableCell colSpan={7} className="px-5 py-16 text-center text-sm text-muted-foreground">
                             No referral records match this filter.
                           </TableCell>
                         </TableRow>
                       ) : filteredReferrals.map((entry) => (
-                        <TableRow key={entry.id} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                        <TableRow key={entry.id} className="border-border bg-background hover:bg-muted">
                           <TableCell className="px-5 py-4 whitespace-normal">
-                            <p className="font-mono text-sm font-semibold text-[#0f172a]">{entry.referralCodeUsed}</p>
-                            <p className="mt-1 text-xs text-[#64748b]">{entry.referrerEmail}</p>
+                            <p className="font-mono text-sm font-semibold text-foreground">{entry.referralCodeUsed}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{entry.referrerEmail}</p>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#0f172a]">{entry.referredEmail}</TableCell>
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDateTime(entry.registeredAt)}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-foreground">{entry.referredEmail}</TableCell>
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">{formatDateTime(entry.registeredAt)}</TableCell>
                           <TableCell className="px-5 py-4">
                             <Badge
                               variant="outline"
                               className={`rounded-full ${
                                 entry.status === 'rewarded'
-                                  ? 'border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]'
+                                  ? 'border-success/25 bg-success-soft text-success'
                                   : entry.status === 'disqualified'
-                                    ? 'border-[#fecaca] bg-[#fff1f2] text-[#b91c1c]'
-                                    : 'border-[#fde68a] bg-[#fffbeb] text-[#92400e]'
+                                    ? 'border-destructive/25 bg-danger-soft text-destructive'
+                                    : 'border-warning/25 bg-warning-soft text-warning'
                               }`}
                             >
                               {entry.status}
                             </Badge>
                             {entry.disqualificationReason && (
-                              <p className="mt-2 max-w-44 text-xs text-[#b91c1c]">
+                              <p className="mt-2 max-w-44 text-xs text-destructive">
                                 {entry.disqualificationReason}
                               </p>
                             )}
                           </TableCell>
-                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-[#475569]">
+                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-muted-foreground">
                             {entry.firstQualifyingPurchase ? (
                               <>
-                                <p className="font-medium text-[#0f172a]">{entry.firstQualifyingPurchase.reference || entry.firstQualifyingPurchase.id}</p>
-                                <p className="mt-1 text-xs text-[#64748b]">{entry.firstQualifyingPurchase.package || 'Credit package'}</p>
+                                <p className="font-medium text-foreground">{entry.firstQualifyingPurchase.reference || entry.firstQualifyingPurchase.id}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{entry.firstQualifyingPurchase.package || 'Credit package'}</p>
                               </>
                             ) : 'Waiting for first purchase'}
                           </TableCell>
-                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-[#475569]">
+                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-muted-foreground">
                             {entry.rewardTransaction ? (
                               <>
-                                <p className="font-medium text-[#0f172a]">{entry.rewardTransaction.reference}</p>
-                                <p className="mt-1 text-xs text-[#64748b]">{entry.rewardTransaction.credits} credits · {formatDateTime(entry.rewardedAt)}</p>
+                                <p className="font-medium text-foreground">{entry.rewardTransaction.reference}</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{entry.rewardTransaction.credits} credits · {formatDateTime(entry.rewardedAt)}</p>
                               </>
                             ) : 'Not rewarded'}
                           </TableCell>
@@ -1124,7 +1127,7 @@ function AdminDashboard() {
                               {entry.refundWarning && <Badge variant="destructive">Refund warning</Badge>}
                               {entry.suspicious && <Badge variant="destructive">Suspicious</Badge>}
                               {!entry.refundWarning && !entry.suspicious && (
-                                <span className="text-sm text-[#64748b]">None</span>
+                                <span className="text-sm text-muted-foreground">None</span>
                               )}
                               {['registered', 'qualified'].includes(entry.status) && (
                                 <Button
@@ -1132,7 +1135,7 @@ function AdminDashboard() {
                                   variant="outline"
                                   disabled={disqualifyingReferralId === entry.id}
                                   onClick={() => void handleDisqualifyReferral(entry)}
-                                  className="h-7 rounded-full border-[#fecaca] px-2 text-[11px] text-[#b91c1c] hover:bg-[#fff1f2]"
+                                  className="h-7 rounded-full border-destructive/25 px-2 text-[11px] text-destructive hover:bg-danger-soft"
                                 >
                                   {disqualifyingReferralId === entry.id ? 'Saving...' : 'Disqualify'}
                                 </Button>
@@ -1145,27 +1148,27 @@ function AdminDashboard() {
                   </Table>
                 </div>
 
-                <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                  <div className="border-b border-[#e5e7eb] px-5 py-5">
-                    <h4 className="text-lg font-semibold text-[#0f172a]">Referral audit log</h4>
-                    <p className="mt-1 text-sm text-[#64748b]">
+                <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                  <div className="border-b border-border px-5 py-5">
+                    <h4 className="text-lg font-semibold text-foreground">Referral audit log</h4>
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Signup bonuses, attachments, qualifications, rewards, disqualifications and refund warnings.
                     </p>
                   </div>
-                  <div className="divide-y divide-[#e5e7eb]">
+                  <div className="divide-y divide-border">
                     {referralData.audit.length === 0 ? (
-                      <p className="px-5 py-10 text-center text-sm text-[#64748b]">
+                      <p className="px-5 py-10 text-center text-sm text-muted-foreground">
                         No referral audit events have been recorded.
                       </p>
                     ) : referralData.audit.slice(0, 50).map((entry) => (
                       <div key={entry.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <p className="text-sm font-semibold text-[#0f172a]">{entry.action}</p>
-                          <p className="mt-1 text-xs text-[#64748b]">
+                          <p className="text-sm font-semibold text-foreground">{entry.action}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
                             Referred user: {entry.referred_user_id || 'Not applicable'}
                           </p>
                         </div>
-                        <p className="text-xs text-[#64748b]">{formatDateTime(entry.created_at)}</p>
+                        <p className="text-xs text-muted-foreground">{formatDateTime(entry.created_at)}</p>
                       </div>
                     ))}
                   </div>
@@ -1174,17 +1177,17 @@ function AdminDashboard() {
             </TabsContent>
 
             <TabsContent value="pricing" className="m-0 p-6 sm:p-8">
-              <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                <div className="flex flex-col gap-4 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                <div className="flex flex-col gap-4 border-b border-border px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                   <div>
-                    <h4 className="text-lg font-semibold text-[#0f172a]">Pricing</h4>
-                    <p className="mt-1 text-sm text-[#64748b]">Control which credit packages are visible and how much each one costs.</p>
+                    <h4 className="text-lg font-semibold text-foreground">Pricing</h4>
+                    <p className="mt-1 text-sm text-muted-foreground">Control which credit packages are visible and how much each one costs.</p>
                   </div>
 
                   <Button
                     onClick={() => void handleSavePackages()}
                     disabled={savingPackages}
-                    className="h-11 rounded-full bg-[#0f172a] px-5 text-white hover:bg-[#1e293b]"
+                    className="h-11 rounded-full bg-primary px-5 text-primary-foreground hover:bg-primary-hover"
                   >
                     {savingPackages ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                     Save pricing
@@ -1193,36 +1196,36 @@ function AdminDashboard() {
 
                 <Table className="min-w-[820px]">
                   <TableHeader>
-                    <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Package</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Credits</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Price (NGN)</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Visibility</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Order</TableHead>
+                    <TableRow className="border-border bg-background hover:bg-background">
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Package</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Credits</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Price (NGN)</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Visibility</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Order</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {packages.map((pkg) => (
-                      <TableRow key={pkg.id} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
+                      <TableRow key={pkg.id} className="border-border bg-background hover:bg-muted">
                         <TableCell className="px-5 py-4 whitespace-normal">
                           <div>
-                            <p className="font-medium text-[#0f172a]">{pkg.name}</p>
-                            <p className="mt-1 text-sm text-[#64748b]">Displayed on the purchase page</p>
+                            <p className="font-medium text-foreground">{pkg.name}</p>
+                            <p className="mt-1 text-sm text-muted-foreground">Displayed on the purchase page</p>
                           </div>
                         </TableCell>
-                        <TableCell className="px-5 py-4 text-sm font-semibold text-[#0f172a]">{pkg.credits.toLocaleString()}</TableCell>
+                        <TableCell className="px-5 py-4 text-sm font-semibold text-foreground">{pkg.credits.toLocaleString()}</TableCell>
                         <TableCell className="px-5 py-4">
                           <Input
                             type="number"
                             min="0"
                             value={String(pkg.priceNGN)}
                             onChange={(event) => updatePackage(pkg.id, { priceNGN: Number(event.target.value) || 0 })}
-                            className="h-10 w-full min-w-[140px] rounded-full border-[#dbe4ff] bg-white text-[#0f172a]"
+                            className="h-10 w-full min-w-[140px] rounded-full border-primary/25 bg-background text-foreground"
                           />
                         </TableCell>
                         <TableCell className="px-5 py-4">
-                          <div className="flex w-fit items-center gap-3 rounded-full border border-[#e5e7eb] bg-[#f8fafc] px-4 py-2">
-                            <span className="text-sm text-[#475569]">{pkg.isActive ? 'Visible' : 'Hidden'}</span>
+                          <div className="flex w-fit items-center gap-3 rounded-full border border-border bg-muted px-4 py-2">
+                            <span className="text-sm text-muted-foreground">{pkg.isActive ? 'Visible' : 'Hidden'}</span>
                             <Switch
                               checked={pkg.isActive}
                               onCheckedChange={(checked) => updatePackage(pkg.id, { isActive: checked })}
@@ -1230,7 +1233,7 @@ function AdminDashboard() {
                           </div>
                         </TableCell>
                         <TableCell className="px-5 py-4">
-                          <Badge variant="outline" className="rounded-full border-[#dbe4ff] bg-[#f8fafc] text-[#334155]">
+                          <Badge variant="outline" className="rounded-full border-primary/25 bg-muted text-foreground">
                             #{pkg.sortOrder}
                           </Badge>
                         </TableCell>
@@ -1242,48 +1245,48 @@ function AdminDashboard() {
             </TabsContent>
 
             <TabsContent value="audit" className="m-0 p-6 sm:p-8">
-              <div className="overflow-hidden rounded-[24px] border border-[#e5e7eb] bg-[#fcfcfd]">
-                <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
+              <div className="overflow-hidden rounded-[24px] border border-border bg-muted">
+                <div className="flex flex-col gap-3 border-b border-border px-5 py-5 lg:flex-row lg:items-center lg:justify-between">
                   <div>
-                    <h4 className="text-lg font-semibold text-[#0f172a]">Audit Log</h4>
-                    <p className="mt-1 text-sm text-[#64748b]">Recent request, payment, database, and error events captured by the backend logger.</p>
+                    <h4 className="text-lg font-semibold text-foreground">Audit Log</h4>
+                    <p className="mt-1 text-sm text-muted-foreground">Recent request, payment, database, and error events captured by the backend logger.</p>
                   </div>
 
-                  <div className="flex items-center gap-2 rounded-full border border-[#dbe4ff] bg-white px-4 py-2 text-sm text-[#475569]">
-                    <ShieldCheck className="h-4 w-4 text-[#2563eb]" />
+                  <div className="flex items-center gap-2 rounded-full border border-primary/25 bg-background px-4 py-2 text-sm text-muted-foreground">
+                    <ShieldCheck className="h-4 w-4 text-primary" />
                     File-backed backend logs
                   </div>
                 </div>
 
                 <Table className="min-w-[860px]">
                   <TableHeader>
-                    <TableRow className="border-[#e5e7eb] bg-white hover:bg-white">
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Time</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Channel</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Event</TableHead>
-                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Details</TableHead>
+                    <TableRow className="border-border bg-background hover:bg-background">
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Time</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Channel</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Event</TableHead>
+                      <TableHead className="px-5 py-4 text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Details</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {auditEntries.length === 0 ? (
-                      <TableRow className="border-[#e5e7eb] hover:bg-transparent">
-                        <TableCell colSpan={4} className="px-5 py-16 text-center text-sm text-[#64748b]">
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableCell colSpan={4} className="px-5 py-16 text-center text-sm text-muted-foreground">
                           No audit entries found yet.
                         </TableCell>
                       </TableRow>
                     ) : (
                       auditEntries.map((entry, index) => (
-                        <TableRow key={`${entry.timestamp || 'entry'}-${entry.event || 'event'}-${index}`} className="border-[#e5e7eb] bg-white hover:bg-[#fafcff]">
-                          <TableCell className="px-5 py-4 text-sm text-[#475569]">{formatDateTime(entry.timestamp)}</TableCell>
+                        <TableRow key={`${entry.timestamp || 'entry'}-${entry.event || 'event'}-${index}`} className="border-border bg-background hover:bg-muted">
+                          <TableCell className="px-5 py-4 text-sm text-muted-foreground">{formatDateTime(entry.timestamp)}</TableCell>
                           <TableCell className="px-5 py-4">
                             <Badge variant="outline" className={`rounded-full ${getChannelBadgeClass(entry.channel)}`}>
                               {entry.channel || 'request'}
                             </Badge>
                           </TableCell>
-                          <TableCell className="px-5 py-4 text-sm font-medium text-[#0f172a]">{entry.event || 'event'}</TableCell>
-                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-[#64748b]">
+                          <TableCell className="px-5 py-4 text-sm font-medium text-foreground">{entry.event || 'event'}</TableCell>
+                          <TableCell className="px-5 py-4 whitespace-normal text-sm text-muted-foreground">
                             <div className="flex items-start gap-2">
-                              <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-[#94a3b8]" />
+                              <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                               <span>{summarizeAuditEntry(entry)}</span>
                             </div>
                           </TableCell>
@@ -1306,30 +1309,30 @@ function AdminDashboard() {
           }
         }}
       >
-        <DialogContent className="rounded-[28px] border-[#e5e7eb] bg-white p-0 sm:max-w-md">
-          <div className="border-b border-[#e5e7eb] px-6 py-5">
+        <DialogContent className="rounded-[28px] border-border bg-background p-0 sm:max-w-md">
+          <div className="border-b border-border px-6 py-5">
             <DialogHeader className="gap-2 text-left">
-              <DialogTitle className="text-xl font-semibold text-[#0f172a]">Adjust credits</DialogTitle>
-              <DialogDescription className="text-sm text-[#64748b]">
-                Apply a manual wallet adjustment for <span className="font-medium text-[#0f172a]">{creditDialogUser?.email}</span>.
+              <DialogTitle className="text-xl font-semibold text-foreground">Adjust credits</DialogTitle>
+              <DialogDescription className="text-sm text-muted-foreground">
+                Apply a manual wallet adjustment for <span className="font-medium text-foreground">{creditDialogUser?.email}</span>.
               </DialogDescription>
             </DialogHeader>
           </div>
 
           <div className="space-y-4 px-6 py-5">
-            <div className="rounded-2xl border border-[#e5e7eb] bg-[#f8fafc] px-4 py-3 text-sm text-[#475569]">
-              Current balance <span className="font-semibold text-[#0f172a]">{creditDialogUser?.credits.toLocaleString() || 0}</span> credits
+            <div className="rounded-2xl border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+              Current balance <span className="font-semibold text-foreground">{creditDialogUser?.credits.toLocaleString() || 0}</span> credits
             </div>
 
-            <div className={`grid gap-2 rounded-2xl bg-[#f8fafc] p-1.5 ${user?.adminRole === 'super_admin' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <div className={`grid gap-2 rounded-2xl bg-muted p-1.5 ${user?.adminRole === 'super_admin' ? 'grid-cols-2' : 'grid-cols-1'}`}>
               <Button
                 type="button"
                 variant="ghost"
                 aria-pressed={creditAdjustmentMode === 'add'}
                 onClick={() => setCreditAdjustmentMode('add')}
                 className={creditAdjustmentMode === 'add'
-                  ? 'h-10 rounded-xl bg-white text-[#166534] shadow-sm hover:bg-white hover:text-[#166534]'
-                  : 'h-10 rounded-xl text-[#64748b] hover:bg-white'}
+                  ? 'h-10 rounded-xl bg-background text-success shadow-sm hover:bg-background hover:text-success'
+                  : 'h-10 rounded-xl text-muted-foreground hover:bg-background'}
               >
                 Add credits
               </Button>
@@ -1340,8 +1343,8 @@ function AdminDashboard() {
                   aria-pressed={creditAdjustmentMode === 'deduct'}
                   onClick={() => setCreditAdjustmentMode('deduct')}
                   className={creditAdjustmentMode === 'deduct'
-                    ? 'h-10 rounded-xl bg-white text-[#b91c1c] shadow-sm hover:bg-white hover:text-[#b91c1c]'
-                    : 'h-10 rounded-xl text-[#64748b] hover:bg-white'}
+                    ? 'h-10 rounded-xl bg-background text-destructive shadow-sm hover:bg-background hover:text-destructive'
+                    : 'h-10 rounded-xl text-muted-foreground hover:bg-background'}
                 >
                   Deduct credits
                 </Button>
@@ -1349,7 +1352,7 @@ function AdminDashboard() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">
+              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">
                 Credits to {creditAdjustmentMode}
               </label>
               <Input
@@ -1360,25 +1363,25 @@ function AdminDashboard() {
                 value={creditAmount}
                 onChange={(event) => setCreditAmount(event.target.value)}
                 placeholder="500"
-                className="h-12 rounded-full border-[#dbe4ff] bg-white text-[#0f172a]"
+                className="h-12 rounded-full border-primary/25 bg-background text-foreground"
               />
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-[#94a3b8]">Reason</label>
+              <label className="text-xs font-semibold uppercase tracking-[0.28em] text-muted-foreground">Reason</label>
               <Input
                 type="text"
                 value={creditReason}
                 onChange={(event) => setCreditReason(event.target.value)}
                 placeholder={creditAdjustmentMode === 'deduct' ? 'Refund, correction, or policy action' : 'Support credit or account correction'}
                 maxLength={240}
-                className="h-12 rounded-full border-[#dbe4ff] bg-white text-[#0f172a]"
+                className="h-12 rounded-full border-primary/25 bg-background text-foreground"
               />
-              <p className="px-1 text-xs text-[#94a3b8]">This reason is saved in the admin audit log.</p>
+              <p className="px-1 text-xs text-muted-foreground">This reason is saved in the admin audit log.</p>
             </div>
 
             {creditAdjustmentMode === 'deduct' && Number(creditAmount) > 0 && creditDialogUser && (
-              <div className="rounded-2xl border border-[#fecaca] bg-[#fff1f2] px-4 py-3 text-sm text-[#9f1239]">
+              <div className="rounded-2xl border border-destructive/25 bg-danger-soft px-4 py-3 text-sm text-destructive">
                 Balance after deduction:{' '}
                 <span className="font-semibold">
                   {Math.max(0, creditDialogUser.credits - Number(creditAmount)).toLocaleString()} credits
@@ -1387,11 +1390,11 @@ function AdminDashboard() {
             )}
           </div>
 
-          <DialogFooter className="border-t border-[#e5e7eb] px-6 py-5 sm:justify-between">
+          <DialogFooter className="border-t border-border px-6 py-5 sm:justify-between">
             <Button
               variant="ghost"
               onClick={resetCreditDialog}
-              className="h-11 rounded-full px-4 text-[#64748b] hover:bg-[#eef2ff] hover:text-[#0f172a]"
+              className="h-11 rounded-full px-4 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               Cancel
             </Button>
@@ -1399,8 +1402,8 @@ function AdminDashboard() {
               onClick={() => void handleAdjustCredits()}
               disabled={isSubmittingCredit}
               className={creditAdjustmentMode === 'deduct'
-                ? 'h-11 rounded-full bg-[#b91c1c] px-5 text-white hover:bg-[#991b1b]'
-                : 'h-11 rounded-full bg-[#0f172a] px-5 text-white hover:bg-[#1e293b]'}
+                ? 'h-11 rounded-full bg-destructive px-5 text-primary-foreground hover:bg-destructive'
+                : 'h-11 rounded-full bg-primary px-5 text-primary-foreground hover:bg-primary-hover'}
             >
               {isSubmittingCredit ? <Loader2 className="h-4 w-4 animate-spin" /> : <Coins className="h-4 w-4" />}
               {creditAdjustmentMode === 'deduct' ? 'Deduct credits' : 'Add credits'}

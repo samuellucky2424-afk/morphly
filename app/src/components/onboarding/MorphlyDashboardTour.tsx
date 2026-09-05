@@ -37,21 +37,21 @@ function MorphlyTooltip({
   return (
     <div
       {...tooltipProps}
-      className="w-[min(390px,calc(100vw-32px))] rounded-2xl border border-amber-400/30 bg-[#121214] p-5 text-left text-white shadow-2xl shadow-black/70"
+      className="w-[min(390px,calc(100vw-32px))] rounded-2xl border border-warning/30 bg-background p-5 text-left text-foreground shadow-2xl shadow-black/5"
     >
       <div className="mb-3 flex items-start justify-between gap-4">
-        <h2 className="text-base font-semibold leading-6 text-white">{step.title}</h2>
-        <span className="whitespace-nowrap rounded-full bg-amber-400/10 px-2.5 py-1 text-[11px] font-semibold text-amber-300">
+        <h2 className="text-base font-semibold leading-6 text-foreground">{step.title}</h2>
+        <span className="whitespace-nowrap rounded-full bg-warning-soft px-2.5 py-1 text-[11px] font-semibold text-warning">
           Step {index + 1} of {size}
         </span>
       </div>
-      <div className="text-sm leading-6 text-[#d4d4d8]">{step.content}</div>
+      <div className="text-sm leading-6 text-foreground">{step.content}</div>
       <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
         <button
           {...skipProps}
           type="button"
           onClick={handleSkip}
-          className="rounded-lg px-2 py-2 text-xs font-medium text-[#a1a1aa] transition-colors hover:text-white focus:outline-none focus:ring-2 focus:ring-amber-400"
+          className="rounded-lg px-2 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus:outline-none focus:ring-2 focus:ring-warning"
         >
           Skip tour
         </button>
@@ -60,7 +60,7 @@ function MorphlyTooltip({
             <button
               {...backProps}
               type="button"
-              className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-amber-400"
+              className="rounded-lg border border-border px-3 py-2 text-xs font-semibold text-foreground transition-colors hover:bg-muted focus:outline-none focus:ring-2 focus:ring-warning"
             >
               Back
             </button>
@@ -68,7 +68,7 @@ function MorphlyTooltip({
           <button
             {...primaryProps}
             type="button"
-            className="rounded-lg bg-amber-400 px-3.5 py-2 text-xs font-bold text-black transition-colors hover:bg-amber-300 focus:outline-none focus:ring-2 focus:ring-amber-200 focus:ring-offset-2 focus:ring-offset-[#121214]"
+            className="rounded-lg bg-primary px-3.5 py-2 text-xs font-bold text-primary-foreground transition-colors hover:bg-primary-hover focus:outline-none focus:ring-2 focus:ring-warning focus:ring-offset-2 focus:ring-offset-background"
           >
             {isLastStep ? 'Start using Morphly' : continuous ? 'Next' : 'Close'}
           </button>
@@ -118,20 +118,20 @@ export function MorphlyDashboardTour({
         buttons: ['back', 'primary', 'skip'],
         dismissKeyAction: false,
         overlayClickAction: false,
-        overlayColor: 'rgba(0, 0, 0, 0.78)',
-        primaryColor: '#fbbf24',
+        overlayColor: 'rgba(32, 37, 45, 0.42)',
+        primaryColor: '#c82436',
         scrollOffset: 24,
         showProgress: true,
         skipBeacon: true,
         skipScroll: false,
         spotlightRadius: 12,
         targetWaitTimeout: 1500,
-        textColor: '#f4f4f5',
+        textColor: '#20252d',
         zIndex: 10000,
       }}
       styles={{
         spotlight: {
-          filter: 'drop-shadow(0 0 8px rgba(251, 191, 36, 0.85))',
+          filter: 'drop-shadow(0 0 4px rgba(200, 36, 54, 0.25))',
         },
       }}
     />

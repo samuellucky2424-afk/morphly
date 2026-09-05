@@ -86,6 +86,11 @@ type MeanVcStatus = {
     } | null;
   }>;
   runtime: {
+    performance?: {
+      processingMs: number; p95Ms: number; realTimeFactor: number;
+      inputLatencyMs: number; outputLatencyMs: number; inputQueueMs: number; outputQueueMs: number;
+      underruns: number; inputDrops: number; outputDrops: number; hostapi: string;
+    } | null;
     state: MeanVcRuntimeState;
     message: string;
     pid: number | null;
@@ -197,8 +202,8 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
       <span
         className={`mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border ${
           item.ready
-            ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300'
-            : 'border-white/10 bg-white/[0.03] text-zinc-500'
+            ? 'border-success/20 bg-success-soft text-success'
+            : 'border-border bg-muted text-muted-foreground'
         }`}
       >
         {item.ready
@@ -206,8 +211,8 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
           : <CircleAlert aria-hidden="true" className="size-2.5" />}
       </span>
       <div className="min-w-0">
-        <p className="text-[11px] font-medium text-zinc-200">{item.label}</p>
-        <p className="mt-0.5 text-[10px] leading-4 text-zinc-500">{item.detail}</p>
+        <p className="text-[11px] font-medium text-foreground">{item.label}</p>
+        <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{item.detail}</p>
       </div>
     </div>
   );
@@ -221,28 +226,29 @@ export function MeanVcPanel() {
   const [referenceId, setReferenceId] = useState<string | null>(null);
   const [hasConsent, setHasConsent] = useState(false);
   const [pitchSemitones, setPitchSemitones] = useState(0);
-  const [inputDevice, setInputDevice] = useState<number | null>(null);
-  const [outputDevice, setOutputDevice] = useState<number | null>(null);
+  const [routing, setRouting] = useState<{ input: number | null; output: number | null }>({ input: null, output: null });
+  const { input: inputDevice, output: outputDevice } = routing;
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refreshStatus = useCallback(async () => {
     try {
       const nextStatus = await requestMorphlyVc<MeanVcStatus>('status');
-      const devices = nextStatus.standalone?.['40ms'].audioDevices;
-      const virtualMicrophoneOutput = devices?.outputs.find(({ name }) => isVirtualMicrophonePlaybackDevice(name));
+      const devices = nextStatus.standalone?.['40ms']?.audioDevices;
       const selectableInputs = getSelectableMicrophoneInputs(devices);
       const preferredInput = selectableInputs.find(({ id }) => id === devices?.defaultInput)?.id
         ?? selectableInputs[0]?.id
         ?? null;
-      setInputDevice((current) => (
-        selectableInputs.some(({ id }) => id === current) ? current : preferredInput
-      ));
-      setOutputDevice((current) => (
-        devices?.outputs.some(({ id, name }) => id === current && !isMultiChannelVirtualCableDevice(name))
-          ? current
-          : virtualMicrophoneOutput?.id ?? devices?.defaultOutput ?? null
-      ));
+      setRouting((current) => {
+        const input = selectableInputs.some(({ id }) => id === current.input) ? current.input : preferredInput;
+        const driver = selectableInputs.find(({ id }) => id === input)?.hostapi;
+        const outputs = devices?.outputs.filter(({ name, hostapi }) => hostapi === driver && !isMultiChannelVirtualCableDevice(name)) || [];
+        const virtualMicrophoneOutput = outputs.find(({ name }) => isVirtualMicrophonePlaybackDevice(name));
+        const output = outputs.some(({ id }) => id === current.output) ? current.output
+          : virtualMicrophoneOutput?.id
+            ?? outputs.find(({ id }) => id === devices?.defaultOutput)?.id ?? outputs[0]?.id ?? null;
+        return { input, output };
+      });
       setStatus(nextStatus);
       setError(null);
     } catch (requestError) {
@@ -257,8 +263,8 @@ export function MeanVcPanel() {
     return () => window.clearTimeout(timeout);
   }, [refreshStatus]);
 
-  const installing40ms = Boolean(status?.standalone?.['40ms'].installing);
-  const installing120ms = Boolean(status?.standalone?.['120ms'].installing);
+  const installing40ms = Boolean(status?.standalone?.['40ms']?.installing);
+  const installing120ms = Boolean(status?.standalone?.['120ms']?.installing);
   const runtimeState = status?.runtime.state;
   const engineState = status?.preload?.engineState;
   const voiceState = status?.preload?.voiceState;
@@ -524,29 +530,29 @@ export function MeanVcPanel() {
   };
 
   return (
-    <aside data-morphly-voice-panel className="flex w-[clamp(340px,27vw,380px)] shrink-0 flex-col overflow-hidden border-r border-[#252833] bg-[#111318] text-zinc-100">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-[#252833] px-4">
+    <aside data-morphly-voice-panel className="flex w-[clamp(340px,27vw,380px)] shrink-0 flex-col overflow-hidden border-r border-border bg-background text-foreground">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-blue-400/25 bg-blue-500/10">
-            <AudioWaveform aria-hidden="true" className="size-[18px] text-blue-300" />
+          <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-primary/25 bg-accent">
+            <AudioWaveform aria-hidden="true" className="size-[18px] text-primary" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h2 className="truncate text-sm font-semibold tracking-[-0.01em] text-white">MorphlyVC</h2>
+              <h2 className="truncate text-sm font-semibold tracking-[-0.01em] text-foreground">MorphlyVC</h2>
             </div>
-            <p className="mt-0.5 truncate text-[11px] text-zinc-500">Live voice processing</p>
+            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">Live voice processing</p>
           </div>
         </div>
         <div className="ml-3 flex shrink-0 items-center gap-2">
           <Badge
             variant="outline"
-            className={runtimeActive
-              ? 'h-6 rounded border-emerald-400/25 bg-emerald-400/10 px-2 text-[10px] font-medium text-emerald-300'
-              : runtimeReady || engineWarming
-                ? 'h-6 rounded border-blue-400/25 bg-blue-400/10 px-2 text-[10px] font-medium text-blue-300'
-                : 'h-6 rounded border-amber-400/25 bg-amber-400/10 px-2 text-[10px] font-medium text-amber-200'}
+            className={runtimeActive || runtimeReady
+              ? 'h-6 rounded border-success/25 bg-success-soft px-2 text-[10px] font-medium text-success'
+              : engineWarming
+                ? 'h-6 rounded border-primary/25 bg-accent px-2 text-[10px] font-medium text-primary'
+                : 'h-6 rounded border-warning/25 bg-warning-soft px-2 text-[10px] font-medium text-warning'}
           >
-            <span className={`size-1.5 rounded-full ${runtimeActive ? 'bg-emerald-300' : runtimeReady || engineWarming ? 'bg-blue-300' : 'bg-amber-300'}`} />
+            <span className={`size-1.5 rounded-full ${runtimeActive || runtimeReady ? 'bg-success' : engineWarming ? 'bg-primary' : 'bg-warning'}`} />
             {standaloneStatus?.installing ? `Installing ${standaloneStatus.progress}%` : stateLabel}
           </Badge>
           <Button
@@ -556,7 +562,7 @@ export function MeanVcPanel() {
             onClick={() => void refreshStatus()}
             title="Refresh MorphlyVC status"
             aria-label="Refresh MorphlyVC status"
-            className="size-8 rounded-md text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-100 focus-visible:ring-blue-400/50"
+            className="size-8 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-ring/50"
           >
             <RefreshCw aria-hidden="true" className="size-4" />
           </Button>
@@ -568,47 +574,47 @@ export function MeanVcPanel() {
           {!runtimeReady ? (
             <div className={`mx-4 mt-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 ${
               engineWarming
-                ? 'border-blue-400/20 bg-blue-400/[0.06]'
-                : 'border-amber-400/20 bg-amber-400/[0.07]'
+                ? 'border-primary/20 bg-accent'
+                : 'border-warning/20 bg-warning-soft'
             }`} role="status">
-              <span className={`flex items-center gap-2 text-[11px] font-medium ${engineWarming ? 'text-blue-100' : 'text-amber-100'}`}>
+              <span className={`flex items-center gap-2 text-[11px] font-medium ${engineWarming ? 'text-primary' : 'text-warning'}`}>
                 {engineWarming
-                  ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-blue-300" />
-                  : <CircleAlert aria-hidden="true" className="size-4 text-amber-300" />}
+                  ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-primary" />
+                  : <CircleAlert aria-hidden="true" className="size-4 text-warning" />}
                 {engineWarming ? 'Preparing local engine' : 'Engine setup incomplete'}
               </span>
-              <span className={`text-[11px] tabular-nums ${engineWarming ? 'text-blue-200/70' : 'text-amber-200/70'}`}>
+              <span className={`text-[11px] tabular-nums ${engineWarming ? 'text-primary' : 'text-warning'}`}>
                 {completedChecks}/{readinessItems.length}
               </span>
             </div>
           ) : null}
 
           {error ? (
-            <div className="mx-4 mt-3 rounded-md border border-red-400/25 bg-red-400/[0.08] px-3 py-2 text-[11px] leading-5 text-red-200" role="alert">
+            <div className="mx-4 mt-3 rounded-md border border-destructive/25 bg-danger-soft px-3 py-2 text-[11px] leading-5 text-destructive" role="alert">
               {error}
             </div>
           ) : null}
 
-          <section aria-labelledby="voice-profile-heading" className="border-b border-[#252833] px-4 py-4">
+          <section aria-labelledby="voice-profile-heading" className="border-b border-border px-4 py-4">
             <div className="mb-2.5">
-              <h3 id="voice-profile-heading" className="text-xs font-semibold text-zinc-100">Voice profile</h3>
-              <p className="mt-1 text-[11px] leading-4 text-zinc-500">Choose a clear, consented WAV recording.</p>
+              <h3 id="voice-profile-heading" className="text-xs font-semibold text-foreground">Voice profile</h3>
+              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Choose a clear, consented WAV recording.</p>
             </div>
 
             <label
               htmlFor="meanvc-reference"
-              className="group flex min-h-14 cursor-pointer items-center gap-2.5 rounded-md border border-dashed border-[#3a3e49] bg-[#0d0f14] px-3 outline-none transition-colors duration-200 hover:border-blue-400/50 hover:bg-blue-400/[0.03] focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-400/20"
+              className="group flex min-h-14 cursor-pointer items-center gap-2.5 rounded-md border border-dashed border-border bg-background px-3 outline-none transition-colors duration-200 hover:border-primary/50 hover:bg-accent focus-within:border-primary/25 focus-within:ring-2 focus-within:ring-ring/20"
             >
-              <div className="grid size-8 shrink-0 place-items-center rounded border border-[#30343e] bg-[#171920] text-zinc-500 transition-colors group-hover:text-blue-300">
+              <div className="grid size-8 shrink-0 place-items-center rounded border border-border bg-background text-muted-foreground transition-colors group-hover:text-primary">
                 <FileAudio aria-hidden="true" className="size-4" />
               </div>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[11px] font-medium text-zinc-200" title={referenceFile?.name}>
+                <span className="block truncate text-[11px] font-medium text-foreground" title={referenceFile?.name}>
                   {referenceFile?.name || 'Select reference recording'}
                 </span>
-                <span className="mt-0.5 block text-[10px] text-zinc-500">WAV · up to 25 MB</span>
+                <span className="mt-0.5 block text-[10px] text-muted-foreground">WAV · up to 25 MB</span>
               </span>
-              <span className="rounded border border-[#363a45] bg-[#1b1e25] px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors group-hover:border-blue-400/30 group-hover:text-white">
+              <span className="rounded border border-border bg-background px-2.5 py-1.5 text-[11px] font-medium text-foreground transition-colors group-hover:border-primary/30 group-hover:text-foreground">
                 Browse
               </span>
             </label>
@@ -621,43 +627,49 @@ export function MeanVcPanel() {
             />
           </section>
 
-          <section aria-labelledby="conversion-profile-heading" className="border-b border-[#252833] px-4 py-3">
+          <section aria-labelledby="conversion-profile-heading" className="border-b border-border px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <h3 id="conversion-profile-heading" className="text-xs font-semibold text-zinc-100">Engine</h3>
-                <p className="mt-1 text-[11px] text-zinc-500">Quality · 160 ms buffer · local processing</p>
+                <h3 id="conversion-profile-heading" className="text-xs font-semibold text-foreground">Engine</h3>
+                <p className="mt-1 text-[11px] text-muted-foreground">Quality · 160 ms buffer · local processing</p>
               </div>
-              <span className={`flex shrink-0 items-center gap-1.5 text-[10px] font-medium ${runtimeReady ? 'text-emerald-300' : engineWarming ? 'text-blue-300' : 'text-amber-300'}`}>
-                <span className={`size-1.5 rounded-full ${runtimeReady ? 'bg-emerald-300' : engineWarming ? 'bg-blue-300' : 'bg-amber-300'}`} />
+              <span className={`flex shrink-0 items-center gap-1.5 text-[10px] font-medium ${runtimeReady ? 'text-success' : engineWarming ? 'text-primary' : 'text-warning'}`}>
+                <span className={`size-1.5 rounded-full ${runtimeReady ? 'bg-success' : engineWarming ? 'bg-primary' : 'bg-warning'}`} />
                 {runtimeReady ? 'Ready' : engineWarming ? 'Loading' : 'Check setup'}
               </span>
             </div>
           </section>
 
-          <section aria-labelledby="audio-routing-heading" className="border-b border-[#252833] px-4 py-4">
+          <section aria-labelledby="audio-routing-heading" className="border-b border-border px-4 py-4">
             <div className="mb-3">
-              <h3 id="audio-routing-heading" className="text-xs font-semibold text-zinc-100">Audio routing</h3>
-              <p className="mt-1 text-[11px] leading-4 text-zinc-500">Microphone remains closed until Start.</p>
+              <h3 id="audio-routing-heading" className="text-xs font-semibold text-foreground">Audio routing</h3>
+              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Microphone remains closed until Start.</p>
             </div>
 
             <div className="space-y-2.5">
               <div className="min-w-0 space-y-1.5">
-                <label htmlFor="meanvc-input-device" className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
-                  <Mic aria-hidden="true" className="size-3.5 text-zinc-500" />
+                <label htmlFor="meanvc-input-device" className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <Mic aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   Microphone input
                 </label>
                 <Select
                   value={inputDevice === null ? undefined : String(inputDevice)}
-                  onValueChange={(value) => setInputDevice(Number(value))}
+                  onValueChange={(value) => {
+                    const next = Number(value);
+                    const driver = selectableMicrophoneInputs.find(item => item.id === next)?.hostapi;
+                    const outputs = standaloneStatus?.audioDevices?.outputs.filter(item => item.hostapi === driver && !isMultiChannelVirtualCableDevice(item.name)) || [];
+                    setRouting(current => ({ input: next, output: outputs.some(item => item.id === current.output) ? current.output
+                      : outputs.find(item => isVirtualMicrophonePlaybackDevice(item.name))?.id ?? outputs[0]?.id ?? null }));
+                  }}
                   disabled={runtimeActive}
                 >
-                  <SelectTrigger id="meanvc-input-device" className="h-9 w-full min-w-0 rounded-md border-[#30343e] bg-[#0d0f14] text-[11px] text-zinc-200 shadow-none hover:bg-[#16181f] focus-visible:ring-blue-400/40">
+                  <SelectTrigger id="meanvc-input-device" className="h-9 w-full min-w-0 rounded-md border-border bg-background text-[11px] text-foreground shadow-none hover:bg-background focus-visible:ring-ring/40">
                     <SelectValue placeholder="Select microphone" />
                   </SelectTrigger>
-                  <SelectContent className="border-[#303542] bg-[#171a22] text-zinc-200">
+                  <SelectContent className="border-border bg-background text-foreground">
                     {selectableMicrophoneInputs.map((audioDevice) => (
                       <SelectItem key={audioDevice.id} value={String(audioDevice.id)}>
-                        {audioDevice.name}
+                        {audioDevice.name} · {audioDevice.hostapi}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -665,24 +677,25 @@ export function MeanVcPanel() {
               </div>
 
               <div className="min-w-0 space-y-1.5">
-                <label htmlFor="meanvc-output-device" className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
-                  <Volume2 aria-hidden="true" className="size-3.5 text-zinc-500" />
+                <label htmlFor="meanvc-output-device" className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <Volume2 aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   Converted voice output
                 </label>
                 <Select
                   value={outputDevice === null ? undefined : String(outputDevice)}
-                  onValueChange={(value) => setOutputDevice(Number(value))}
+                  onValueChange={(value) => setRouting(current => ({ ...current, output: Number(value) }))}
                   disabled={runtimeActive}
                 >
-                  <SelectTrigger id="meanvc-output-device" className="h-9 w-full min-w-0 rounded-md border-[#30343e] bg-[#0d0f14] text-[11px] text-zinc-200 shadow-none hover:bg-[#16181f] focus-visible:ring-blue-400/40">
+                  <SelectTrigger id="meanvc-output-device" className="h-9 w-full min-w-0 rounded-md border-border bg-background text-[11px] text-foreground shadow-none hover:bg-background focus-visible:ring-ring/40">
                     <SelectValue placeholder="Select converted output" />
                   </SelectTrigger>
-                  <SelectContent className="border-[#303542] bg-[#171a22] text-zinc-200">
+                  <SelectContent className="border-border bg-background text-foreground">
                     {standaloneStatus?.audioDevices?.outputs
-                      .filter(({ name }) => !isMultiChannelVirtualCableDevice(name))
+                      .filter(({ name, hostapi }) => !isMultiChannelVirtualCableDevice(name)
+                        && hostapi === selectableMicrophoneInputs.find(item => item.id === inputDevice)?.hostapi)
                       .map((audioDevice) => (
                       <SelectItem key={audioDevice.id} value={String(audioDevice.id)}>
-                        {audioDevice.name}
+                        {audioDevice.name} · {audioDevice.hostapi}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -691,18 +704,18 @@ export function MeanVcPanel() {
 
               <div className={`rounded-md border p-2.5 ${
                 virtualMicrophoneReady
-                  ? 'border-emerald-400/20 bg-emerald-400/[0.055]'
-                  : 'border-[#303542] bg-[#101219]'
+                  ? 'border-success/20 bg-success-soft'
+                  : 'border-border bg-background'
               }`}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className={`flex items-center gap-2 text-[11px] font-medium ${
-                      virtualMicrophoneReady ? 'text-emerald-200' : 'text-zinc-300'
+                      virtualMicrophoneReady ? 'text-success' : 'text-foreground'
                     }`}>
-                      <span className={`size-2 rounded-full ${virtualMicrophoneReady ? 'bg-emerald-300' : 'bg-zinc-600'}`} />
+                      <span className={`size-2 rounded-full ${virtualMicrophoneReady ? 'bg-success' : 'bg-muted'}`} />
                       {virtualMicrophoneReady ? 'Virtual microphone connected' : 'Virtual microphone unavailable'}
                     </p>
-                    <p className="mt-1 text-[10px] leading-4 text-zinc-500">
+                    <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
                       {virtualMicrophoneReady
                         ? 'Use CABLE Output as the microphone in WhatsApp and calling apps.'
                         : 'Install VB-CABLE, then refresh the device list.'}
@@ -715,7 +728,7 @@ export function MeanVcPanel() {
                       size="sm"
                       disabled={isInstallingVbCable}
                       onClick={() => void installVirtualMicrophone()}
-                      className="h-8 shrink-0 gap-1.5 rounded border-[#363b48] bg-[#1b1e25] text-[11px] text-zinc-200 hover:bg-[#252832] disabled:opacity-50"
+                      className="h-8 shrink-0 gap-1.5 rounded border-border bg-background text-[11px] text-foreground hover:bg-background disabled:opacity-50"
                     >
                       {isInstallingVbCable ? (
                         <>
@@ -738,28 +751,28 @@ export function MeanVcPanel() {
               </div>
             </div>
             {runtimeActive ? (
-              <p className="mt-3 text-xs text-amber-200/70">Stop conversion before changing audio devices.</p>
+              <p className="mt-3 text-xs text-warning">Stop conversion before changing audio devices.</p>
             ) : null}
           </section>
 
-          <section aria-labelledby="voice-tuning-heading" className="border-b border-[#252833] px-4 py-4">
+          <section aria-labelledby="voice-tuning-heading" className="border-b border-border px-4 py-4">
             <div className="mb-3 flex items-center justify-between gap-4">
               <div>
-                <h3 id="voice-tuning-heading" className="text-xs font-semibold text-zinc-100">Voice pitch</h3>
-                <p className="mt-1 text-[11px] text-zinc-500">Adjust tone in semitones</p>
+                <h3 id="voice-tuning-heading" className="text-xs font-semibold text-foreground">Voice pitch</h3>
+                <p className="mt-1 text-[11px] text-muted-foreground">Adjust tone in semitones</p>
               </div>
               <Badge
                 variant="outline"
-                className="h-6 rounded border-blue-400/20 bg-blue-400/[0.06] font-mono text-[10px] tabular-nums text-blue-200"
+                className="h-6 rounded border-primary/20 bg-accent font-mono text-[10px] tabular-nums text-primary"
               >
                 {pitchSemitones > 0 ? '+' : ''}{pitchSemitones} st
               </Badge>
             </div>
 
-            <div className="rounded-md border border-[#30343e] bg-[#0d0f14] px-3 py-3">
-              <div className="mb-3 flex items-center justify-between text-[10px] text-zinc-500">
+            <div className="rounded-md border border-border bg-background px-3 py-3">
+              <div className="mb-3 flex items-center justify-between text-[10px] text-muted-foreground">
                 <span>Deeper</span>
-                <span className="font-medium text-zinc-300">
+                <span className="font-medium text-foreground">
                   {pitchSemitones < 0 ? 'Low' : pitchSemitones > 0 ? 'Bright' : 'Natural'}
                 </span>
                 <span>Brighter</span>
@@ -773,7 +786,7 @@ export function MeanVcPanel() {
                 onValueChange={([value]) => setPitchSemitones(value)}
                 onValueCommit={([value]) => void handlePitchCommit(value)}
                 disabled={isBusy}
-                className="[&_[data-slot=slider-range]]:bg-blue-400 [&_[data-slot=slider-thumb]]:border-blue-300"
+                className="[&_[data-slot=slider-range]]:bg-primary [&_[data-slot=slider-thumb]]:border-primary/25"
               />
               <div className="mt-3 grid grid-cols-3 gap-1.5">
                 {[
@@ -787,10 +800,10 @@ export function MeanVcPanel() {
                     disabled={isBusy}
                     aria-pressed={pitchSemitones === preset.value}
                     onClick={() => void handlePitchCommit(preset.value)}
-                    className={`h-7 rounded border px-2 text-[10px] font-medium transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50 disabled:cursor-not-allowed disabled:opacity-50 ${
+                    className={`h-7 rounded border px-2 text-[10px] font-medium transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 ${
                       pitchSemitones === preset.value
-                        ? 'border-blue-400/35 bg-blue-400/15 text-blue-200'
-                        : 'border-[#303542] bg-[#1a1d26] text-zinc-400 hover:bg-[#222631] hover:text-zinc-200'
+                        ? 'border-primary/35 bg-accent text-primary'
+                        : 'border-border bg-background text-muted-foreground hover:bg-background hover:text-foreground'
                     }`}
                   >
                     {preset.label}
@@ -798,37 +811,44 @@ export function MeanVcPanel() {
                 ))}
               </div>
             </div>
-            <p className="mt-2 text-[10px] leading-4 text-zinc-500">
+            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
               {runtimeActive ? 'Pitch changes are applied when you release the control.' : 'This setting is applied when conversion starts.'}
             </p>
           </section>
 
           <Collapsible>
-            <div className="border-b border-[#252833]">
+            <div className="border-b border-border">
               <CollapsibleTrigger asChild>
                 <button
                   type="button"
-                  className="group flex min-h-10 w-full items-center justify-between px-4 py-2.5 text-left text-[11px] font-medium text-zinc-300 transition-colors hover:bg-white/[0.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400/50"
+                  className="group flex min-h-10 w-full items-center justify-between px-4 py-2.5 text-left text-[11px] font-medium text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
                 >
                   <span className="flex items-center gap-2.5">
                     {runtimeReady
-                      ? <CheckCircle2 aria-hidden="true" className="size-4 text-emerald-300" />
-                      : <CircleAlert aria-hidden="true" className="size-4 text-amber-300" />}
+                      ? <CheckCircle2 aria-hidden="true" className="size-4 text-success" />
+                      : <CircleAlert aria-hidden="true" className="size-4 text-warning" />}
                     System readiness
-                    <span className="font-normal tabular-nums text-zinc-500">{completedChecks}/{readinessItems.length}</span>
+                    <span className="font-normal tabular-nums text-muted-foreground">{completedChecks}/{readinessItems.length}</span>
                   </span>
-                  <ChevronDown aria-hidden="true" className="size-3.5 text-zinc-500 transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
+                  <ChevronDown aria-hidden="true" className="size-3.5 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none" />
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="divide-y divide-[#252833] border-t border-[#252833] px-4">
+                {runtimeActive && status?.runtime.performance && <div className="mx-4 mb-3 space-y-1 rounded border border-border bg-background p-3 text-xs leading-5">
+                  <p className="font-semibold">Audio performance</p>
+                  <p>{status.runtime.performance.hostapi} · Processing {status.runtime.performance.processingMs} ms / 160 ms</p>
+                  <p className="text-muted-foreground">Driver input/output: {status.runtime.performance.inputLatencyMs} / {status.runtime.performance.outputLatencyMs} ms</p>
+                  <p className="text-muted-foreground">Queued audio: {status.runtime.performance.inputQueueMs + status.runtime.performance.outputQueueMs} ms · Gaps: {status.runtime.performance.underruns}</p>
+                  {status.runtime.performance.realTimeFactor >= 1 && <p className="text-warning" role="status">Processing is slower than live audio. Close other demanding apps and use WASAPI devices.</p>}
+                </div>}
+                <div className="divide-y divide-border border-t border-border px-4">
                   {readinessItems.map((item) => <ReadinessRow key={item.label} item={item} />)}
                 </div>
 
                 {status?.runtime.logs.length ? (
-                  <div className="mx-4 mb-3 rounded border border-[#292d38] bg-[#0c0e13] p-2.5" role="log" aria-label="MorphlyVC runtime log">
+                  <div className="mx-4 mb-3 rounded border border-border bg-background p-2.5" role="log" aria-label="MorphlyVC runtime log">
                     {status.runtime.logs.slice(-4).map((entry) => (
-                      <p key={`${entry.timestamp}-${entry.message}`} className="truncate font-mono text-[10px] leading-5 text-zinc-500" title={entry.message}>
+                      <p key={`${entry.timestamp}-${entry.message}`} className="truncate font-mono text-[10px] leading-5 text-muted-foreground" title={entry.message}>
                         {entry.message}
                       </p>
                     ))}
@@ -838,25 +858,25 @@ export function MeanVcPanel() {
             </div>
           </Collapsible>
 
-          <div className="flex items-center justify-between px-4 py-3 text-[10px] text-zinc-600">
+          <div className="flex items-center justify-between px-4 py-3 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1.5"><Cpu aria-hidden="true" className="size-3" />MorphlyVC CPU · 160 ms</span>
             <span>Apache-2.0</span>
           </div>
         </div>
       </ScrollArea>
 
-      <footer className="shrink-0 border-t border-[#292d38] bg-[#0f1116] p-3">
+      <footer className="shrink-0 border-t border-border bg-background p-3">
         {runtimeActive ? (
-          <div className="mb-2 flex items-center gap-2 rounded border border-emerald-400/20 bg-emerald-400/[0.06] px-2.5 py-2 text-[11px] text-emerald-200">
+          <div className="mb-2 flex items-center gap-2 rounded border border-success/20 bg-success-soft px-2.5 py-2 text-[11px] text-success">
             <AudioWaveform aria-hidden="true" className="size-4" />
             Live voice processing is active
           </div>
         ) : (
-          <label className="mb-2 flex cursor-pointer items-start gap-2 text-[11px] leading-4 text-zinc-400">
+          <label className="mb-2 flex cursor-pointer items-start gap-2 text-[11px] leading-4 text-muted-foreground">
             <Checkbox
               checked={hasConsent}
               onCheckedChange={(checked) => setHasConsent(checked === true)}
-              className="mt-0.5 size-4 border-white/25 data-[state=checked]:border-blue-500 data-[state=checked]:bg-blue-600"
+              className="mt-0.5 size-4 border-border data-[state=checked]:border-primary/25 data-[state=checked]:bg-primary"
             />
             <span>I have permission to use this voice responsibly.</span>
           </label>
@@ -868,7 +888,7 @@ export function MeanVcPanel() {
             variant="outline"
             onClick={() => void handleStop()}
             disabled={isBusy}
-            className="h-9 w-full rounded-md border-red-400/25 bg-red-400/[0.07] text-xs font-semibold text-red-200 hover:bg-red-400/10 hover:text-red-100"
+            className="h-9 w-full rounded-md border-destructive/25 bg-danger-soft text-xs font-semibold text-destructive hover:bg-danger-soft hover:text-destructive"
           >
             {isBusy ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Square aria-hidden="true" className="fill-current" />}
             Stop voice conversion
@@ -879,7 +899,7 @@ export function MeanVcPanel() {
             onClick={() => void handleStart()}
             disabled={!canStart}
             title={startRequirement}
-            className="h-9 w-full rounded-md bg-blue-600 text-xs font-semibold text-white hover:bg-blue-500 focus-visible:ring-blue-400/50 disabled:cursor-not-allowed disabled:bg-[#242832] disabled:text-zinc-500"
+            className="h-9 w-full rounded-md bg-primary text-xs font-semibold text-primary-foreground hover:bg-primary-hover focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
           >
             {isBusy ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" className="fill-current" />}
             Start voice conversion
@@ -887,8 +907,8 @@ export function MeanVcPanel() {
         )}
 
         <div className="mt-2 flex items-start gap-1.5 text-[10px] leading-4" role="status" aria-live="polite" aria-atomic="true">
-          <ShieldCheck aria-hidden="true" className={`mt-0.5 size-3.5 shrink-0 ${canStart || runtimeActive ? 'text-emerald-300' : 'text-zinc-600'}`} />
-          <span className={canStart || runtimeActive ? 'text-emerald-200/80' : 'text-zinc-500'}>
+          <ShieldCheck aria-hidden="true" className={`mt-0.5 size-3.5 shrink-0 ${canStart || runtimeActive ? 'text-success' : 'text-muted-foreground'}`} />
+          <span className={canStart || runtimeActive ? 'text-success' : 'text-muted-foreground'}>
             {runtimeActive ? status?.runtime.message : startRequirement}
           </span>
         </div>

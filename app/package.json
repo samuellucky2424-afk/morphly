@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Morphly Desktop with bundled MorphlyVC voice engine and virtual camera support.",
   "author": "Morphly",
   "repository": {
@@ -168,6 +168,7 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@types/qrcode": "^1.5.6",

@@ -11,6 +11,7 @@ import { Progress } from '@/components/ui/progress';
 import { useAuth } from '@/context/AuthContext';
 import { toast } from 'sonner';
 import { StreamGuideModal } from '@/components/StreamGuideModal';
+import { VirtualCameraSettings } from '@/components/VirtualCameraSettings';
 import {
   checkForUpdates as checkDesktopForUpdates,
   downloadUpdate as downloadDesktopUpdate,
@@ -303,94 +304,94 @@ function Settings() {
   return (
     <div className="max-w-3xl">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">Settings</h1>
-        <p className="text-sm text-[#a1a1aa]">Manage your account settings and preferences</p>
+        <h1 className="text-3xl font-bold text-foreground mb-2 tracking-tight">Settings</h1>
+        <p className="text-sm text-muted-foreground">Manage your account settings and preferences</p>
       </div>
 
       <div className="space-y-6">
-        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Profile Information</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Update your account details</CardDescription>
+        <Card className="bg-gradient-to-br from-background to-background border-border overflow-hidden rounded-2xl shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold text-foreground tracking-tight">Profile Information</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">Update your account details</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="name" className="text-sm font-medium text-[#a1a1aa]">Full Name</Label>
+                <Label htmlFor="name" className="text-sm font-medium text-muted-foreground">Full Name</Label>
                 <Input
                   id="name"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  className="h-11 bg-[#18181b] border-[#27272a] text-white focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20"
+                  className="h-11 bg-background border-border text-foreground focus:border-primary/50 focus:ring-2 focus:ring-ring/20"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="email" className="text-sm font-medium text-[#a1a1aa]">Email Address</Label>
+                <Label htmlFor="email" className="text-sm font-medium text-muted-foreground">Email Address</Label>
                 <Input
                   id="email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="h-11 bg-[#18181b] border-[#27272a] text-white focus:border-blue-500/50 focus:ring-2 focus:ring-blue-500/20"
+                  className="h-11 bg-background border-border text-foreground focus:border-primary/50 focus:ring-2 focus:ring-ring/20"
                 />
               </div>
             </div>
             <Button 
               onClick={handleSaveProfile}
               disabled={isSaving}
-              className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
+              className="bg-primary hover:bg-primary-hover text-primary-foreground font-medium"
             >
               {isSaving ? 'Saving...' : 'Save Changes'}
             </Button>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Notifications</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Configure your notification preferences</CardDescription>
+        <Card className="bg-gradient-to-br from-background to-background border-border overflow-hidden rounded-2xl shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold text-foreground tracking-tight">Notifications</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">Configure your notification preferences</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">Email Notifications</Label>
-                <p className="text-xs text-[#71717a]">Receive email updates about your account</p>
+                <Label className="text-sm font-medium text-foreground">Email Notifications</Label>
+                <p className="text-xs text-muted-foreground">Receive email updates about your account</p>
               </div>
               <Switch defaultChecked />
             </div>
-            <Separator className="bg-[#27272a]" />
+            <Separator className="bg-background" />
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">Low Balance Alerts</Label>
-                <p className="text-xs text-[#71717a]">Get notified when your balance is low</p>
+                <Label className="text-sm font-medium text-foreground">Low Balance Alerts</Label>
+                <p className="text-xs text-muted-foreground">Get notified when your balance is low</p>
               </div>
               <Switch defaultChecked />
             </div>
-            <Separator className="bg-[#27272a]" />
+            <Separator className="bg-background" />
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">Marketing Emails</Label>
-                <p className="text-xs text-[#71717a]">Receive updates about new features and offers</p>
+                <Label className="text-sm font-medium text-foreground">Marketing Emails</Label>
+                <p className="text-xs text-muted-foreground">Receive updates about new features and offers</p>
               </div>
               <Switch />
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Streaming / Capture Setup</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Learn how to send Morphly into SplitCam, OBS, Zoom, WhatsApp & more</CardDescription>
+        <Card className="bg-gradient-to-br from-background to-background border-border overflow-hidden rounded-2xl shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold text-foreground tracking-tight">Streaming / Capture Setup</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">Learn how to send Morphly into SplitCam, OBS, Zoom, WhatsApp & more</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">SplitCam / OBS Guide</Label>
-                <p className="text-xs text-[#71717a]">Step-by-step instructions for capturing the Morphly feed and routing it into video apps</p>
+                <Label className="text-sm font-medium text-foreground">SplitCam / OBS Guide</Label>
+                <p className="text-xs text-muted-foreground">Step-by-step instructions for capturing the Morphly feed and routing it into video apps</p>
               </div>
               <Button 
                 onClick={() => setIsGuideModalOpen(true)}
-                className="bg-blue-600 hover:bg-blue-500 text-white font-medium"
+                className="bg-primary hover:bg-primary-hover text-primary-foreground font-medium"
               >
                 View Guide
               </Button>
@@ -398,108 +399,109 @@ function Settings() {
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold tracking-tight text-white">Guided Tour &amp; Camera Permissions</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">
+        <Card className="overflow-hidden rounded-2xl border-border bg-gradient-to-br from-background to-background shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold tracking-tight text-foreground">Guided Tour &amp; Camera Permissions</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">
               Reopen the dashboard walkthrough or confirm that Morphly can see your physical camera.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 p-6">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <Label className="text-sm font-medium text-white">Restart Guided Tour</Label>
-                <p className="mt-1 text-xs text-[#71717a]">
+                <Label className="text-sm font-medium text-foreground">Restart Guided Tour</Label>
+                <p className="mt-1 text-xs text-muted-foreground">
                   Restarting changes only your guide state. Credits, camera settings and purchases are untouched.
                 </p>
               </div>
               <Button
                 data-tour="restart-tour"
                 onClick={() => void handleRestartTour()}
-                className="bg-amber-400 font-semibold text-black hover:bg-amber-300"
+                className="bg-primary font-semibold text-primary-foreground hover:bg-primary-hover"
               >
                 Restart Guided Tour
               </Button>
             </div>
-            <Separator className="bg-[#27272a]" />
+            <Separator className="bg-background" />
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <Label className="text-sm font-medium text-white">Camera Permissions</Label>
-                <p className="mt-1 text-xs text-[#71717a]">{cameraPermissionStatus}</p>
+                <Label className="text-sm font-medium text-foreground">Camera Permissions</Label>
+                <p className="mt-1 text-xs text-muted-foreground">{cameraPermissionStatus}</p>
               </div>
               <Button
                 onClick={() => void handleCameraPermission()}
                 disabled={isRequestingCameraPermission}
                 variant="outline"
-                className="border-[#3f3f46] text-white hover:bg-[#27272a]"
+                className="border-border text-foreground hover:bg-background"
               >
                 {isRequestingCameraPermission ? 'Checking...' : 'Check Camera Access'}
               </Button>
             </div>
+            <VirtualCameraSettings />
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold tracking-tight text-white">Referral Program</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">
+        <Card className="overflow-hidden rounded-2xl border-border bg-gradient-to-br from-background to-background shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold tracking-tight text-foreground">Referral Program</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">
               Invite people to Morphly. You receive 200 credits after each referred user completes
               their first successful credit purchase.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5 p-6">
             {isLoadingReferrals ? (
-              <p className="text-sm text-[#a1a1aa]">Loading your referral details...</p>
+              <p className="text-sm text-muted-foreground">Loading your referral details...</p>
             ) : referralSummary?.referralCode ? (
               <>
-                <div className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
-                  <p className="text-xs uppercase tracking-[0.2em] text-amber-300">Your referral code</p>
-                  <p className="mt-2 font-mono text-2xl font-bold tracking-[0.2em] text-white">
+                <div className="rounded-xl border border-warning/20 bg-warning-soft p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-warning">Your referral code</p>
+                  <p className="mt-2 font-mono text-2xl font-bold tracking-[0.2em] text-foreground">
                     {referralSummary.referralCode}
                   </p>
                   <div className="mt-4 flex flex-wrap gap-2">
                     <Button
                       onClick={() => void copyText(referralSummary.referralCode, 'Referral code')}
-                      className="bg-amber-400 font-semibold text-black hover:bg-amber-300"
+                      className="bg-primary font-semibold text-primary-foreground hover:bg-primary-hover"
                     >
                       Copy Code
                     </Button>
                     <Button
                       onClick={() => void copyText(referralLink, 'Referral link')}
                       variant="outline"
-                      className="border-[#3f3f46] text-white hover:bg-[#27272a]"
+                      className="border-border text-foreground hover:bg-background"
                     >
                       Copy Referral Link
                     </Button>
                   </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
-                    <p className="text-xs text-[#71717a]">People referred</p>
-                    <p className="mt-1 text-2xl font-semibold text-white">{referralSummary.referredCount}</p>
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <p className="text-xs text-muted-foreground">People referred</p>
+                    <p className="mt-1 text-2xl font-semibold text-foreground">{referralSummary.referredCount}</p>
                   </div>
-                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
-                    <p className="text-xs text-[#71717a]">Qualifying purchases</p>
-                    <p className="mt-1 text-2xl font-semibold text-white">{referralSummary.qualifyingPurchaseCount}</p>
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <p className="text-xs text-muted-foreground">Qualifying purchases</p>
+                    <p className="mt-1 text-2xl font-semibold text-foreground">{referralSummary.qualifyingPurchaseCount}</p>
                   </div>
-                  <div className="rounded-xl border border-[#27272a] bg-[#18181b] p-4">
-                    <p className="text-xs text-[#71717a]">Credits earned</p>
-                    <p className="mt-1 text-2xl font-semibold text-white">
+                  <div className="rounded-xl border border-border bg-background p-4">
+                    <p className="text-xs text-muted-foreground">Credits earned</p>
+                    <p className="mt-1 text-2xl font-semibold text-foreground">
                       {referralSummary.totalReferralCreditsEarned.toLocaleString()}
                     </p>
                   </div>
                 </div>
                 {referralSummary.referrals.length === 0 ? (
-                  <p className="text-sm text-[#71717a]">You have not referred anyone yet.</p>
+                  <p className="text-sm text-muted-foreground">You have not referred anyone yet.</p>
                 ) : (
                   <div className="space-y-2">
                     {referralSummary.referrals.map((referral) => (
                       <div
                         key={referral.id}
-                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#27272a] bg-[#18181b] px-4 py-3"
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3"
                       >
                         <div>
-                          <p className="text-sm font-medium text-white">
+                          <p className="text-sm font-medium text-foreground">
                             {referral.status === 'rewarded'
                               ? 'Reward earned — 200 credits added'
                               : referral.status === 'registered'
@@ -508,7 +510,7 @@ function Settings() {
                                   ? 'First purchase confirmed'
                                   : 'Referral disqualified'}
                           </p>
-                          <p className="mt-1 text-xs text-[#71717a]">
+                          <p className="mt-1 text-xs text-muted-foreground">
                             Registered {new Date(referral.createdAt).toLocaleDateString()}
                           </p>
                         </div>
@@ -521,19 +523,19 @@ function Settings() {
                 )}
               </>
             ) : (
-              <p className="text-sm text-red-300">
+              <p className="text-sm text-destructive">
                 Referral details are temporarily unavailable. Please try again later.
               </p>
             )}
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden rounded-2xl border-[#1f1f23] bg-gradient-to-br from-[#131316] to-[#0f0f10] shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
+        <Card className="overflow-hidden rounded-2xl border-border bg-gradient-to-br from-background to-background shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <CardTitle className="text-lg font-semibold tracking-tight text-white">Software Updates</CardTitle>
-                <CardDescription className="text-xs text-[#71717a]">
+                <CardTitle className="text-lg font-semibold tracking-tight text-foreground">Software Updates</CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
                   Check for new desktop builds, validate the download, and install when you are ready.
                 </CardDescription>
               </div>
@@ -548,17 +550,17 @@ function Settings() {
           </CardHeader>
           <CardContent className="space-y-5 p-6">
             <div className="grid gap-4 md:grid-cols-2">
-              <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-[#71717a]">Application Version</p>
-                <p className="mt-2 text-2xl font-semibold text-white">{desktopUpdateState.currentVersion}</p>
-                <p className="mt-2 text-xs text-[#a1a1aa]">Installed on this device right now.</p>
+              <div className="rounded-2xl border border-border bg-background p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Application Version</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">{desktopUpdateState.currentVersion}</p>
+                <p className="mt-2 text-xs text-muted-foreground">Installed on this device right now.</p>
               </div>
-              <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
-                <p className="text-xs uppercase tracking-[0.24em] text-[#71717a]">Latest Version</p>
-                <p className="mt-2 text-2xl font-semibold text-white">
+              <div className="rounded-2xl border border-border bg-background p-4">
+                <p className="text-xs uppercase tracking-[0.24em] text-muted-foreground">Latest Version</p>
+                <p className="mt-2 text-2xl font-semibold text-foreground">
                   {desktopUpdateState.latestVersion || 'Not checked yet'}
                 </p>
-                <p className="mt-2 text-xs text-[#a1a1aa]">
+                <p className="mt-2 text-xs text-muted-foreground">
                   {desktopUpdateState.updateAvailable
                     ? 'A newer build is ready to download.'
                     : 'The updater will refresh this after it checks the manifest.'}
@@ -566,11 +568,11 @@ function Settings() {
               </div>
             </div>
 
-            <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/80 p-4 shadow-inner shadow-black/10">
+            <div className="rounded-2xl border border-border bg-background p-4 shadow-inner shadow-black/5">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
-                  <p className="text-sm font-medium text-white">Update Status</p>
-                  <p className="text-xs text-[#71717a]">{updateProgressLabel()}</p>
+                  <p className="text-sm font-medium text-foreground">Update Status</p>
+                  <p className="text-xs text-muted-foreground">{updateProgressLabel()}</p>
                 </div>
                 <Badge
                   variant={desktopUpdateState.error ? 'destructive' : desktopUpdateState.readyToInstall ? 'default' : 'secondary'}
@@ -582,17 +584,17 @@ function Settings() {
               <div className="mt-4">
                 <Progress
                   value={desktopUpdateState.downloadInProgress || desktopUpdateState.readyToInstall ? desktopUpdateState.downloadProgress.percent : desktopUpdateState.updateAvailable ? 10 : 0}
-                  className="h-2 bg-[#27272a]"
+                  className="h-2 bg-background"
                 />
               </div>
 
-              <div className="mt-4 grid gap-3 text-xs text-[#a1a1aa] sm:grid-cols-2">
+              <div className="mt-4 grid gap-3 text-xs text-muted-foreground sm:grid-cols-2">
                 <div>
-                  <p className="text-[#71717a]">Downloaded file</p>
-                  <p className="mt-1 font-medium text-white">
+                  <p className="text-muted-foreground">Downloaded file</p>
+                  <p className="mt-1 font-medium text-foreground">
                     {desktopUpdateState.downloadedFileName || 'Waiting for download'}
                   </p>
-                  <p className="mt-1 text-[#a1a1aa]">
+                  <p className="mt-1 text-muted-foreground">
                     {desktopUpdateState.downloadInProgress
                       ? formatBytes(desktopUpdateState.downloadProgress.transferredBytes)
                       : desktopUpdateState.readyToInstall
@@ -601,8 +603,8 @@ function Settings() {
                   </p>
                 </div>
                 <div>
-                  <p className="text-[#71717a]">Checksum</p>
-                  <p className="mt-1 text-white">
+                  <p className="text-muted-foreground">Checksum</p>
+                  <p className="mt-1 text-foreground">
                     {desktopUpdateState.checksum
                       ? desktopUpdateState.checksumVerified === true
                         ? 'Verified'
@@ -614,28 +616,28 @@ function Settings() {
             </div>
 
             <div className="grid gap-4 lg:grid-cols-1">
-              <div className="rounded-2xl border border-[#27272a] bg-[#18181b]/70 p-4">
+              <div className="rounded-2xl border border-border bg-background p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold text-white">Release Notes</p>
-                    <p className="text-xs text-[#71717a]">What changed in the latest build.</p>
+                    <p className="text-sm font-semibold text-foreground">Release Notes</p>
+                    <p className="text-xs text-muted-foreground">What changed in the latest build.</p>
                   </div>
                 </div>
-                <div className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-[#27272a] bg-black/20 p-3 text-xs leading-6 text-[#d4d4d8]">
+                <div className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-muted p-3 text-xs leading-6 text-foreground">
                   {desktopUpdateState.releaseNotes || 'No release notes were provided with this manifest.'}
                 </div>
               </div>
             </div>
 
             {desktopUpdateState.error && (
-              <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+              <div className="rounded-2xl border border-destructive/30 bg-danger-soft p-4 text-sm text-destructive">
                 <p className="font-semibold">Updater error</p>
-                <p className="mt-1 break-words text-xs leading-6 text-red-100/90">{desktopUpdateState.error}</p>
+                <p className="mt-1 break-words text-xs leading-6 text-destructive">{desktopUpdateState.error}</p>
               </div>
             )}
 
             {!isDesktopUpdatesAvailable && (
-              <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+              <div className="rounded-2xl border border-warning/30 bg-warning-soft p-4 text-sm text-warning">
                 Desktop updates are only available in the packaged Electron app. The web app will keep updating through normal deploys.
               </div>
             )}
@@ -644,7 +646,7 @@ function Settings() {
               <Button
                 onClick={handleCheckForUpdates}
                 disabled={!isDesktopUpdatesAvailable || desktopUpdateState.checkInProgress || desktopUpdateState.downloadInProgress || desktopUpdateState.installInProgress}
-                className="bg-green-600 font-medium text-white hover:bg-green-500"
+                className="bg-primary font-medium text-primary-foreground hover:bg-primary-hover"
               >
                 {desktopUpdateState.checkInProgress
                   ? 'Checking...'
@@ -655,14 +657,14 @@ function Settings() {
               <Button
                 onClick={handleDownloadUpdate}
                 disabled={!isDesktopUpdatesAvailable || desktopUpdateState.downloadInProgress || desktopUpdateState.installInProgress || desktopUpdateState.readyToInstall}
-                className="bg-blue-600 font-medium text-white hover:bg-blue-500"
+                className="bg-primary font-medium text-primary-foreground hover:bg-primary-hover"
               >
                 Download Update
               </Button>
               <Button
                 onClick={handleInstallUpdate}
                 disabled={!isDesktopUpdatesAvailable || !desktopUpdateState.readyToInstall || desktopUpdateState.installInProgress}
-                className="bg-white font-bold text-black hover:bg-[#e4e4e7]"
+                className="bg-primary font-bold text-primary-foreground hover:bg-primary-hover"
               >
                 {desktopUpdateState.installInProgress
                   ? 'Launching...'
@@ -679,35 +681,35 @@ function Settings() {
           onClose={() => setIsGuideModalOpen(false)} 
         />
 
-        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Contact &amp; Support</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Reach out for help or feedback</CardDescription>
+        <Card className="bg-gradient-to-br from-background to-background border-border overflow-hidden rounded-2xl shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold text-foreground tracking-tight">Contact &amp; Support</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">Reach out for help or feedback</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">Email Support</Label>
-                <p className="text-xs text-[#71717a]">samuellucky2424@gmail.com</p>
+                <Label className="text-sm font-medium text-foreground">Email Support</Label>
+                <p className="text-xs text-muted-foreground">samuellucky2424@gmail.com</p>
               </div>
               <Button
                 onClick={() => { window.open('mailto:samuellucky2424@gmail.com', '_blank'); }}
                 variant="outline"
-                className="border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]"
+                className="border-border text-muted-foreground hover:text-foreground hover:bg-background"
               >
                 Send Email
               </Button>
             </div>
-            <Separator className="bg-[#27272a]" />
+            <Separator className="bg-background" />
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">WhatsApp</Label>
-                <p className="text-xs text-[#71717a]">+234 703 819 5038</p>
+                <Label className="text-sm font-medium text-foreground">WhatsApp</Label>
+                <p className="text-xs text-muted-foreground">+234 703 819 5038</p>
               </div>
               <Button
                 onClick={() => { window.open('https://wa.me/2347038195038', '_blank'); }}
                 variant="outline"
-                className="border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]"
+                className="border-border text-muted-foreground hover:text-foreground hover:bg-background"
               >
                 Open WhatsApp
               </Button>
@@ -715,21 +717,21 @@ function Settings() {
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-[#131316] to-[#0f0f10] border-[#1f1f23] overflow-hidden rounded-2xl shadow-2xl shadow-black/20">
-          <CardHeader className="border-b border-[#1f1f23]">
-            <CardTitle className="text-lg font-semibold text-white tracking-tight">Danger Zone</CardTitle>
-            <CardDescription className="text-xs text-[#71717a]">Irreversible actions</CardDescription>
+        <Card className="bg-gradient-to-br from-background to-background border-border overflow-hidden rounded-2xl shadow-2xl shadow-black/5">
+          <CardHeader className="border-b border-border">
+            <CardTitle className="text-lg font-semibold text-foreground tracking-tight">Danger Zone</CardTitle>
+            <CardDescription className="text-xs text-muted-foreground">Irreversible actions</CardDescription>
           </CardHeader>
           <CardContent className="p-6 space-y-4">
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium text-white">Sign Out</Label>
-                <p className="text-xs text-[#71717a]">Sign out of your account on this device</p>
+                <Label className="text-sm font-medium text-foreground">Sign Out</Label>
+                <p className="text-xs text-muted-foreground">Sign out of your account on this device</p>
               </div>
               <Button 
                 onClick={logout}
                 variant="outline"
-                className="border-[#27272a] text-[#a1a1aa] hover:text-white hover:bg-[#27272a]"
+                className="border-border text-muted-foreground hover:text-foreground hover:bg-background"
               >
                 Sign Out
               </Button>

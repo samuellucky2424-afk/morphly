@@ -18,6 +18,7 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -298,7 +299,7 @@ namespace
         executeInfo.lpVerb = L"runas";
         executeInfo.lpFile = executablePath;
         executeInfo.lpParameters = arguments.c_str();
-        executeInfo.nShow = SW_SHOWNORMAL;
+        executeInfo.nShow = SW_HIDE;
 
         if (!ShellExecuteExW(&executeInfo))
         {
@@ -369,6 +370,21 @@ namespace
         return S_OK;
     }
 
+    bool SameBinary(const std::filesystem::path& left, const std::filesystem::path& right)
+    {
+        std::ifstream a(left, std::ios::binary), b(right, std::ios::binary);
+        if (!a || !b) return false;
+        std::array<char, 65536> first{}, second{};
+        do
+        {
+            a.read(first.data(), first.size());
+            b.read(second.data(), second.size());
+            if (a.bad() || b.bad() || a.gcount() != b.gcount() ||
+                std::memcmp(first.data(), second.data(), static_cast<size_t>(a.gcount())) != 0) return false;
+        } while (!a.eof() || !b.eof());
+        return true;
+    }
+
     HRESULT EnsureStagedBinary(const wchar_t* fileName, std::filesystem::path* stagedPath)
     {
         if (stagedPath == nullptr)
@@ -400,7 +416,8 @@ namespace
         if (error)
         {
             const HRESULT copyResult = HRESULT_FROM_WIN32(static_cast<DWORD>(error.value()));
-            if (copyResult == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) && std::filesystem::exists(targetPath))
+            if ((copyResult == HRESULT_FROM_WIN32(ERROR_SHARING_VIOLATION) ||
+                 copyResult == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED)) && std::filesystem::exists(targetPath))
             {
                 std::filesystem::path sideBySidePath;
                 RETURN_IF_FAILED(GetSideBySideBinaryPath(
@@ -408,6 +425,13 @@ namespace
                     targetDirectory,
                     &sideBySidePath));
 
+                // A second repair of the same build must not overwrite a DLL
+                // already loaded by Windows Camera Frame Server.
+                if (SameBinary(sourcePath, sideBySidePath))
+                {
+                    *stagedPath = sideBySidePath;
+                    return S_OK;
+                }
                 error.clear();
                 std::filesystem::copy_file(
                     sourcePath,
@@ -1029,7 +1053,7 @@ namespace
         return byteCount > 0 ? S_OK : HRESULT_FROM_WIN32(ERROR_NO_DATA);
     }
 
-    HRESULT ProbeRegisteredWindowsVirtualCamera()
+    HRESULT ProbeRegisteredWindowsVirtualCamera(bool testStream = true)
     {
         HRESULT result = ProbeRegisteredWindowsSource();
         if (FAILED(result))
@@ -1066,6 +1090,11 @@ namespace
             &symbolicLinkLength));
         const std::wstring symbolicLink = ConsumeAllocatedString(symbolicLinkRaw);
 
+        if (!testStream)
+        {
+            LogSuccess(L"Media Foundation virtual camera registration and enumeration are healthy.");
+            return S_OK;
+        }
         result = ProbeWindowsVirtualCameraStream(symbolicLink.c_str());
         if (FAILED(result))
         {
@@ -1118,6 +1147,14 @@ namespace
             return mf.result;
         }
 
+        // Refresh the COM binary without destroying an already enumerated
+        // system-lifetime camera on every app update. Active apps can retain
+        // their device identity and reopen against the refreshed source.
+        if (SUCCEEDED(ProbeRegisteredWindowsVirtualCamera(false)))
+        {
+            LogSuccess(L"Existing virtual camera preserved; COM source refreshed.");
+            return S_OK;
+        }
         const HRESULT removeCurrentResult = RemoveVirtualCameraByIdentity(
             morphly::kVirtualCameraFriendlyName,
             morphly::kWindowsVirtualCameraSourceClsid);
@@ -1173,7 +1210,9 @@ namespace
             }
         }
 
-        return ProbeRegisteredWindowsVirtualCamera();
+        // Installation verifies the device, without competing for an active
+        // stream in WhatsApp. The explicit `probe` command still tests frames.
+        return ProbeRegisteredWindowsVirtualCamera(false);
     }
 
     HRESULT RegisterDirectShowCameraOnly()
@@ -1244,6 +1283,7 @@ namespace
             << L"  morphly_cam_registrar install [--all-users] [--session]\n"
             << L"  morphly_cam_registrar remove [--all-users] [--session] [--unregister-com]\n"
             << L"  morphly_cam_registrar probe\n"
+            << L"  morphly_cam_registrar probe-registration\n"
             << L"  morphly_cam_registrar register | /register\n"
             << L"  morphly_cam_registrar unregister | /unregister\n"
             << L"  morphly_cam_registrar com-register\n"
@@ -1309,6 +1349,10 @@ int wmain(int argc, wchar_t** argv)
     else if (command == L"remove" || command == L"com-unregister")
     {
         result = RemoveCamera();
+    }
+    else if (command == L"probe-registration")
+    {
+        result = ProbeRegisteredWindowsVirtualCamera(false);
     }
     else if (command == L"probe")
     {

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import crypto from 'crypto';
 import { supabaseAdmin } from './supabase-admin.js';
+import { tryDeliverCustomerEmails } from './customer-engagement.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
 
@@ -365,6 +366,7 @@ export async function applyVerifiedIvoryPayPayment({
     firstPurchaseRewardGranted: Boolean(normalizedData.firstPurchaseRewardGranted),
   });
 
+  await tryDeliverCustomerEmails(supabaseAdmin, { userId, sourceId: normalizedData.transactionId || null });
   return normalizedData;
 }
 

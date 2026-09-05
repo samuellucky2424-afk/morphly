@@ -9,15 +9,15 @@ interface RouteGuardProps {
 }
 
 export function ProtectedRoute({ children, redirectTo }: RouteGuardProps) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, initializing } = useAuth();
   const location = useLocation();
 
-  if (loading) {
+  if (initializing) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
-          <p className="text-[#71717a] text-sm">Loading...</p>
+          <div className="w-12 h-12 rounded-full border-4 border-primary/30 border-t-blue-500 animate-spin" />
+          <p className="text-muted-foreground text-sm">Loading...</p>
         </div>
       </div>
     );
@@ -37,15 +37,15 @@ export function ProtectedRoute({ children, redirectTo }: RouteGuardProps) {
 }
 
 export function AdminRoute({ children, redirectTo }: RouteGuardProps) {
-  const { isAuthenticated, isAdmin, loading } = useAuth();
+  const { isAuthenticated, isAdmin, initializing } = useAuth();
   const location = useLocation();
 
-  if (loading) {
+  if (initializing) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
-          <p className="text-[#71717a] text-sm">Loading...</p>
+          <div className="w-12 h-12 rounded-full border-4 border-primary/30 border-t-blue-500 animate-spin" />
+          <p className="text-muted-foreground text-sm">Loading...</p>
         </div>
       </div>
     );
@@ -69,15 +69,15 @@ export function AdminRoute({ children, redirectTo }: RouteGuardProps) {
 }
 
 export function UserRoute({ children, redirectTo }: RouteGuardProps) {
-  const { isAuthenticated, isAdmin, loading, defaultRoute } = useAuth();
+  const { isAuthenticated, isAdmin, initializing, defaultRoute } = useAuth();
   const location = useLocation();
 
-  if (loading) {
+  if (initializing) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
-          <p className="text-[#71717a] text-sm">Loading...</p>
+          <div className="w-12 h-12 rounded-full border-4 border-primary/30 border-t-blue-500 animate-spin" />
+          <p className="text-muted-foreground text-sm">Loading...</p>
         </div>
       </div>
     );
@@ -101,20 +101,20 @@ export function UserRoute({ children, redirectTo }: RouteGuardProps) {
 }
 
 export function PublicRoute({ children }: { children: ReactNode }) {
-  const { isAuthenticated, loading, defaultRoute } = useAuth();
+  const { isAuthenticated, loading, initializing, defaultRoute } = useAuth();
   
-  if (loading) {
+  if (initializing) {
     return (
-      <div className="min-h-screen bg-[#09090b] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full border-4 border-blue-500/30 border-t-blue-500 animate-spin" />
-          <p className="text-[#71717a] text-sm">Loading...</p>
+          <div className="w-12 h-12 rounded-full border-4 border-primary/30 border-t-blue-500 animate-spin" />
+          <p className="text-muted-foreground text-sm">Loading...</p>
         </div>
       </div>
     );
   }
 
-  if (isAuthenticated) {
+  if (isAuthenticated && !loading) {
     return <Navigate to={defaultRoute} replace />;
   }
 
@@ -127,9 +127,9 @@ interface AuthGuardProps {
 }
 
 export function AuthGuard({ children, fallback }: AuthGuardProps) {
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, initializing } = useAuth();
 
-  if (loading) {
+  if (initializing) {
     return fallback || null;
   }
 

@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('electron', {
     const validChannels = [
       'virtual-camera:start',
       'virtual-camera:stop',
+      'virtual-camera:status',
+      'virtual-camera:repair',
       'camera:validate-selection',
       'get-update-state',
       'check-for-updates',

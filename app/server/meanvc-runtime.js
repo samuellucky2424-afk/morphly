@@ -125,6 +125,8 @@ export function createMeanVcRuntimeController({
   dataRoot,
   bundledRuntimeRoot = path.join(dataRoot, 'runtime-40ms'),
   bundledBridge = path.resolve(dataRoot, '..', 'server', 'meanvc-realtime.py'),
+  spawnProcess = spawn,
+  findPythonImpl = findPython,
 }) {
   let runtimeProcess = null;
   let warmProcess = null;
@@ -142,6 +144,7 @@ export function createMeanVcRuntimeController({
   let environmentCache = null;
   let bundledRuntimeCache = null;
   let bundledAudioDevices = null;
+  let performance = null;
   const logs = [];
 
   const bundledPython = path.join(bundledRuntimeRoot, 'python.exe');
@@ -249,6 +252,11 @@ export function createMeanVcRuntimeController({
   };
 
   const handleWarmEngineLine = (source, line) => {
+    if (line.startsWith('[Performance] ')) {
+      try { performance = { ...JSON.parse(line.slice('[Performance] '.length)), measuredAt: new Date().toISOString() }; }
+      catch { /* A malformed diagnostic must not interrupt live conversion. */ }
+      return;
+    }
     appendLog(source, line);
 
     if (line.startsWith('[Devices] Ready ')) {
@@ -294,6 +302,7 @@ export function createMeanVcRuntimeController({
     }
 
     if (line.startsWith('[Stream] Stopped')) {
+      performance = null;
       runtimeState = 'stopped';
       runtimeMessage = 'MorphlyVC is ready. Microphone is off.';
       runtimeConfiguration = null;
@@ -354,10 +363,11 @@ export function createMeanVcRuntimeController({
     warmStopRequested = false;
     engineState = 'loading';
     engineMessage = 'Preloading MorphlyVC models...';
+    performance = null;
     runtimeMessage = 'MorphlyVC is warming up with the microphone closed.';
     logs.length = 0;
 
-    warmProcess = spawn(
+    warmProcess = spawnProcess(
       bundledPython,
       ['-u', bundledBridge, '--serve', '--steps', '2'],
       {
@@ -412,8 +422,14 @@ export function createMeanVcRuntimeController({
 
   const getStatus = () => {
     const repositoryAvailable = fs.existsSync(path.join(repositoryRoot, 'runtime', 'run_rt.py'));
-    const python = repositoryAvailable ? findPython(repositoryRoot) : null;
-    const environment = inspectEnvironment(python);
+    const bundledRuntime = inspectBundledRuntime();
+    // Never spawn Python/dependency probes on every live status poll when the
+    // bundled worker already owns model readiness. Those synchronous processes
+    // can stall Electron's main thread (and therefore virtual-camera frames).
+    const python = bundledRuntime.ready ? { command: bundledPython, prefixArgs: [], version: bundledRuntime.pythonVersion }
+      : repositoryAvailable ? findPythonImpl(repositoryRoot) : null;
+    const environment = bundledRuntime.ready ? { ready: engineState === 'ready', error: engineState === 'failed' ? engineMessage : null }
+      : inspectEnvironment(python);
     const models = {
       '40ms': inspectModel(repositoryRoot, '40ms'),
       '120ms': inspectModel(repositoryRoot, '120ms'),
@@ -422,7 +438,6 @@ export function createMeanVcRuntimeController({
       '40ms': inspectStandalone(dataRoot, '40ms'),
       '120ms': inspectStandalone(dataRoot, '120ms'),
     };
-    const bundledRuntime = inspectBundledRuntime();
     standalone['40ms'] = {
       ...standalone['40ms'],
       engineReady: bundledRuntime.ready && engineState === 'ready',
@@ -453,6 +468,7 @@ export function createMeanVcRuntimeController({
         preparedReferenceId,
       },
       runtime: {
+        performance,
         state: runtimeState,
         message: runtimeMessage,
         pid: warmProcess?.pid ?? runtimeProcess?.pid ?? null,
@@ -544,11 +560,11 @@ export function createMeanVcRuntimeController({
       throw new Error('The selected MorphlyVC reference recording is no longer available.');
     }
 
-    const python = findPython(repositoryRoot);
-    const modelStatus = inspectModel(repositoryRoot, model);
-    const environment = inspectEnvironment(python);
     const bundledRuntime = inspectBundledRuntime();
     const useBundledRuntime = model === '40ms' && device === 'cpu' && bundledRuntime.ready;
+    const python = useBundledRuntime ? null : findPythonImpl(repositoryRoot);
+    const modelStatus = inspectModel(repositoryRoot, model);
+    const environment = useBundledRuntime ? { ready: true, error: null } : inspectEnvironment(python);
     const requestedInput = inputDevice === null || inputDevice === undefined
       ? bundledRuntime.audioDevices?.defaultInput
       : Number(inputDevice);
@@ -642,7 +658,7 @@ export function createMeanVcRuntimeController({
       '--target-spk', referencePath,
     ];
 
-    runtimeProcess = spawn(runtimeCommand, args, {
+    runtimeProcess = spawnProcess(runtimeCommand, args, {
       cwd: repositoryRoot,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],

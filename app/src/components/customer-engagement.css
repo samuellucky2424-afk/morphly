@@ -1,0 +1,36 @@
+.morphly-community-bar { flex-shrink:0; display:flex; align-items:center; gap:12px; padding:4px 12px; border-bottom:1px solid hsl(var(--border)); background:hsl(var(--background)); font-size:12px; line-height:1.5; }
+.morphly-notices { min-width:0; flex:1; max-height:25vh; overflow-y:auto; }
+.morphly-community-label { color:hsl(var(--muted-foreground)); }
+.morphly-notice { display:flex; align-items:center; gap:8px; color:hsl(var(--foreground)); }
+.morphly-notice.maintenance { color:hsl(var(--warning)); }
+.morphly-community-bar:has(.maintenance) { background:hsl(var(--warning-soft)); }
+.morphly-notice > svg, .morphly-notice > button { flex-shrink:0; }
+.morphly-notice p { flex:1; min-width:0; overflow-wrap:anywhere; }
+.morphly-notice p strong { margin-right:8px; }
+.morphly-notice-countdown { font-variant-numeric:tabular-nums; white-space:nowrap; font-size:11px; }
+.morphly-community-bar button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:30px; min-width:30px; border-radius:5px; padding:4px; }
+.morphly-community-bar button:hover { background:hsl(var(--accent)); }
+.morphly-feedback-link { color:hsl(var(--primary)); white-space:nowrap; }
+.morphly-community-bar button:focus-visible, .morphly-feedback-dialog :is(button,textarea,select):focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:3px; }
+.morphly-feedback-dialog { background:#fff; color:#17202e; border:1px solid #d7dce4; padding:28px; gap:20px; border-radius:12px; max-height:calc(100dvh - 32px); overflow:auto; width:calc(100% - 32px); transition:none; }
+.morphly-feedback-dialog [data-slot=dialog-title] { font-size:21px; line-height:1.4; padding-right:12px; }
+.morphly-feedback-dialog [data-slot=dialog-description] { color:#526071; line-height:1.6; font-size:14px; }
+.morphly-feedback-eyebrow { color:#526071; font-size:12px; font-weight:600; margin-bottom:4px; }
+.morphly-dialog-close { position:absolute; top:8px; right:8px; padding:10px; border-radius:6px; }
+.morphly-feedback-form { display:flex; flex-direction:column; gap:10px; }
+.morphly-feedback-fields { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:6px; }
+.morphly-feedback-form label { display:flex; flex-direction:column; gap:7px; font-weight:600; font-size:13px; }
+.morphly-feedback-form label span { font-weight:400; }
+.morphly-feedback-dialog :is(select,textarea) { border:1px solid #b5bfcc; border-radius:6px; padding:10px; font:inherit; font-size:14px; color:#17202e; background:#fff; width:100%; min-width:0; }
+.morphly-feedback-dialog textarea { resize:vertical; min-height:110px; }
+.morphly-feedback-actions { display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-top:10px; }
+.morphly-feedback-actions button, .morphly-feedback-success button { padding:10px 16px; min-height:42px; border-radius:6px; font-size:14px; font-weight:600; }
+.community-primary { background:hsl(var(--primary)); color:hsl(var(--primary-foreground)); }
+.community-primary:hover { background:hsl(var(--primary-hover)); }
+.community-primary:disabled { opacity:.65; cursor:wait; }
+.community-helper { font-size:12px; color:#526071; line-height:1.6; }
+.community-error { border:1px solid #f3c1c1; border-radius:6px; padding:10px; color:#9a2323; background:#fff5f5; font-size:13px; }
+.morphly-feedback-success { display:flex; flex-direction:column; gap:12px; align-items:flex-start; font-size:14px; }
+.morphly-feedback-success > svg { color:#15803d; }
+@media(max-width:600px) { .morphly-feedback-fields { grid-template-columns:1fr; } .morphly-feedback-dialog { padding:22px; } .morphly-notice { flex-wrap:wrap; gap:4px; } .morphly-notice p { flex-basis:75%; } .morphly-notice-countdown { margin-left:22px; } }
+@media(prefers-reduced-motion:reduce) { .morphly-feedback-dialog { animation:none!important; transition:none!important; } }

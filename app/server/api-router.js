@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { createAdminHandler } from './admin-handler.js';
+import { createEngagementHandler } from './api/customer-engagement.js';
 import creditPackagesHandler from './api/credit-packages.js';
 import endSessionHandler from './api/end-session.js';
 import ensureUserWalletHandler from './api/ensure-user-wallet.js';
@@ -22,6 +23,11 @@ import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
 
 const routeHandlers = {
+  feedback: createEngagementHandler('feedback'),
+  announcements: createEngagementHandler('announcements'),
+  'admin-engagement': createEngagementHandler('admin-engagement'),
+  'email-preferences': createEngagementHandler('email-preferences'),
+  'engagement-cron': createEngagementHandler('engagement-cron'),
   account: accountHandler,
   'admin-audit-log': createAdminHandler('audit-log'),
   'admin-credit-packages': createAdminHandler('credit-packages'),

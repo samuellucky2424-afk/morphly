@@ -4,11 +4,13 @@
   "outputDirectory": "dist",
   "installCommand": "npm ci",
   "functions": {
+    "api/engagement-cron.ts": { "maxDuration": 300 },
     "api/**/*.ts": {
       "memory": 1024,
       "maxDuration": 30
     }
   },
+  "crons": [{ "path": "/api/engagement-cron", "schedule": "0 10 * * *" }],
   "rewrites": [
     { "source": "/private/morphly/login", "destination": "/private/morphly/login/index.html" },
     { "source": "/reset-password", "destination": "/reset-password/index.html" },

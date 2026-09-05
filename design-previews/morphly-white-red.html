@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morphly — White & red design sample</title>
+  <link rel="stylesheet" href="morphly-white-red.css">
+</head>
+<body>
+  <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="wave" viewBox="0 0 24 24"><path d="M2 10v4m4-7v10m4-14v18m4-15v12m4-9v6m4-5v4"/></symbol>
+    <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></symbol>
+    <symbol id="speaker" viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm0 0v6h6M8 14v3m4-5v7m4-5v3"/></symbol>
+    <symbol id="monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M12 17v4m-4 0h8"/></symbol>
+    <symbol id="refresh" viewBox="0 0 24 24"><path d="M20 4v6h-6M4 20v-6h6M4.5 8a8 8 0 0 1 13-4l2.5 6M4 14l2.5 6a8 8 0 0 0 13-4"/></symbol>
+    <symbol id="expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/></symbol>
+    <symbol id="settings" viewBox="0 0 24 24"><path d="m10 2-1 3-3 1-3-1-1 4 2 3-1 3 2 3 4-1 2 3h3l1-3 4-1 2-3-2-3 1-4-3-1-1-3z"/><circle cx="12" cy="11" r="3"/></symbol>
+    <symbol id="upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 16v4h16v-4"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24"><path d="m12 2 8 3v6c0 5-8 10-8 10S4 16 4 11V5zM8 11l3 3 5-6"/></symbol>
+    <symbol id="message" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-5 4V5a2 2 0 0 1 2-2h15a2 2 0 0 1 2 2zM7 8h10M7 12h7"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/></symbol>
+    <symbol id="x" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  </defs></svg>
+  <header class="app-header">
+    <div class="brand"><span class="brand-mark"><svg><use href="#wave"/></svg></span><strong>Morphly</strong><span class="header-divider"></span><span class="studio-label">Live studio</span></div>
+    <div class="preview-label">DESIGN SAMPLE <span>White / Red</span></div>
+  </header>
+  <div class="announcement" id="announcement" role="status">
+    <svg><use href="#info"/></svg><p><strong>Scheduled maintenance</strong><span>We’re improving Morphly. Service is expected to return shortly.</span></p><span class="countdown">Back in 24m 08s</span><button aria-label="Dismiss announcement" onclick="document.getElementById('announcement').hidden=true"><svg><use href="#x"/></svg></button>
+  </div>
+  <main class="workspace">
+    <aside class="voice-panel" aria-label="Voice controls">
+      <header class="voice-heading"><span class="feature-icon"><svg><use href="#wave"/></svg></span><div><h1>MorphlyVC</h1><p>Live voice processing</p></div><span class="status"><i></i>Ready</span><button class="icon-button" aria-label="Refresh engine"><svg><use href="#refresh"/></svg></button></header>
+      <div class="voice-scroll">
+        <section><h2>Voice profile</h2><p class="helper">Choose the voice you want to stream with.</p><div class="file-picker"><span class="file-icon"><svg><use href="#file"/></svg></span><div><strong>Studio voice.wav</strong><small>Reference recording · 12 seconds</small></div><button class="button button-secondary">Change</button></div></section>
+        <section class="engine-row"><div><h2>Voice engine</h2><p class="helper">Quality · 160 ms · Local processing</p></div><span class="ready-text"><i></i>Ready</span></section>
+        <section><h2>Audio routing</h2><p class="helper">Your microphone stays off until you start.</p>
+          <label for="microphone"><svg><use href="#mic"/></svg>Microphone input</label><select id="microphone"><option>Microphone Array (Intel Smart Sound)</option><option>USB microphone</option></select>
+          <label for="speaker"><svg><use href="#speaker"/></svg>Converted voice output</label><select id="speaker"><option>CABLE Input (VB-Audio Virtual Cable)</option><option>Speakers (Realtek Audio)</option></select>
+          <p class="routing-note"><svg><use href="#check"/></svg>Virtual microphone available</p>
+        </section>
+        <section class="pitch-section"><div class="section-row"><div><h2>Voice pitch</h2><p class="helper">Fine-tune your voice in semitones.</p></div><output id="pitchValue" for="pitch">0 st</output></div><input type="range" id="pitch" aria-label="Voice pitch in semitones" min="-12" max="12" value="0" oninput="document.getElementById('pitchValue').value=(this.value>0?'+':'')+this.value+' st'"><div class="pitch-labels"><span>Deeper</span><span>Natural</span><span>Higher</span></div><div class="presets"><button onclick="setPitch(-4)">Deeper</button><button class="selected" onclick="setPitch(0)">Natural</button><button onclick="setPitch(4)">Brighter</button></div></section>
+        <button class="readiness"><svg><use href="#shield"/></svg>System readiness <span>3 of 3</span><svg><use href="#chevron"/></svg></button>
+      </div>
+      <footer class="voice-footer"><label class="consent"><input type="checkbox" checked>I have permission to use this voice responsibly.</label><button class="button button-primary wide" onclick="showSampleMessage()"><span class="play"></span>Start voice conversion</button><p><svg><use href="#shield"/></svg>Processed on your device. Microphone is off.</p></footer>
+    </aside>
+    <section class="preview-panel" aria-label="Live output preview">
+      <header class="preview-header"><div><h2>Live output <span class="offline">Offline</span></h2><p>Plus realtime engine</p></div><div class="preview-tools"><button class="button button-quiet"><svg><use href="#expand"/></svg>Full screen</button><button class="icon-button settings" aria-label="Settings"><svg><use href="#settings"/></svg></button></div></header>
+      <div class="video-stage"><div class="empty-preview"><div class="monitor-icon"><svg><use href="#monitor"/></svg></div><h3>Your stream starts here</h3><p>Select a camera and reference image,<br>then go live when you’re ready.</p><button class="button button-secondary" onclick="showSampleMessage()"><svg><use href="#upload"/></svg>Choose reference image</button></div><div class="preview-footnote"><span><i></i>Preview only</span><span>Your original audio stays private until Start.</span></div></div>
+      <footer class="preview-footer"><span><svg><use href="#shield"/></svg>You control when your camera and microphone connect.</span><button class="feedback-button" onclick="document.getElementById('feedback').showModal()"><svg><use href="#message"/></svg>Share feedback</button></footer>
+    </section>
+  </main>
+  <footer class="session-controls">
+    <div class="control-row"><div class="stream-actions"><button class="button button-primary" onclick="showSampleMessage()"><span class="play"></span>Go live</button><button class="button button-neutral" disabled><span class="stop"></span>Stop</button><button class="button button-secondary" onclick="showSampleMessage()"><svg><use href="#upload"/></svg>Change image</button></div><div class="control-divider"></div><div class="control-field engine-choice"><label for="engine">VIDEO ENGINE</label><select id="engine"><option>Plus</option><option>Pro</option></select></div><div class="control-field camera-choice"><label for="camera">INPUT CAMERA</label><select id="camera"><option>HP HD Camera</option><option>USB Camera</option></select></div><div class="control-field background-choice"><label for="background">AI BACKGROUND</label><select id="background"><option>Original room</option><option>Office</option></select></div><div class="credits"><div><span>CREDITS</span><strong>9,678 <small>2 cr/s</small></strong></div><button class="button button-primary" onclick="showSampleMessage()"><span class="plus">+</span>Buy credits</button></div></div>
+    <div class="bottom-status"><span id="sample-message"><i></i>Design preview — sample devices and statuses; no camera or microphone is connected.</span><span>White surfaces · Red actions</span></div>
+  </footer>
+  <dialog id="feedback"><button class="dialog-close icon-button" aria-label="Close feedback" onclick="document.getElementById('feedback').close()"><svg><use href="#x"/></svg></button><span class="eyebrow">HELP SHAPE MORPHLY</span><h2>How is Morphly working for you?</h2><p>Tell us what you enjoy, what isn’t working, or what you would like us to improve.</p><form method="dialog"><label for="review-type">Feedback type</label><select id="review-type"><option>My experience</option><option>Something is not working</option><option>An idea or feature request</option></select><label for="review">Your feedback</label><textarea id="review" rows="5" placeholder="What could work better for you?"></textarea><p class="helper">Sent privately to the Morphly team with your account email.</p><div class="dialog-actions"><button class="button button-quiet">Maybe later</button><button class="button button-primary">Send feedback</button></div></form></dialog>
+  <script>
+    function setPitch(value) { document.getElementById('pitch').value=value;document.getElementById('pitchValue').value=(value>0?'+':'')+value+' st';document.querySelectorAll('.presets button').forEach((b,i)=>b.classList.toggle('selected',[-4,0,4][i]===value)); }
+    function showSampleMessage() { document.getElementById('sample-message').textContent='This is a design sample. Live devices, purchases and emails are not connected.'; }
+  </script>
+</body>
+</html>

@@ -7,6 +7,8 @@ import { trackLogin, trackSignupCompleted } from '@/lib/telemetry-client';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { normalizeReferralCode } from '@/utils/referralCode';
 import { validateReferralCode } from '@/lib/account';
+import { EXISTING_ACCOUNT_MESSAGE, getRegistrationOutcome, normalizeEmail } from '@/lib/auth-flow';
+import type { RegistrationOutcome } from '@/lib/auth-flow';
 
 // We map Supabase's user object properties to what our frontend expects where possible
 interface User {
@@ -27,8 +29,9 @@ interface AuthContextType {
   defaultRoute: string;
   login: (email: string, password: string) => Promise<void>;
   logout: () => void;
-  register: (email: string, name: string, password: string, referralCode?: string) => Promise<void>;
+  register: (email: string, name: string, password: string, referralCode?: string) => Promise<RegistrationOutcome>;
   loading: boolean;
+  initializing: boolean;
   error: string | null;
   clearError: () => void;
 }
@@ -37,7 +40,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
@@ -132,13 +136,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
     }
 
-    setLoading(false);
+    setInitializing(false);
   }, [ensureUserWallet, getAdminState]);
 
   useEffect(() => {
     // Check active session
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
       void hydrateUserFromSession(currentSession);
+    }).catch(() => {
+      setUser(null);
+      setInitializing(false);
+      setError('Unable to restore your session. Please sign in again.');
     });
 
     // Listen for auth changes
@@ -163,7 +171,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     try {
       const { error: authError } = await supabase.auth.signInWithPassword({
-        email,
+        email: normalizeEmail(email),
         password,
       });
 
@@ -207,8 +215,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      const { error: authError } = await supabase.auth.signUp({
-        email: email.trim().toLowerCase(),
+      const { data, error: authError } = await supabase.auth.signUp({
+        email: normalizeEmail(email),
         password,
         options: {
           data: {
@@ -220,13 +228,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (authError) {
+        if (authError.code === 'user_already_exists' || /already (?:registered|exists)/i.test(authError.message || '')) {
+          throw new Error(EXISTING_ACCOUNT_MESSAGE);
+        }
         if (/INVALID_REFERRAL_CODE/i.test(authError.message || '')) {
           throw new Error('This referral code is invalid.');
         }
         throw authError;
       }
 
-      const { data: { session: registeredSession } } = await supabase.auth.getSession();
+      const outcome = getRegistrationOutcome(data, email);
+      if (outcome === 'confirmation_required') return outcome;
+      // Only the session returned by THIS signup may provision the account.
+      const registeredSession = data.session;
       await ensureUserWallet(registeredSession?.access_token, true);
       const adminState = await getAdminState(registeredSession?.access_token);
 
@@ -236,6 +250,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       navigate(getDefaultRoute(adminState.isAdmin), { replace: true });
       trackSignupCompleted();
+      return outcome;
     } catch (err: any) {
       const message = err.message || 'Registration failed';
       setError(message);
@@ -274,6 +289,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout, 
       register, 
       loading, 
+      initializing,
       error,
       clearError 
     }}>
