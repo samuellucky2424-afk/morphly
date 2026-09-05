@@ -20,7 +20,9 @@ contextBridge.exposeInMainWorld('electron', {
       'morphlyvc:start',
       'morphlyvc:pitch',
       'morphlyvc:stop',
-      'virtual-microphone:open-setup'
+      'virtual-microphone:open-setup',
+      'virtual-microphone:install',
+      'virtual-microphone:detect'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);

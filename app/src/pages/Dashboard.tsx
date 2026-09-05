@@ -164,12 +164,12 @@ const FREEZE_RESTART_THRESHOLD_MS = 12000;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
-  xmax: 30000,
+  xmax: 45000,
   decart: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
-  xmax: 2,
+  xmax: 3,
   // The Pro SDK already retries WebRTC internally with exponential backoff.
   decart: 1,
 };
@@ -2847,10 +2847,9 @@ function Dashboard() {
           sessionTokenRef.current = '';
           sessionIdRef.current = '';
           disconnectRealtime({ skipStateUpdate: true });
-          const timedOut = error instanceof Error && /timed out/i.test(error.message);
-          if (attempt < maxConnectAttempts && !timedOut) {
+          if (attempt < maxConnectAttempts) {
             setUiStatus(`Retrying ${requestedProviderLabel}...`);
-            await sleep(attempt * 1000);
+            await sleep(attempt * 1500);
           } else {
             break;
           }

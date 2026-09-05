@@ -90,13 +90,29 @@ mediaFoundationInstallRetry:
 
   nsExec::ExecToLog '"$INSTDIR\resources\media-foundation-camera\morphly_cam_registrar.exe" probe'
   Pop $R1
-  StrCmp $R1 "0" customInstallDone mediaFoundationInstallFailed
+  StrCmp $R1 "0" vbCableInstall mediaFoundationInstallFailed
 
 mediaFoundationInstallFailed:
   MessageBox MB_ICONSTOP|MB_RETRYCANCEL "Morphly's WhatsApp-compatible camera could not be registered and verified.$\r$\n$\r$\nExit code: $R0$\r$\nVerification code: $R1" /SD IDCANCEL IDRETRY mediaFoundationInstallRetry
   DetailPrint "Media Foundation virtual camera registration failed; stopping installation with error 1603."
   SetErrorLevel 1603
   Quit
+
+vbCableInstall:
+  DetailPrint "Checking VB-Audio Virtual Cable installation..."
+  SetRegView 64
+  ReadRegStr $2 HKLM "SOFTWARE\VB-Audio\Cable" "InstallDir"
+  StrCmp $2 "" 0 vbCableAlreadyInstalled
+
+  IfFileExists "$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" 0 customInstallDone
+  DetailPrint "Installing VB-Audio Virtual Cable for voice changer..."
+  nsExec::ExecToLog '"$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" -i -h'
+  Pop $0
+  DetailPrint "VB-Audio Virtual Cable install exit code: $0"
+  Goto customInstallDone
+
+vbCableAlreadyInstalled:
+  DetailPrint "VB-Audio Virtual Cable is already installed."
 
 customInstallDone:
   SetRegView 64

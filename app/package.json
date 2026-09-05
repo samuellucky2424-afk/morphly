@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "Morphly Desktop with bundled MorphlyVC voice engine and virtual camera support.",
   "author": "Morphly",
   "repository": {
@@ -73,6 +73,10 @@
       {
         "from": "server/meanvc-realtime.py",
         "to": "morphlyvc/meanvc-realtime.py"
+      },
+      {
+        "from": "build/VBCABLE_Setup_x64.exe",
+        "to": "vbcable/VBCABLE_Setup_x64.exe"
       }
     ],
     "afterPack": "build/afterPack.cjs",

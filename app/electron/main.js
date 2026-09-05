@@ -1296,6 +1296,65 @@ function registerMorphlyVcHandlers() {
     requireMainRenderer(event);
     return runtime().stop();
   });
+  ipcMain.handle('virtual-microphone:detect', async (event) => {
+    requireMainRenderer(event);
+    try {
+      // Check for VB-CABLE by looking for its audio endpoint in the registry.
+      // VB-Audio registers under this well-known driver description.
+      const { execSync } = await import('child_process');
+      const output = execSync(
+        'powershell -NoProfile -Command "Get-ItemProperty \'HKLM:\\SOFTWARE\\VB-Audio\\Cable\' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstallDir"',
+        { timeout: 5000, encoding: 'utf8', windowsHide: true },
+      ).trim();
+      return { installed: output.length > 0, path: output || null };
+    } catch {
+      // Registry key not found means VB-CABLE is not installed
+      return { installed: false, path: null };
+    }
+  });
+  ipcMain.handle('virtual-microphone:install', async (event) => {
+    requireMainRenderer(event);
+    const resourcesPath = isPackagedRuntime
+      ? path.join(process.resourcesPath, 'vbcable')
+      : path.join(__dirname, '..', 'build');
+    const installerPath = path.join(resourcesPath, 'VBCABLE_Setup_x64.exe');
+
+    if (!fs.existsSync(installerPath)) {
+      return {
+        success: false,
+        error: 'VB-CABLE installer not found. Please reinstall Morphly Desktop.',
+      };
+    }
+
+    try {
+      // Run the VB-CABLE installer with admin elevation using silent install flags (-i -h).
+      const { exec } = await import('child_process');
+      await new Promise((resolve, reject) => {
+        const child = exec(
+          `powershell -NoProfile -Command "Start-Process -FilePath '${installerPath.replace(/'/g, "''")}' -ArgumentList '-i -h' -Verb RunAs -Wait"`,
+          { timeout: 120000, windowsHide: true },
+          (error) => {
+            if (error) reject(error);
+            else resolve();
+          },
+        );
+        child.on('error', reject);
+      });
+
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown installation error';
+      console.error('VB-CABLE installation failed:', message);
+      // User may have cancelled the UAC prompt
+      const cancelled = /canceled|cancelled|elevation|1223/i.test(message);
+      return {
+        success: false,
+        error: cancelled
+          ? 'Installation was cancelled. VB-CABLE requires administrator permission to install.'
+          : `VB-CABLE installation failed: ${message}`,
+      };
+    }
+  });
   ipcMain.handle('virtual-microphone:open-setup', async (event) => {
     requireMainRenderer(event);
     await shell.openExternal('https://vb-audio.com/Cable/');

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   CircleAlert,
   Cpu,
+  Download,
   ExternalLink,
   FileAudio,
   LoaderCircle,
@@ -490,16 +491,35 @@ export function MeanVcPanel() {
   const virtualMicrophoneInput = audioDevices?.inputs.find(({ name }) => isVirtualMicrophoneRecordingDevice(name));
   const virtualMicrophoneReady = Boolean(virtualMicrophoneOutput && virtualMicrophoneInput);
 
-  const openVirtualMicrophoneSetup = async () => {
+  const [isInstallingVbCable, setIsInstallingVbCable] = useState(false);
+
+  const installVirtualMicrophone = async () => {
     setError(null);
+    if (!window.electron?.isElectron) {
+      window.open('https://vb-audio.com/Cable/', '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    setIsInstallingVbCable(true);
     try {
-      if (window.electron?.isElectron) {
-        await window.electron.invoke('virtual-microphone:open-setup');
-      } else {
-        window.open('https://vb-audio.com/Cable/', '_blank', 'noopener,noreferrer');
+      const result = await window.electron.invoke('virtual-microphone:install') as {
+        success: boolean;
+        error?: string;
+      };
+
+      if (!result.success) {
+        setError(result.error || 'VB-CABLE installation failed.');
+        return;
       }
-    } catch (setupError) {
-      setError(setupError instanceof Error ? setupError.message : 'Unable to open virtual microphone setup.');
+
+      // Refresh audio devices after successful install so the new
+      // VB-CABLE virtual device appears in the dropdowns immediately.
+      const refreshedStatus = await requestMorphlyVc<MeanVcStatus>('status');
+      setStatus(refreshedStatus);
+    } catch (installError) {
+      setError(installError instanceof Error ? installError.message : 'Unable to install VB-CABLE.');
+    } finally {
+      setIsInstallingVbCable(false);
     }
   };
 
@@ -693,11 +713,25 @@ export function MeanVcPanel() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => void openVirtualMicrophoneSetup()}
-                      className="h-8 shrink-0 rounded border-[#363b48] bg-[#1b1e25] text-[11px] text-zinc-200 hover:bg-[#252832]"
+                      disabled={isInstallingVbCable}
+                      onClick={() => void installVirtualMicrophone()}
+                      className="h-8 shrink-0 gap-1.5 rounded border-[#363b48] bg-[#1b1e25] text-[11px] text-zinc-200 hover:bg-[#252832] disabled:opacity-50"
                     >
-                      Setup
-                      <ExternalLink aria-hidden="true" className="size-3" />
+                      {isInstallingVbCable ? (
+                        <>
+                          <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
+                          <span>Installing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Install Cable</span>
+                          {window.electron?.isElectron ? (
+                            <Download aria-hidden="true" className="size-3" />
+                          ) : (
+                            <ExternalLink aria-hidden="true" className="size-3" />
+                          )}
+                        </>
+                      )}
                     </Button>
                   ) : null}
                 </div>
