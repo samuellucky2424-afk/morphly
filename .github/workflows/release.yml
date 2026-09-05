@@ -34,6 +34,36 @@ jobs:
       working-directory: app
       run: npm test
 
+    - name: Restore MorphlyVC runtime
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $runtimeDir = "app/.meanvc/runtime-40ms"
+        if (!(Test-Path "$runtimeDir/python.exe")) {
+          Write-Host "Restoring MorphlyVC runtime from v2.5.0 release..."
+          New-Item -ItemType Directory -Path "temp_v250" -Force | Out-Null
+          gh release download v2.5.0 --repo "${{ github.repository }}" --pattern "Morphly-Setup-2.5.0.exe" --dir temp_v250
+          Write-Host "Extracting MorphlyVC runtime from v2.5.0 installer..."
+          7z x temp_v250/Morphly-Setup-2.5.0.exe -otemp_unpacked -y
+          if (Test-Path "temp_unpacked/`$PLUGINSDIR/app-64.7z") {
+            7z x "temp_unpacked/`$PLUGINSDIR/app-64.7z" -otemp_app -y
+            $extractedRuntime = "temp_app/resources/morphlyvc/runtime-40ms"
+          } else {
+            $extractedRuntime = (Get-ChildItem -Path "temp_unpacked" -Filter "runtime-40ms" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          }
+          if ($extractedRuntime -and (Test-Path "$extractedRuntime/python.exe")) {
+            New-Item -ItemType Directory -Path "app/.meanvc" -Force | Out-Null
+            Move-Item -Path $extractedRuntime -Destination $runtimeDir -Force
+          }
+          Remove-Item -Path "temp_v250", "temp_unpacked", "temp_app" -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        if (!(Test-Path "$runtimeDir/python.exe")) {
+          throw "Failed to restore MorphlyVC runtime: $runtimeDir/python.exe not found."
+        }
+        Write-Host "MorphlyVC runtime successfully restored."
+
     - name: Build Electron app without publishing
       working-directory: app
       env:
