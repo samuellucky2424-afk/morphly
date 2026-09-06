@@ -8,6 +8,7 @@ const appDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const workspaceDirectory = path.resolve(appDirectory, '..');
 const meanVcDirectory = path.join(workspaceDirectory, 'third_party', 'MeanVC2');
 const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
+const dashboardStyles = fs.readFileSync(path.join(appDirectory, 'src/pages/dashboard.css'), 'utf8');
 const panel = fs.readFileSync(path.join(appDirectory, 'src/components/MeanVcPanel.tsx'), 'utf8');
 const server = fs.readFileSync(path.join(appDirectory, 'server.js'), 'utf8');
 const runtimeController = fs.readFileSync(path.join(appDirectory, 'server/meanvc-runtime.js'), 'utf8');
@@ -23,11 +24,11 @@ test('MeanVC2 is vendored as a real runnable upstream repository', () => {
   assert.equal(fs.existsSync(path.join(meanVcDirectory, 'runtime/run_rt.py')), true);
 });
 
-test('the dashboard places MeanVC2 beside the live streaming preview', () => {
+test('the dashboard keeps MeanVC2 and the live streaming preview in the workspace', () => {
   assert.match(dashboard, /import \{ MeanVcPanel \} from '@\/components\/MeanVcPanel'/);
   assert.match(
     dashboard,
-    /<main className="flex min-h-0 flex-1[\s\S]*<MeanVcPanel \/>[\s\S]*aria-label="Live streaming preview"/,
+    /<main\b[^>]*>[\s\S]*<MeanVcPanel \/>[\s\S]*aria-label="Live streaming preview"/,
   );
 });
 
@@ -54,7 +55,8 @@ test('MorphlyVC controls use local preload, preparation, start, and stop endpoin
   assert.match(fs.readFileSync(realtimeBridge, 'utf8'), /\[Devices\] Ready/);
   assert.match(runtimeController, /engineState/);
   assert.match(panel, /Microphone remains closed until Start/);
-  assert.match(panel, /overflow-x-hidden/);
+  assert.match(panel, /morphly-voice-settings/);
+  assert.match(dashboardStyles, /\.morphly-dashboard \.morphly-voice-settings\s*\{[^}]*overflow-y:\s*auto;[^}]*overflow-x:\s*hidden;/);
   assert.match(server, /requireLocalMeanVcRequest/);
   assert.equal(fs.existsSync(realtimeBridge), true);
   assert.match(runtimeController, /meanvc-realtime\.py/);

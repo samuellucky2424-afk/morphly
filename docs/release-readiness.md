@@ -1,5 +1,7 @@
 # Morphly release readiness
 
+Version 2.5.3 adds the responsive dashboard and voice-panel fixes described in `docs/releases/v2.5.3.md`. The WhatsApp camera report remains under investigation. Installer availability depends on successful publication by the tagged release workflow.
+
 The approved white/red theme, customer communications, camera-repair changes, voice-buffer improvements and authentication fixes are included in version 2.5.2. The version tag triggers the Windows release workflow; an installer is available only after artifact verification and publication succeed. Final affected-device acceptance and production email activation remain external checks, not completed tests. See `docs/releases/v2.5.2.md`.
 
 ## White/red theme — approved and implemented
