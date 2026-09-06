@@ -1,0 +1,94 @@
+/* Let narrow or short windows scroll as one page; keep the desktop workspace
+   and its voice settings independently scrollable when there is room. */
+.morphly-dashboard {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
+.morphly-dashboard-main {
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+
+.morphly-dashboard-preview {
+  min-height: 320px;
+}
+
+.morphly-dashboard-preview > video {
+  position: absolute;
+  inset: 0;
+}
+
+.morphly-dashboard .morphly-voice-settings {
+  flex: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.morphly-dashboard [data-morphly-voice-panel] [data-slot='select-value'] {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Radix renders these menus in a portal. Its viewport must fit inside the
+   menu's borders, including when a device name wraps over multiple lines. */
+.morphly-voice-device-menu [data-radix-select-viewport] {
+  min-width: 0;
+}
+
+.morphly-session-controls {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.morphly-session-field {
+  min-height: 40px;
+}
+
+@media (min-width: 768px) {
+  .morphly-dashboard-main {
+    flex-direction: row;
+  }
+}
+
+@media (min-width: 768px) and (min-height: 600px) {
+  .morphly-dashboard-main {
+    flex: 1 0 320px;
+    min-height: 320px;
+  }
+
+  .morphly-dashboard [data-morphly-voice-panel] {
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .morphly-dashboard .morphly-voice-settings {
+    flex: 1 1 0%;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+}
+
+/* Comfortable targets for touch and compact screens without enlarging the
+   desktop controls on mouse-driven workstations. */
+@media (max-width: 767px), (pointer: coarse) {
+  .morphly-dashboard button:not([role='checkbox']),
+  .morphly-session-actions select,
+  .morphly-session-field select {
+    min-height: 44px;
+  }
+
+  .morphly-dashboard button:not([role='checkbox']) {
+    min-width: 44px;
+  }
+
+  .morphly-session-field {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+}

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import './dashboard.css';
 import { CustomerEngagement } from '@/components/CustomerEngagement';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -3029,14 +3030,14 @@ function Dashboard() {
   };
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background font-sans text-foreground">
+    <div className="morphly-dashboard flex flex-col bg-background font-sans text-foreground">
       <CustomerEngagement paused={!onboardingChecked || isTourRunning || isStreaming || isLoading || isUpdaterBlocking} />
-      <main className="flex min-h-0 flex-1 overflow-hidden bg-background">
+      <main className="morphly-dashboard-main flex min-w-0 bg-background">
         <MeanVcPanel />
         <section
           data-tour="dashboard"
           aria-label="Live streaming preview"
-              className="relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-background"
+              className="morphly-dashboard-preview relative flex min-w-0 flex-1 items-center justify-center overflow-hidden bg-background"
         >
           <UpdateBanner />
         <video
@@ -3162,7 +3163,7 @@ function Dashboard() {
                 className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[11px] font-medium text-muted-foreground backdrop-blur-md transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           >
             {isFullScreen ? <Minimize aria-hidden="true" className="size-4" /> : <Maximize aria-hidden="true" className="size-4" />}
-            <span>{isFullScreen ? 'Exit Full Screen' : 'Full Screen'}</span>
+            <span className="hidden sm:inline">{isFullScreen ? 'Exit Full Screen' : 'Full Screen'}</span>
           </button>
           <button
             data-tour="settings"
@@ -3177,10 +3178,10 @@ function Dashboard() {
         </section>
       </main>
 
-      <footer aria-label="Live session controls" className="relative z-10 flex flex-col gap-1 border-t border-border bg-background px-3 py-2">
+      <footer aria-label="Live session controls" className="morphly-session-controls relative z-10 flex shrink-0 flex-col gap-1 border-t border-border bg-background px-3 py-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-            <div className="flex shrink-0 items-center gap-1.5 border-r border-border pr-2">
+          <div className="flex min-w-0 basis-full flex-wrap items-center gap-2 sm:flex-1 sm:basis-auto">
+            <div className="morphly-session-actions flex min-w-0 max-w-full flex-wrap items-center gap-1.5 sm:border-r sm:border-border sm:pr-2">
             <button
               data-tour="start-stream"
               onClick={handleStart}
@@ -3267,7 +3268,7 @@ function Dashboard() {
             {/* Input Camera Dropdown */}
             <div
               data-tour="camera-selector"
-              className="flex h-10 min-w-[170px] max-w-[215px] flex-1 flex-col justify-center rounded-md border border-border bg-background px-2.5"
+              className="morphly-session-field flex min-w-0 basis-full flex-col justify-center rounded-md border border-border bg-background px-2.5 sm:max-w-[215px] sm:flex-1 sm:basis-[170px]"
             >
               <div className="mb-0.5 flex items-center justify-between gap-2 leading-none">
                 <label htmlFor="physical-camera-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -3313,7 +3314,7 @@ function Dashboard() {
             {/* AI Background Dropdown Selector */}
             <div
               data-tour="background-selector"
-              className="flex h-10 min-w-[180px] max-w-[220px] flex-1 flex-col justify-center rounded-md border border-border bg-background px-2.5"
+              className="morphly-session-field flex min-w-0 basis-full flex-col justify-center rounded-md border border-border bg-background px-2.5 sm:max-w-[220px] sm:flex-1 sm:basis-[180px]"
             >
               <div className="mb-0.5 flex items-center justify-between gap-2 leading-none">
                 <label htmlFor="background-preset-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
@@ -3370,7 +3371,7 @@ function Dashboard() {
           </div>
         </div>
         <div
-          className={`flex min-h-6 items-center rounded border px-2.5 text-[10px] leading-4 ${
+          className={`flex min-h-6 min-w-0 items-center break-words rounded border px-2.5 text-[10px] leading-4 [overflow-wrap:anywhere] ${
             startBlockReason
               ? 'border-warning/15 bg-warning-soft text-warning'
               : 'border-success/15 bg-success-soft text-success'
