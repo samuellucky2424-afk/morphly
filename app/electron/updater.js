@@ -1,11 +1,8 @@
 import { app, shell } from 'electron';
-import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { once } from 'events';
+import { downloadUpdateFile } from './update-download.js';
 import {
-  checksumMatches,
-  getDownloadSizeError,
   normalizeChecksum,
   normalizeExpectedSize,
   verifyUpdateFile
@@ -93,6 +90,9 @@ function ensureDirectory(dirPath) {
 }
 
 function buildDownloadCachePath(version, assetName) {
+  if (!/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/.test(version)) {
+    throw new Error('Invalid update version.');
+  }
   const safeAssetName = path.basename(assetName || `Morphly Setup ${version}.exe`);
   return path.join(app.getPath('userData'), 'updates', version, safeAssetName);
 }
@@ -150,6 +150,7 @@ export function createDesktopUpdater(options = {}) {
   const state = createInitialState(currentVersion, manifestUrl, releasePageUrl);
   let manifestCache = null;
   let downloadPromise = null;
+  let downloadController = null;
   let startupTimer = null;
   let intervalTimer = null;
   let lastProgressEmitAt = 0;
@@ -338,245 +339,67 @@ export function createDesktopUpdater(options = {}) {
     };
   }
 
-  async function ensureDownloaded(manifest, reason) {
-    if (!manifest) {
-      throw new Error('No update manifest available.');
-    }
+  function ensureDownloaded(manifest, reason) {
+    if (downloadPromise) return downloadPromise;
+    downloadController = new AbortController();
+    // Acquire single-flight ownership before the first asynchronous disk check.
+    downloadPromise = Promise.resolve().then(() => runDownload(manifest, reason)).catch((error) => {
+      markError(error, `${reason}:download-failed`, { version: manifest?.latestVersion });
+      throw error;
+    }).finally(() => { downloadPromise = null; downloadController = null; });
+    return downloadPromise;
+  }
 
+  async function runDownload(manifest, reason) {
+    downloadController.signal.throwIfAborted();
+    if (!manifest) throw new Error('No update manifest available.');
     if (!isVersionGreater(manifest.latestVersion, state.currentVersion)) {
-      patchState({
-        status: 'up-to-date',
-        updateAvailable: false,
-        readyToInstall: false,
-        checkInProgress: false,
-        downloadInProgress: false
-      }, reason);
-      return snapshot();
+      return patchState({ status: 'up-to-date', updateAvailable: false,
+        readyToInstall: false, checkInProgress: false, downloadInProgress: false }, reason);
     }
-
-    if (downloadPromise) {
-      log('Waiting for existing update download.', { reason, version: manifest.latestVersion });
-      return downloadPromise;
-    }
-
     const destination = buildDownloadCachePath(manifest.latestVersion, manifest.assetName);
-    const partialDestination = `${destination}.part`;
     const destinationDir = path.dirname(destination);
     const expectedChecksum = normalizeChecksum(manifest.checksum);
     const expectedSize = normalizeExpectedSize(manifest.expectedSize);
     const sourceUrl = manifest.downloadUrl;
-
     ensureDirectory(destinationDir);
-
-    if (fs.existsSync(destination)) {
-      log('Existing update file found; verifying before re-downloading.', { reason, destination });
-      const cachedIntegrity = await verifyUpdateFile(destination, {
-        checksum: expectedChecksum,
-        expectedSize
-      });
-
-      if (cachedIntegrity.valid) {
-        patchState({
-          downloadedPath: destination,
-          downloadedFileName: path.basename(destination),
-          downloadDirectory: destinationDir,
-          downloadInProgress: false,
-          readyToInstall: true,
-          status: 'downloaded',
-          lastDownloadedAt: new Date().toISOString(),
-          checksumVerified: cachedIntegrity.checksumVerified,
-          progress: 100,
-          downloadProgress: {
-            percent: 100,
-            transferredBytes: cachedIntegrity.size,
-            totalBytes: expectedSize ?? cachedIntegrity.size,
-            bytesPerSecond: null,
-            etaSeconds: 0
-          }
-        }, reason);
-        return snapshot();
-      }
-
-      log('Discarding invalid cached update file.', {
-        reason,
-        destination,
-        integrityFailure: cachedIntegrity.reason,
-        actualSize: cachedIntegrity.size,
-        expectedSize
-      });
-      fs.rmSync(destination, { force: true });
+    const cachedIntegrity = await verifyUpdateFile(destination, { checksum: expectedChecksum, expectedSize });
+    const downloaded = (integrity) => patchState({
+      downloadedPath: destination, downloadedFileName: path.basename(destination),
+      downloadDirectory: destinationDir, downloadInProgress: false, readyToInstall: true,
+      status: 'downloaded', error: null, lastDownloadedAt: new Date().toISOString(),
+      checksumVerified: integrity.checksumVerified, progress: 100,
+      downloadProgress: { percent: 100, transferredBytes: integrity.size,
+        totalBytes: expectedSize ?? integrity.size, bytesPerSecond: null, etaSeconds: 0 }
+    }, `${reason}:downloaded`);
+    if (cachedIntegrity.valid) return downloaded(cachedIntegrity);
+    if (cachedIntegrity.reason !== 'missing') await fs.promises.rm(destination, { force: true });
+    const isWebPage = !new URL(sourceUrl).pathname.endsWith('.exe') && !new URL(sourceUrl).pathname.includes('/download/');
+    if (isWebPage) {
+      await shell.openExternal(sourceUrl);
+      return patchState({ downloadInProgress: false, readyToInstall: false,
+        canAutoInstall: false, status: 'update-available', error: null }, `${reason}:release-page-opened`);
     }
-
-    fs.rmSync(partialDestination, { force: true });
-
-    const downloadTask = (async () => {
-      // If the download URL points to a web page rather than a binary asset,
-      // open it in the browser and mark as download-only so the user can grab it manually.
-      const isWebPage = !sourceUrl.endsWith('.exe') && !sourceUrl.match(/\/download\//);
-      if (isWebPage) {
-        log('Download URL appears to be a release page — opening in browser.', { reason, sourceUrl });
-        try { await shell.openExternal(sourceUrl); } catch { /* ignore */ }
-        patchState({
-          downloadInProgress: false,
-          readyToInstall: false,
-          canAutoInstall: false,
-          status: 'update-available',
-          error: null
-        }, `${reason}:release-page-opened`);
-        return snapshot();
-      }
-
-      patchState({
-        downloadInProgress: true,
-        status: 'downloading',
-        error: null,
-        checksumVerified: null,
-        downloadDirectory: destinationDir,
-        downloadedFileName: null,
-        downloadedPath: null
-      }, `${reason}:download-start`);
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new Error('Download timed out.')), 15 * 60 * 1000);
-      let response;
-
-      try {
-        response = await fetch(sourceUrl, {
-          method: 'GET',
-          cache: 'no-store',
-          headers: {
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache',
-            'Accept': 'application/octet-stream'
-          },
-          signal: controller.signal
-        });
-
-        if (!response.ok || !response.body) {
-          throw new Error(`Download request failed with HTTP ${response.status}.`);
-        }
-
-        const responseContentLength = normalizeExpectedSize(response.headers.get('content-length'));
-        if (expectedSize && responseContentLength && expectedSize !== responseContentLength) {
-          throw new Error(getDownloadSizeError(0, expectedSize, responseContentLength));
-        }
-
-        const totalBytes = expectedSize ?? responseContentLength;
-        const fileStream = fs.createWriteStream(partialDestination, { flags: 'wx' });
-        const reader = response.body.getReader();
-        const hexHash = crypto.createHash('sha256');
-        const base64Hash = crypto.createHash('sha256');
-        let transferredBytes = 0;
-        let lastEmitPercent = -1;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          const buffer = Buffer.from(value);
-          hexHash.update(buffer);
-          base64Hash.update(buffer);
-          transferredBytes += buffer.byteLength;
-
-          if (!fileStream.write(buffer)) {
-            await once(fileStream, 'drain');
-          }
-
-          const percent = totalBytes ? Math.min(100, (transferredBytes / totalBytes) * 100) : 0;
-          const now = Date.now();
-          const shouldEmit = now - lastProgressEmitAt >= 750 || Math.floor(percent) !== Math.floor(lastEmitPercent);
-          if (shouldEmit) {
-            lastProgressEmitAt = now;
-            lastEmitPercent = percent;
-            patchState({
-              downloadProgress: {
-                percent: Number(percent.toFixed(2)),
-                transferredBytes,
-                totalBytes,
-                bytesPerSecond: null,
-                etaSeconds: null
-              },
-              progress: Number(percent.toFixed(2))
-            }, `${reason}:download-progress`);
-          }
-        }
-
-        fileStream.end();
-        await once(fileStream, 'finish');
-
-        const hexDigest = hexHash.digest('hex');
-        const base64Digest = base64Hash.digest('base64');
-        const sizeError = getDownloadSizeError(
-          transferredBytes,
-          expectedSize,
-          responseContentLength
-        );
-
-        if (sizeError) {
-          throw new Error(sizeError);
-        }
-
-        if (!expectedChecksum && !totalBytes) {
-          throw new Error('Update server did not provide checksum or size metadata. The installer was not trusted.');
-        }
-
-        if (expectedChecksum && !checksumMatches(expectedChecksum, hexDigest, base64Digest)) {
-          throw new Error(`Downloaded update checksum mismatch for ${manifest.latestVersion}.`);
-        }
-
-        fs.renameSync(partialDestination, destination);
-
-        patchState({
-          downloadedPath: destination,
-          downloadedFileName: path.basename(destination),
-          downloadDirectory: destinationDir,
-          downloadInProgress: false,
-          readyToInstall: true,
-          status: 'downloaded',
-          lastDownloadedAt: new Date().toISOString(),
-          checksumVerified: expectedChecksum ? true : null,
-          downloadProgress: {
-            percent: 100,
-            transferredBytes,
-            totalBytes,
-            bytesPerSecond: null,
-            etaSeconds: 0
-          },
-          progress: 100
-        }, `${reason}:downloaded`);
-
-        log('Update download finished.', {
-          reason,
-          version: manifest.latestVersion,
-          destination,
-          transferredBytes,
-          checksumVerified: expectedChecksum ? true : null
-        });
-
-        return snapshot();
-      } catch (error) {
-        try {
-          fs.rmSync(partialDestination, { force: true });
-        } catch {
-          // Ignore cleanup failures.
-        }
-
-        throw error;
-      } finally {
-        clearTimeout(timer);
-      }
-    })();
-
-    downloadPromise = downloadTask.then((result) => {
-      downloadPromise = null;
-      return result;
-    }).catch((error) => {
-      downloadPromise = null;
-      markError(error, `${reason}:download-failed`, { version: manifest.latestVersion });
-      throw error;
+    patchState({ downloadInProgress: true, readyToInstall: false, status: 'downloading',
+      error: null, checksumVerified: null, downloadDirectory: destinationDir,
+      downloadedFileName: null, downloadedPath: null }, `${reason}:download-start`);
+    downloadController.signal.throwIfAborted();
+    lastProgressEmitAt = 0;
+    lastProgressPercent = -1;
+    const integrity = await downloadUpdateFile({ url: sourceUrl, destination,
+      checksum: expectedChecksum, expectedSize, signal: downloadController.signal,
+      onProgress(progress) {
+        const now = Date.now();
+        if (now - lastProgressEmitAt < 750 && Math.floor(progress.percent) === lastProgressPercent) return;
+        lastProgressEmitAt = now;
+        lastProgressPercent = Math.floor(progress.percent);
+        patchState({ downloadProgress: { ...progress, percent: Number(progress.percent.toFixed(2)) },
+          progress: Number(progress.percent.toFixed(2)) }, `${reason}:download-progress`);
+      },
+      onRetry(info) { log('Resuming interrupted update download.', { version: manifest.latestVersion, ...info }); }
     });
-
-    return downloadPromise;
+    log('Update download verified.', { version: manifest.latestVersion, bytes: integrity.size });
+    return downloaded(integrity);
   }
 
   async function checkForUpdates(source = 'manual') {
@@ -885,6 +708,7 @@ export function createDesktopUpdater(options = {}) {
   }
 
   function dispose() {
+    downloadController?.abort(new Error('Application is closing. Download progress is saved.'));
     if (startupTimer) {
       clearTimeout(startupTimer);
       startupTimer = null;

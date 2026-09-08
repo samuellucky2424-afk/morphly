@@ -98,13 +98,17 @@ test('version manifest includes GitHub asset digest and byte size', async () => 
 
 test('desktop updater stages downloads and verifies again before launch', () => {
   const source = fs.readFileSync(path.join(appDirectory, 'electron/updater.js'), 'utf8');
-  const partialWrite = source.indexOf("fs.createWriteStream(partialDestination, { flags: 'wx' })");
-  const finalRename = source.indexOf('fs.renameSync(partialDestination, destination)');
+  const downloader = fs.readFileSync(path.join(appDirectory, 'electron/update-download.js'), 'utf8');
+  const partialWrite = downloader.indexOf("fs.open(partial, offset ? 'r+' : 'w')");
+  const finalRename = downloader.indexOf('await fs.rename(partial, destination)');
   const preLaunchVerification = source.lastIndexOf('await verifyUpdateFile(downloadedPath');
   const installerLaunch = source.indexOf('await shell.openPath(state.downloadedPath)');
 
   assert.ok(partialWrite >= 0);
-  assert.ok(finalRename > partialWrite);
+  assert.ok(finalRename >= 0);
+  assert.ok(downloader.indexOf('await verifyUpdateFile(partial') < finalRename);
+  assert.ok(source.includes('await downloadUpdateFile('));
+  assert.ok(downloader.includes('await file?.close()'));
   assert.ok(preLaunchVerification >= 0);
   assert.ok(installerLaunch > preLaunchVerification);
 });
