@@ -31,6 +31,10 @@ function isMissingUsageRpc(error) {
     /record_ai_session_usage|schema cache|function .* does not exist/i.test(message);
 }
 
+// Once the RPC is known to be missing (404), stop paying for a guaranteed
+// failed round-trip on every heartbeat and go straight to the legacy path.
+let usageRpcUnavailable = false;
+
 async function updateSessionUsage(sessionId, secondsUsed, creditsUsed) {
   const updateWithCost = await supabaseAdmin
     .from('sessions')
@@ -84,18 +88,22 @@ export default async function handler(req, res) {
     // New deployments debit the wallet and update the durable ledger in the
     // same database transaction. Keep the legacy path temporarily so the API
     // can be deployed immediately before the SQL migration is applied.
-    const usageRpc = await supabaseAdmin.rpc('record_ai_session_usage', {
-      p_user: userId,
-      p_session: sessionId,
-      p_seconds_delta: secondsDelta,
-    });
+    if (!usageRpcUnavailable) {
+      const usageRpc = await supabaseAdmin.rpc('record_ai_session_usage', {
+        p_user: userId,
+        p_session: sessionId,
+        p_seconds_delta: secondsDelta,
+      });
 
-    if (!usageRpc.error) {
-      return res.json(usageRpc.data);
-    }
+      if (!usageRpc.error) {
+        return res.json(usageRpc.data);
+      }
 
-    if (!isMissingUsageRpc(usageRpc.error)) {
-      throw usageRpc.error;
+      if (!isMissingUsageRpc(usageRpc.error)) {
+        throw usageRpc.error;
+      }
+
+      usageRpcUnavailable = true;
     }
 
     const [{ data: walletData, error: walletError }, { data: sessionData, error: sessionError }] = await Promise.all([

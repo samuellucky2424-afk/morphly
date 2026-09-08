@@ -166,15 +166,18 @@ const FREEZE_RESTART_THRESHOLD_MS = 12000;
 const INITIAL_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 10000;
 const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
-  xmax: 30000,
+  xmax: 45000,
   decart: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
-  xmax: 2,
+  xmax: 3,
   // The Pro SDK already retries WebRTC internally with exponential backoff.
   decart: 1,
 };
+// After this many consecutive failed restarts, surface a retryable error
+// instead of looping "Reconnecting..." forever.
+const MAX_CONSECUTIVE_RESTART_FAILURES = 5;
 const PRO_CAMERA_FPS = 30;
 const DEFAULT_VIRTUAL_CAMERA_PROFILE: VirtualCameraProfile = {
   mode: 'low',
@@ -2187,6 +2190,18 @@ function Dashboard() {
       restartFailureCountRef.current += 1;
       restartRetryDelayRef.current = Math.min(restartRetryDelayRef.current * 2, MAX_RETRY_DELAY_MS);
 
+      if (restartFailureCountRef.current >= MAX_CONSECUTIVE_RESTART_FAILURES) {
+        // Give up after repeated failures so the user gets a clear, actionable
+        // error instead of an endless "Reconnecting..." loop.
+        setDashboardError({
+          title: `${recoveryProviderLabel} connection lost`,
+          message: `Morphly could not restore the ${recoveryProviderLabel} connection. Check your internet connection, then start the stream again.`,
+          canRetry: true,
+        });
+        void handleStopRef.current?.({ silent: true });
+        return;
+      }
+
       if (isStreamingRef.current && sessionTokenRef.current) {
         clearSoftReconnectTimer();
         softReconnectTimerRef.current = setTimeout(() => {
@@ -2533,6 +2548,14 @@ function Dashboard() {
 
     clearFrameWatchdog();
     frameWatchdogIntervalRef.current = setInterval(() => {
+      // While the tab is hidden, frame callbacks (rVFC/rAF) legitimately
+      // stall. Treat that as fresh frames instead of triggering false
+      // freeze restarts; streaming resumes when the tab becomes visible.
+      if (document.hidden) {
+        lastRemoteFrameAtRef.current = Date.now();
+        return;
+      }
+
       const currentState = connectionStateRef.current;
       if (!['connected', 'generating', 'reconnecting'].includes(currentState)) {
         return;

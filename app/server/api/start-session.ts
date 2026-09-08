@@ -295,18 +295,16 @@ async function recordProviderTokenAudit({
 
 async function getRecentTokenMintCount(userId) {
   const since = new Date(Date.now() - TOKEN_MINT_WINDOW_MINUTES * 60 * 1000).toISOString();
-  const [sessionCountResult, eventCountResult] = await Promise.all([
-    supabaseAdmin.from('sessions').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).gte('created_at', since),
-    supabaseAdmin.from('analytics_events').select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).in('event_name', ['xmax_key_issued', 'decart_token_issued']).gte('created_at', since),
-  ]);
+  // Only count sessions that actually received a provider token (credits > 0
+  // recorded at start is not reliable, so use the durable issuance audit). A
+  // failed start must not consume the user's retry budget.
+  const eventCountResult = await supabaseAdmin.from('analytics_events').select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).in('event_name', ['xmax_key_issued', 'decart_token_issued']).gte('created_at', since);
 
-  if (sessionCountResult.error) throw sessionCountResult.error;
   if (eventCountResult.error) {
     console.warn('Unable to read token audit rate limit:', eventCountResult.error.message);
   }
-  return Math.max(sessionCountResult.count || 0, eventCountResult.count || 0);
+  return eventCountResult.count || 0;
 }
 
 async function hasWalletCreditProvenance(userId) {
@@ -493,7 +491,8 @@ export default async function handler(req, res) {
       });
     }
 
-    await logRequestEvent('start-session.request', {
+    // Fire-and-forget: request logging must not delay session startup.
+    void logRequestEvent('start-session.request', {
       method: req.method,
       path: '/api/start-session',
       userId,
@@ -665,7 +664,8 @@ export default async function handler(req, res) {
       auditMs,
     };
 
-    await logRequestEvent('start-session.started', {
+    // Fire-and-forget: the startup audit log must not delay the token response.
+    void logRequestEvent('start-session.started', {
       userId,
       sessionId: newSession.id,
       credits: userCredits,

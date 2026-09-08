@@ -1073,6 +1073,10 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      // Keep timers, rAF, and requestVideoFrameCallback running when the window
+      // is minimized or occluded; otherwise the freeze watchdog and the virtual
+      // camera frame pump stall and force unnecessary session restarts.
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.js')
     }
   });

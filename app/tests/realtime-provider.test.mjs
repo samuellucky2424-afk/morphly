@@ -65,8 +65,8 @@ test('Decart token creation retries transient failures and preserves the SDK HTT
 });
 
 test('startup avoids stacked retries and reports each connection phase', () => {
-  assert.match(dashboard, /xmax: 2,[\s\S]*decart: 1/);
-  assert.match(dashboard, /xmax: 30000,[\s\S]*decart: 45000/);
+  assert.match(dashboard, /xmax: 3,[\s\S]*decart: 1/);
+  assert.match(dashboard, /xmax: 45000,[\s\S]*decart: 45000/);
   assert.match(dashboard, /Checking stream setup/);
   assert.match(dashboard, /Opening camera/);
   assert.match(dashboard, /Authorizing \$\{requestedProviderLabel\}/);
