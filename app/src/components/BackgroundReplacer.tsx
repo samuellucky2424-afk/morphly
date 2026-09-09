@@ -12,6 +12,7 @@ import { apiFetchWithAuth } from '@/lib/api-client';
 import { BACKGROUND_PRESETS } from '@/lib/background-presets';
 import {
   XMAX_PASSTHROUGH_PROMPT,
+  XMAX_VIBEX_PROMPT,
   XMAX_REALTIME_MODEL,
 } from '@/lib/xmax-realtime';
 
@@ -115,7 +116,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
       const initialPreset = BACKGROUND_PRESETS.find((p) => p.id === activePreset);
       const initialPrompt = customPrompt.trim()
         || initialPreset?.prompt
-        || XMAX_PASSTHROUGH_PROMPT;
+        || XMAX_VIBEX_PROMPT;
 
       const realtimeSession = await client.realtime.connect(stream, {
         model,

@@ -8,12 +8,14 @@ export type XmaxRealtimeContext = {
   refImageUrl?: string | null;
 };
 
-export const XMAX_REALTIME_MODEL = 'x2.0?mode=VibeX' as const;
+export const XMAX_REALTIME_MODEL = 'x2.0' as const;
 export const XMAX_REFERENCE_INPUT_LIMIT_BYTES = 15 * 1024 * 1024;
 export const XMAX_REFERENCE_UPLOAD_TARGET_BYTES = 5 * 1024 * 1024;
 export const XMAX_REFERENCE_MAX_DIMENSION = 2048;
 export const XMAX_PASSTHROUGH_PROMPT =
   'Preserve the person, clothing, background, lighting, framing, and natural camera appearance exactly as the input.';
+export const XMAX_VIBEX_PROMPT =
+  'Restyle the subject and background together using the selected visual aesthetic. The video style changes to the style specified in the reference image.';
 
 const XMAX_REFERENCE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -26,7 +28,7 @@ export function buildXmaxRealtimeContext(
   refImageUrl?: string | null,
 ): XmaxRealtimeContext {
   return {
-    prompt: transform.prompt.trim() || XMAX_PASSTHROUGH_PROMPT,
+    prompt: transform.prompt.trim() || XMAX_VIBEX_PROMPT,
     refImageUrl: transform.image ? refImageUrl ?? null : null,
   };
 }

@@ -44,7 +44,7 @@ export function resolveRealtimeModel(provider: RealtimeProvider, value: unknown)
     return value === DECART_REALTIME_MODEL ? value : DECART_REALTIME_MODEL;
   }
 
-  return value === 'x2.0?mode=VibeX' ? value : 'x2.0?mode=VibeX';
+  return value === 'x2.0' ? value : 'x2.0';
 }
 
 export function getDecartRealtimeUserMessage(

@@ -1,5 +1,6 @@
 import type { ComponentType } from 'react';
 import { Briefcase, Camera, Home, Trees } from 'lucide-react';
+import { XMAX_VIBEX_PROMPT } from './xmax-realtime';
 
 export interface BackgroundPreset {
   id: string;
@@ -70,7 +71,7 @@ export function buildXmaxTransformPrompt(
   if (preset.id === 'original' || !preset.prompt) {
     return hasReferenceImage
       ? `Replace only the person in the video with the person in the reference image. ${REFERENCE_IDENTITY_INSTRUCTION} Keep the original pose, expression, clothing, background, lighting, camera framing, and motion.`
-      : '';
+      : XMAX_VIBEX_PROMPT;
   }
 
   if (hasReferenceImage && preset.avatarPrompt) {
