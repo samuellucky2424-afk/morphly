@@ -8,7 +8,7 @@ export type XmaxRealtimeContext = {
   refImageUrl?: string | null;
 };
 
-export const XMAX_REALTIME_MODEL = 'x2.0' as const;
+export const XMAX_REALTIME_MODEL = 'x2.0?mode=VibeX' as const;
 export const XMAX_REFERENCE_INPUT_LIMIT_BYTES = 15 * 1024 * 1024;
 export const XMAX_REFERENCE_UPLOAD_TARGET_BYTES = 5 * 1024 * 1024;
 export const XMAX_REFERENCE_MAX_DIMENSION = 2048;

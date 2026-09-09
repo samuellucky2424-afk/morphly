@@ -7,7 +7,7 @@ import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
 const XMAX_DEFAULT_API_BASE_URL = 'https://api.xmax.cloud/open/api/v1';
-const XMAX_REALTIME_MODEL = 'x2.0';
+const XMAX_REALTIME_MODEL = 'x2.0?mode=VibeX';
 const DECART_REALTIME_MODEL = 'lucy-2.5';
 const DEFAULT_REALTIME_PROVIDER = 'xmax';
 const DECART_CLIENT_TOKEN_GRACE_SECONDS = 120;

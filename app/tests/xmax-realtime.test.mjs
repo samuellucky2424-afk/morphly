@@ -14,8 +14,8 @@ import {
 const appDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
 
-test('Xmax realtime uses the documented X2.0 model', () => {
-  assert.equal(XMAX_REALTIME_MODEL, 'x2.0');
+test('Xmax realtime defaults to the X2.0 model in VibeX mode', () => {
+  assert.equal(XMAX_REALTIME_MODEL, 'x2.0?mode=VibeX');
 });
 
 test('an empty Original transform receives a valid preservation prompt', () => {
