@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import type { RealTimeClient as DecartRealtimeSession } from '@decartai/sdk';
-import { BACKGROUND_PRESETS, buildXmaxTransformPrompt } from '@/lib/background-presets';
+import { BACKGROUND_PRESETS, buildRealtimeTransformPrompt } from '@/lib/background-presets';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
@@ -456,7 +456,8 @@ function Dashboard() {
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
   );
 
-  const activePrompt = buildXmaxTransformPrompt(
+  const activePrompt = buildRealtimeTransformPrompt(
+    selectedProvider,
     Boolean(referenceImage),
     activeBgPreset,
     customBgPrompt,

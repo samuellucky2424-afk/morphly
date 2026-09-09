@@ -1,6 +1,7 @@
 import type { ComponentType } from 'react';
 import { Briefcase, Camera, Home, Trees } from 'lucide-react';
-import { XMAX_VIBEX_PROMPT } from './xmax-realtime';
+import { XMAX_VIBEX_PROMPT } from './xmax-realtime.ts';
+import type { RealtimeProvider } from './realtime-provider';
 
 export interface BackgroundPreset {
   id: string;
@@ -61,6 +62,27 @@ export function buildXmaxTransformPrompt(
   const customTrimmed = customText.trim();
   if (customTrimmed) {
     const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
+    const backgroundPrompt = `Change the background to ${cleanCustom}.`;
+    return hasReferenceImage ? `${XMAX_VIBEX_PROMPT} ${backgroundPrompt}` : backgroundPrompt;
+  }
+
+  const preset = BACKGROUND_PRESETS.find((item) => item.id === presetId) || BACKGROUND_PRESETS[0];
+  if (preset.id === 'original' || !preset.prompt) {
+    // Plus treats the reference as a style image in every background setting.
+    return XMAX_VIBEX_PROMPT;
+  }
+
+  return hasReferenceImage ? `${XMAX_VIBEX_PROMPT} ${preset.prompt}` : preset.prompt;
+}
+
+export function buildDecartTransformPrompt(
+  hasReferenceImage: boolean,
+  presetId: string,
+  customText: string = '',
+): string {
+  const customTrimmed = customText.trim();
+  if (customTrimmed) {
+    const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
     if (hasReferenceImage) {
       return `Replace only the person in the video with the person in the reference image. ${REFERENCE_IDENTITY_INSTRUCTION} Keep the original pose, expression, clothing, camera framing, and motion. Change the background to ${cleanCustom}, with natural room lighting and a photorealistic candid camera appearance.`;
     }
@@ -69,9 +91,10 @@ export function buildXmaxTransformPrompt(
 
   const preset = BACKGROUND_PRESETS.find((item) => item.id === presetId) || BACKGROUND_PRESETS[0];
   if (preset.id === 'original' || !preset.prompt) {
-    // VibeX is the default on every platform. The uploaded image is the style
-    // image, so the subject and background restyle together to match it.
-    return XMAX_VIBEX_PROMPT;
+    if (hasReferenceImage) {
+      return `${preset.avatarPrompt} ${REFERENCE_IDENTITY_INSTRUCTION} Keep the original background, camera framing, pose, expression, and motion natural.`;
+    }
+    return 'Preserve the person, clothing, background, lighting, framing, and natural camera appearance exactly as the input.';
   }
 
   if (hasReferenceImage && preset.avatarPrompt) {
@@ -83,4 +106,15 @@ export function buildXmaxTransformPrompt(
   }
 
   return preset.prompt;
+}
+
+export function buildRealtimeTransformPrompt(
+  provider: RealtimeProvider,
+  hasReferenceImage: boolean,
+  presetId: string,
+  customText: string = '',
+): string {
+  return provider === 'decart'
+    ? buildDecartTransformPrompt(hasReferenceImage, presetId, customText)
+    : buildXmaxTransformPrompt(hasReferenceImage, presetId, customText);
 }
