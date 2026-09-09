@@ -123,10 +123,10 @@ jobs:
           Pop-Location
         }
 
-        $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLower()
-        Set-Content -Path "$assetPath.sha256" -Value $hash -NoNewline
-        $sizeMb = [math]::Round((Get-Item $assetPath).Length / 1MB, 1)
-        Write-Host "Voice engine asset: $sizeMb MB"
+        # GitHub requires every asset to be strictly smaller than 2 GiB.
+        # Publish 1 GiB parts and a manifest; Morphly rejoins them automatically.
+        node app/scripts/split-voice-engine.mjs $assetPath
+        if ($LASTEXITCODE -ne 0) { throw "Failed to split the MorphlyVC voice engine." }
 
     - name: Verify release artifacts
       shell: pwsh
@@ -144,7 +144,7 @@ jobs:
 
         if (!$exe1) { throw "Missing installer. Checked: $($installerCandidates -join ', ')" }
         $maxReleaseAssetBytes = 2GB
-        if ((Get-Item $exe1).Length -gt $maxReleaseAssetBytes) {
+        if ((Get-Item $exe1).Length -ge $maxReleaseAssetBytes) {
           throw "Installer exceeds GitHub's 2 GiB release-asset limit: $exe1"
         }
 
@@ -195,10 +195,22 @@ jobs:
         $bundledVoiceBridge = Join-Path $dir "win-unpacked/resources/morphlyvc/meanvc-realtime.py"
         if (!(Test-Path $bundledVoiceBridge)) { throw "Missing bundled MorphlyVC bridge: $bundledVoiceBridge" }
 
-        $voiceEngineAsset = Join-Path $dir "morphlyvc-runtime-40ms.zip"
-        if (!(Test-Path $voiceEngineAsset)) { throw "Missing voice engine asset: $voiceEngineAsset" }
-        $voiceEngineHash = Join-Path $dir "morphlyvc-runtime-40ms.zip.sha256"
-        if (!(Test-Path $voiceEngineHash)) { throw "Missing voice engine checksum: $voiceEngineHash" }
+        if (Test-Path (Join-Path $dir "win-unpacked/resources/morphlyvc/runtime-40ms")) {
+          throw "The optional voice engine must not be bundled in the desktop installer."
+        }
+        $voiceEngineManifest = Join-Path $dir "morphlyvc-runtime-40ms.zip.json"
+        $manifest = Get-Content $voiceEngineManifest -Raw | ConvertFrom-Json
+        if ($manifest.format -ne 1 -or $manifest.parts.Count -lt 1) { throw "Invalid voice engine manifest." }
+        foreach ($part in $manifest.parts) {
+          $partPath = Join-Path $dir $part.name
+          $partSize = (Get-Item $partPath).Length
+          if ($partSize -ne $part.size -or $partSize -ge $maxReleaseAssetBytes) {
+            throw "Invalid release asset size: $partPath"
+          }
+          if ((Get-FileHash $partPath -Algorithm SHA256).Hash.ToLower() -ne $part.sha256) {
+            throw "Voice engine checksum mismatch: $partPath"
+          }
+        }
 
     - name: Publish verified release
       shell: pwsh
@@ -210,22 +222,31 @@ jobs:
         $installer = "app/release/Morphly-Setup-$version.exe"
         $latest = "app/release/latest.yml"
         $blockmaps = @(Get-ChildItem -Path "app/release" -Filter "*.blockmap" | ForEach-Object { $_.FullName })
-        $voiceEngine = "app/release/morphlyvc-runtime-40ms.zip"
-        $voiceEngineHash = "app/release/morphlyvc-runtime-40ms.zip.sha256"
+        $voiceEngineManifest = "app/release/morphlyvc-runtime-40ms.zip.json"
+        $manifest = Get-Content $voiceEngineManifest -Raw | ConvertFrom-Json
+        $voiceEngineParts = @($manifest.parts | ForEach-Object { (Resolve-Path (Join-Path "app/release" $_.name)).Path })
         $assets = @(
           (Resolve-Path $installer).Path,
           (Resolve-Path $latest).Path,
-          (Resolve-Path $voiceEngine).Path,
-          (Resolve-Path $voiceEngineHash).Path
-        ) + $blockmaps
-
-        gh release view $tagName --repo "${{ github.repository }}" *> $null
-        if ($LASTEXITCODE -eq 0) {
-          gh release upload $tagName $assets --clobber --repo "${{ github.repository }}"
-        } else {
-          gh release create $tagName $assets --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Morphly Desktop $version" --generate-notes
+          (Resolve-Path $voiceEngineManifest).Path
+        ) + $blockmaps + $voiceEngineParts
+        foreach ($asset in $assets) {
+          if ((Get-Item $asset).Length -ge 2GB) { throw "Release asset must be smaller than 2 GiB: $asset" }
         }
 
+        $existing = gh release view $tagName --repo "${{ github.repository }}" --json isDraft 2>$null
+        if ($LASTEXITCODE -eq 0) {
+          if (!(($existing | ConvertFrom-Json).isDraft)) {
+            throw "Release $tagName is already published. Create a new version instead of replacing live update files."
+          }
+        } else {
+          gh release create $tagName --draft --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Morphly Desktop $version" --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "Creating draft release $tagName failed." }
+        }
+
+        gh release upload $tagName $assets --clobber --repo "${{ github.repository }}"
+        if ($LASTEXITCODE -ne 0) { throw "Uploading release $tagName failed; it remains a draft." }
+        gh release edit $tagName --draft=false --latest --repo "${{ github.repository }}"
         if ($LASTEXITCODE -ne 0) {
           throw "Publishing verified release $tagName failed."
         }

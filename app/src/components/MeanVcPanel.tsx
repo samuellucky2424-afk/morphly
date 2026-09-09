@@ -365,9 +365,14 @@ export function MeanVcPanel() {
     try {
       const result = await bridge.invoke('morphlyvc:install-engine') as {
         success?: boolean;
+        cancelled?: boolean;
         error?: string;
       };
 
+      if (result?.cancelled) {
+        setVoiceEngine((current) => ({ ...current, phase: 'idle', percent: 0, error: null }));
+        return;
+      }
       if (!result?.success) {
         throw new Error(result?.error || 'Morphly could not install the voice engine.');
       }

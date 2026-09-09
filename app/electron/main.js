@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import { once } from 'events';
 
-import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard, shell, nativeTheme } from 'electron';
+import { app, BrowserWindow, systemPreferences, ipcMain, Menu, nativeImage, clipboard, shell, nativeTheme, dialog } from 'electron';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -1380,9 +1380,21 @@ function registerMorphlyVcHandlers() {
     const dataRoot = getVoiceEngineDataRoot();
     voiceEngineInstallPromise = (async () => {
       try {
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+          type: 'question',
+          title: 'Install voice engine',
+          message: 'Do you want to install the Morphly voice changer engine?',
+          detail: 'This optional download is several gigabytes and may take a while. You only need it for voice changing. Morphly will download and install it automatically.',
+          buttons: ['Install voice engine', 'Not now'],
+          defaultId: 0,
+          cancelId: 1,
+          noLink: true,
+        });
+        if (confirmation.response !== 0) return { success: false, cancelled: true };
         const result = await installVoiceEngine({
           installRoot: dataRoot,
           tempRoot: path.join(app.getPath('temp'), 'morphly-voice-engine'),
+          version: app.getVersion(),
           onProgress: (progress) => {
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('morphlyvc:install-progress', progress);

@@ -108,9 +108,9 @@ test('the voice engine is an optional download instead of a bundled 2.8 GB resou
     path.join(appDirectory, 'electron/voice-engine-installer.js'),
     'utf8',
   );
-  assert.match(installerSource, /morphlyvc-runtime-40ms\.zip/);
-  assert.match(installerSource, /releases\/latest\/download/);
-  assert.match(installerSource, /sha256/);
+  assert.match(installerSource, /VOICE_ENGINE_MANIFEST_NAME/);
+  assert.match(installerSource, /releases\/download\/v/);
+  assert.match(installerSource, /downloadVoiceEngineArchive/);
 
   // Electron must expose install status/progress to the renderer.
   assert.match(electronMain, /morphlyvc:engine-status/);
