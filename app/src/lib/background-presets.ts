@@ -69,9 +69,9 @@ export function buildXmaxTransformPrompt(
 
   const preset = BACKGROUND_PRESETS.find((item) => item.id === presetId) || BACKGROUND_PRESETS[0];
   if (preset.id === 'original' || !preset.prompt) {
-    return hasReferenceImage
-      ? `Replace only the person in the video with the person in the reference image. ${REFERENCE_IDENTITY_INSTRUCTION} Keep the original pose, expression, clothing, background, lighting, camera framing, and motion.`
-      : XMAX_VIBEX_PROMPT;
+    // VibeX is the default on every platform. The uploaded image is the style
+    // image, so the subject and background restyle together to match it.
+    return XMAX_VIBEX_PROMPT;
   }
 
   if (hasReferenceImage && preset.avatarPrompt) {

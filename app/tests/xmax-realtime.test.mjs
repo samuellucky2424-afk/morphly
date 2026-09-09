@@ -14,6 +14,7 @@ import {
 
 const appDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
+const backgroundPresets = fs.readFileSync(path.join(appDirectory, 'src/lib/background-presets.ts'), 'utf8');
 
 test('Xmax realtime uses the documented X2.0 model', () => {
   assert.equal(XMAX_REALTIME_MODEL, 'x2.0');
@@ -27,6 +28,16 @@ test('an empty transform defaults to the VibeX restyle prompt', () => {
     prompt: XMAX_VIBEX_PROMPT,
     refImageUrl: null,
   });
+});
+
+test('the default Original path restyles with VibeX, even with a style image uploaded', () => {
+  // The uploaded image is the VibeX style image, so the Original preset must
+  // never fall back to avatar substitution.
+  const originalBranch = backgroundPresets
+    .match(/if \(preset\.id === 'original' \|\| !preset\.prompt\) \{[\s\S]*?\n  \}/);
+  assert.ok(originalBranch, 'the Original preset branch exists');
+  assert.match(originalBranch[0], /return XMAX_VIBEX_PROMPT;/);
+  assert.doesNotMatch(originalBranch[0], /Replace only the person/);
 });
 
 test('a prompt and uploaded reference URL are sent atomically', () => {

@@ -3250,7 +3250,7 @@ function Dashboard() {
                 }}
                 className="flex h-9 items-center rounded-md border border-border bg-background px-3 text-[11px] font-medium text-muted-foreground transition-colors duration-200 hover:border-destructive/25 hover:bg-danger-soft hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive/40"
               >
-                <span>Clear Avatar</span>
+                <span>Clear Image</span>
               </button>
             )}
 
