@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('electron', {
       'morphlyvc:start',
       'morphlyvc:pitch',
       'morphlyvc:stop',
+      'morphlyvc:engine-status',
+      'morphlyvc:install-engine',
       'virtual-microphone:open-setup',
       'virtual-microphone:install',
       'virtual-microphone:detect'
@@ -35,7 +37,8 @@ contextBridge.exposeInMainWorld('electron', {
     const validChannels = [
       'desktop-updater:state',
       'virtual-camera:receiver-state',
-      'window:full-screen-changed'
+      'window:full-screen-changed',
+      'morphlyvc:install-progress'
     ];
     if (!validChannels.includes(channel) || typeof listener !== 'function') {
       return () => {};

@@ -102,6 +102,32 @@ jobs:
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         echo "TAG_NAME=$tagName" >> $env:GITHUB_OUTPUT
 
+    - name: Package optional MorphlyVC voice engine
+      shell: pwsh
+      run: |
+        $runtimeDir = "app/.meanvc/runtime-40ms"
+        if (!(Test-Path "$runtimeDir/python.exe")) {
+          throw "MorphlyVC runtime is missing; cannot package the optional voice engine."
+        }
+
+        $assetPath = Join-Path (Get-Location) "app/release/morphlyvc-runtime-40ms.zip"
+        if (Test-Path $assetPath) { Remove-Item $assetPath -Force }
+
+        # 7-Zip handles the multi-gigabyte archive reliably. Entering the parent
+        # directory keeps "runtime-40ms" as the archive root the app expects.
+        Push-Location "app/.meanvc"
+        try {
+          7z a -tzip -mx5 -bso0 $assetPath "runtime-40ms"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to package the MorphlyVC voice engine." }
+        } finally {
+          Pop-Location
+        }
+
+        $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLower()
+        Set-Content -Path "$assetPath.sha256" -Value $hash -NoNewline
+        $sizeMb = [math]::Round((Get-Item $assetPath).Length / 1MB, 1)
+        Write-Host "Voice engine asset: $sizeMb MB"
+
     - name: Verify release artifacts
       shell: pwsh
       run: |
@@ -164,16 +190,15 @@ jobs:
           if (!(Test-Path $artifactPath)) { throw "Missing bundled Media Foundation camera artifact: $artifactPath" }
         }
 
-        $bundledVoiceRoot = Join-Path $dir "win-unpacked/resources/morphlyvc/runtime-40ms"
-        foreach ($artifact in @(
-          "python.exe",
-          "src/vc_pipeline_jit.py",
-          "models/18_asr_jit_warm.pt",
-          "models/hq1W_v2_40ms_40ms_gtm_32_run4_newasr_e18_l6_asr2_en_zh_alldata/model_750000_jit.pt"
-        )) {
-          $artifactPath = Join-Path $bundledVoiceRoot $artifact
-          if (!(Test-Path $artifactPath)) { throw "Missing bundled MorphlyVC artifact: $artifactPath" }
-        }
+        # The voice engine is now an optional on-demand download, so only the
+        # Python bridge ships inside the installer.
+        $bundledVoiceBridge = Join-Path $dir "win-unpacked/resources/morphlyvc/meanvc-realtime.py"
+        if (!(Test-Path $bundledVoiceBridge)) { throw "Missing bundled MorphlyVC bridge: $bundledVoiceBridge" }
+
+        $voiceEngineAsset = Join-Path $dir "morphlyvc-runtime-40ms.zip"
+        if (!(Test-Path $voiceEngineAsset)) { throw "Missing voice engine asset: $voiceEngineAsset" }
+        $voiceEngineHash = Join-Path $dir "morphlyvc-runtime-40ms.zip.sha256"
+        if (!(Test-Path $voiceEngineHash)) { throw "Missing voice engine checksum: $voiceEngineHash" }
 
     - name: Publish verified release
       shell: pwsh
@@ -185,7 +210,14 @@ jobs:
         $installer = "app/release/Morphly-Setup-$version.exe"
         $latest = "app/release/latest.yml"
         $blockmaps = @(Get-ChildItem -Path "app/release" -Filter "*.blockmap" | ForEach-Object { $_.FullName })
-        $assets = @((Resolve-Path $installer).Path, (Resolve-Path $latest).Path) + $blockmaps
+        $voiceEngine = "app/release/morphlyvc-runtime-40ms.zip"
+        $voiceEngineHash = "app/release/morphlyvc-runtime-40ms.zip.sha256"
+        $assets = @(
+          (Resolve-Path $installer).Path,
+          (Resolve-Path $latest).Path,
+          (Resolve-Path $voiceEngine).Path,
+          (Resolve-Path $voiceEngineHash).Path
+        ) + $blockmaps
 
         gh release view $tagName --repo "${{ github.repository }}" *> $null
         if ($LASTEXITCODE -eq 0) {

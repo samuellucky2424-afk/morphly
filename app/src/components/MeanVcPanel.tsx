@@ -217,8 +217,25 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
   );
 }
 
+type VoiceEngineInstallState = {
+  installed: boolean;
+  available: boolean;
+  phase: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'done';
+  percent: number;
+  error: string | null;
+};
+
+const INITIAL_VOICE_ENGINE_STATE: VoiceEngineInstallState = {
+  installed: true,
+  available: false,
+  phase: 'idle',
+  percent: 0,
+  error: null,
+};
+
 export function MeanVcPanel() {
   const [status, setStatus] = useState<MeanVcStatus | null>(null);
+  const [voiceEngine, setVoiceEngine] = useState<VoiceEngineInstallState>(INITIAL_VOICE_ENGINE_STATE);
   const model: MeanVcModel = '40ms';
   const device: MeanVcDevice = 'cpu';
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
@@ -294,6 +311,79 @@ export function MeanVcPanel() {
     engineState,
     voiceState,
   ]);
+
+  useEffect(() => {
+    const bridge = window.electron;
+    if (!bridge?.isElectron) return undefined;
+
+    let active = true;
+
+    const loadEngineStatus = async () => {
+      try {
+        const result = await bridge.invoke('morphlyvc:engine-status') as {
+          installed?: boolean;
+          available?: boolean;
+        };
+        if (!active) return;
+        setVoiceEngine((current) => ({
+          ...current,
+          installed: Boolean(result?.installed),
+          available: Boolean(result?.available),
+        }));
+      } catch {
+        // Older desktop builds do not expose the engine channel. The runtime
+        // readiness below still reports the engine state in that case.
+      }
+    };
+
+    void loadEngineStatus();
+
+    const unsubscribe = bridge.on('morphlyvc:install-progress', (progress) => {
+      setVoiceEngine((current) => ({
+        ...current,
+        phase: progress?.phase ?? current.phase,
+        percent: typeof progress?.percent === 'number' ? progress.percent : current.percent,
+      }));
+    });
+
+    return () => {
+      active = false;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const voiceEngineBusy = voiceEngine.phase === 'downloading'
+    || voiceEngine.phase === 'verifying'
+    || voiceEngine.phase === 'extracting';
+
+  const installVoiceEngine = async () => {
+    const bridge = window.electron;
+    if (!bridge) return;
+
+    setVoiceEngine((current) => ({ ...current, phase: 'downloading', percent: 0, error: null }));
+
+    try {
+      const result = await bridge.invoke('morphlyvc:install-engine') as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!result?.success) {
+        throw new Error(result?.error || 'Morphly could not install the voice engine.');
+      }
+
+      setVoiceEngine((current) => ({ ...current, installed: true, phase: 'done', percent: 100 }));
+      void refreshStatus();
+    } catch (installError) {
+      setVoiceEngine((current) => ({
+        ...current,
+        phase: 'idle',
+        error: installError instanceof Error
+          ? installError.message
+          : 'Morphly could not install the voice engine.',
+      }));
+    }
+  };
 
   const selectedModelStatus = status?.models[model];
   const standaloneStatus = status?.standalone?.[model];
@@ -821,6 +911,48 @@ export function MeanVcPanel() {
               {runtimeActive ? 'Pitch changes are applied when you release the control.' : 'This setting is applied when conversion starts.'}
             </p>
           </section>
+
+          {voiceEngine.available && !voiceEngine.installed ? (
+            <section className="border-b border-border px-4 py-3">
+              <div className="flex items-start gap-2.5">
+                <Download aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] font-semibold text-foreground">Voice changer engine is not installed</p>
+                  <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
+                    Morphly ships without the local voice engine to keep the download small.
+                    Install it once to enable voice changing.
+                  </p>
+                  {voiceEngineBusy ? (
+                    <p className="mt-2 text-[10px] font-medium tabular-nums text-primary" role="status">
+                      {voiceEngine.phase === 'downloading'
+                        ? `Downloading the voice engine — ${voiceEngine.percent}%`
+                        : voiceEngine.phase === 'verifying'
+                          ? 'Checking the download...'
+                          : 'Installing the voice engine...'}
+                    </p>
+                  ) : null}
+                  {voiceEngine.error ? (
+                    <p className="mt-2 text-[10px] leading-4 text-destructive" role="alert">
+                      {voiceEngine.error}
+                    </p>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2.5 h-8"
+                    disabled={voiceEngineBusy}
+                    onClick={() => void installVoiceEngine()}
+                  >
+                    {voiceEngineBusy
+                      ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
+                      : <Download aria-hidden="true" className="size-3.5" />}
+                    Install voice engine
+                  </Button>
+                </div>
+              </div>
+            </section>
+          ) : null}
 
           <Collapsible>
             <div className="border-b border-border">

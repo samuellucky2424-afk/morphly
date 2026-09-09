@@ -13,6 +13,11 @@ import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
 import { createMeanVcRuntimeController } from '../server/meanvc-runtime.js';
+import {
+  getVoiceEnginePath,
+  installVoiceEngine,
+  isVoiceEngineInstalled,
+} from './voice-engine-installer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +92,7 @@ configureChromiumCachePaths();
 let mainWindow = null;
 let desktopUpdater = null;
 let morphlyVcRuntime = null;
+let voiceEngineInstallPromise = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
@@ -1280,13 +1286,27 @@ function registerClipboardHandlers() {
   });
 }
 
-function createMorphlyVcController() {
-  const dataRoot = isPackagedRuntime
+function getVoiceEngineDataRoot() {
+  return isPackagedRuntime
     ? path.join(app.getPath('userData'), 'morphlyvc')
     : path.resolve(__dirname, '../.meanvc');
-  const bundledRuntimeRoot = isPackagedRuntime
+}
+
+// The voice engine is an optional on-demand download, so prefer a copy the user
+// already installed under userData and fall back to a bundled one when present.
+function resolveVoiceEngineRuntimeRoot(dataRoot) {
+  if (isVoiceEngineInstalled(dataRoot)) {
+    return getVoiceEnginePath(dataRoot);
+  }
+
+  return isPackagedRuntime
     ? path.join(process.resourcesPath, 'morphlyvc', 'runtime-40ms')
-    : path.join(dataRoot, 'runtime-40ms');
+    : getVoiceEnginePath(dataRoot);
+}
+
+function createMorphlyVcController() {
+  const dataRoot = getVoiceEngineDataRoot();
+  const bundledRuntimeRoot = resolveVoiceEngineRuntimeRoot(dataRoot);
   const bundledBridge = isPackagedRuntime
     ? path.join(process.resourcesPath, 'morphlyvc', 'meanvc-realtime.py')
     : path.resolve(__dirname, '../server/meanvc-realtime.py');
@@ -1341,6 +1361,55 @@ function registerMorphlyVcHandlers() {
   ipcMain.handle('morphlyvc:stop', (event) => {
     requireMainRenderer(event);
     return runtime().stop();
+  });
+  ipcMain.handle('morphlyvc:engine-status', (event) => {
+    requireMainRenderer(event);
+    const dataRoot = getVoiceEngineDataRoot();
+    return {
+      installed: isVoiceEngineInstalled(dataRoot),
+      installPath: getVoiceEnginePath(dataRoot),
+      available: isPackagedRuntime,
+    };
+  });
+  ipcMain.handle('morphlyvc:install-engine', (event) => {
+    requireMainRenderer(event);
+    if (voiceEngineInstallPromise) {
+      return voiceEngineInstallPromise;
+    }
+
+    const dataRoot = getVoiceEngineDataRoot();
+    voiceEngineInstallPromise = (async () => {
+      try {
+        const result = await installVoiceEngine({
+          installRoot: dataRoot,
+          tempRoot: path.join(app.getPath('temp'), 'morphly-voice-engine'),
+          onProgress: (progress) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('morphlyvc:install-progress', progress);
+            }
+          },
+        });
+
+        // Recreate the controller so it serves the freshly installed runtime.
+        if (isPackagedRuntime) {
+          morphlyVcRuntime?.shutdown?.();
+          morphlyVcRuntime = createMorphlyVcController();
+        }
+
+        return { success: true, ...result };
+      } catch (error) {
+        return {
+          success: false,
+          error: error instanceof Error
+            ? error.message
+            : 'Morphly could not install the voice engine.',
+        };
+      } finally {
+        voiceEngineInstallPromise = null;
+      }
+    })();
+
+    return voiceEngineInstallPromise;
   });
   ipcMain.handle('virtual-microphone:detect', async (event) => {
     requireMainRenderer(event);

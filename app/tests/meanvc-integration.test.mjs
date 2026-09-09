@@ -90,12 +90,43 @@ test('the desktop release bundles, warms, and controls MorphlyVC without localho
   assert.match(panel, /requestMorphlyVc/);
   assert.match(runtimeController, /bundledRuntimeRoot = path\.join/);
 
-  const runtimeResource = packageConfig.build.extraResources.find(
-    ({ to }) => to === 'morphlyvc/runtime-40ms',
-  );
-  assert.equal(runtimeResource.from, '.meanvc/runtime-40ms');
-  assert.doesNotMatch(runtimeResource.filter.join('\n'), /!\*\*\/\*\.pyc/);
   assert.match(packageConfig.build.files.join('\n'), /server\/meanvc-runtime\.js/);
+});
+
+test('the voice engine is an optional download instead of a bundled 2.8 GB resource', () => {
+  const extras = packageConfig.build.extraResources;
+
+  // The Python runtime must not ship inside the installer any more.
+  assert.equal(
+    extras.some(({ to }) => String(to).startsWith('morphlyvc/runtime-40ms')),
+    false,
+  );
+  // The small Python bridge still ships so the engine can be launched.
+  assert.ok(extras.some(({ to }) => to === 'morphlyvc/meanvc-realtime.py'));
+
+  const installerSource = fs.readFileSync(
+    path.join(appDirectory, 'electron/voice-engine-installer.js'),
+    'utf8',
+  );
+  assert.match(installerSource, /morphlyvc-runtime-40ms\.zip/);
+  assert.match(installerSource, /releases\/latest\/download/);
+  assert.match(installerSource, /sha256/);
+
+  // Electron must expose install status/progress to the renderer.
+  assert.match(electronMain, /morphlyvc:engine-status/);
+  assert.match(electronMain, /morphlyvc:install-engine/);
+  assert.match(electronMain, /morphlyvc:install-progress/);
+  assert.match(electronPreload, /morphlyvc:engine-status/);
+  assert.match(electronPreload, /morphlyvc:install-engine/);
+  assert.match(electronPreload, /morphlyvc:install-progress/);
+
+  // A user-installed runtime under userData wins over any bundled copy.
+  assert.match(electronMain, /resolveVoiceEngineRuntimeRoot/);
+  assert.match(electronMain, /isVoiceEngineInstalled\(dataRoot\)/);
+
+  // The panel offers the install affordance when the engine is missing.
+  assert.match(panel, /Install voice engine/);
+  assert.match(panel, /morphlyvc:engine-status/);
 });
 
 test('virtual microphone routing detects VB-CABLE and provides compliant setup guidance', () => {

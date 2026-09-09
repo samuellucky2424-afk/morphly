@@ -1,8 +1,8 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.4",
-  "description": "Morphly Desktop with bundled MorphlyVC voice engine and virtual camera support.",
+  "version": "2.5.5",
+  "description": "Morphly Desktop with virtual camera support and an optional on-demand MorphlyVC voice engine.",
   "author": "Morphly",
   "repository": {
     "type": "git",
@@ -60,15 +60,6 @@
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
-      },
-      {
-        "from": ".meanvc/runtime-40ms",
-        "to": "morphlyvc/runtime-40ms",
-        "filter": [
-          "**/*",
-          "!PySide6{,/**/*}",
-          "!shiboken6{,/**/*}"
-        ]
       },
       {
         "from": "server/meanvc-realtime.py",
