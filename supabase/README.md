@@ -2,6 +2,22 @@
 
 ## Overview
 
+### Repair: "Failed to close previous sessions"
+
+If `finalize_ai_session` returns `Service role required` even with the server's
+service key, apply
+[`20260909120000_fix_session_billing_role_check.sql`](migrations/20260909120000_fix_session_billing_role_check.sql)
+in the Supabase SQL Editor for the API's project. It repairs both billing RPCs
+to use `auth.role()` instead of the obsolete individual JWT setting. The repair
+is transactional, can be rerun, and does not change wallet balances or session
+data. Existing service-role-only permissions are preserved.
+
+Pushing to Git or deploying the web API does not run SQL migrations. Apply this
+database repair before retrying Go live; no desktop rebuild is needed. If the
+RPCs are absent, apply `20260908120000_add_atomic_session_billing_functions.sql`
+first. Run the regression checks with
+`node --experimental-strip-types --test app/tests/session-billing-rpc.test.mjs app/tests/usage-security.test.mjs`.
+
 This document describes the credit-based billing system for Morphly, which replaces the previous Naira-based wallet system with a more flexible credit architecture.
 
 ## Architecture

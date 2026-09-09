@@ -106,7 +106,7 @@ DECLARE
   v_credit_delta INTEGER;
   v_balance_after INTEGER;
 BEGIN
-  IF current_setting('request.jwt.claim.role', true) IS DISTINCT FROM 'service_role' THEN
+  IF auth.role() IS DISTINCT FROM 'service_role' THEN
     RAISE EXCEPTION 'Service role required';
   END IF;
 
@@ -228,7 +228,7 @@ DECLARE
   v_credit_delta INTEGER;
   v_balance_after INTEGER;
 BEGIN
-  IF current_setting('request.jwt.claim.role', true) IS DISTINCT FROM 'service_role' THEN
+  IF auth.role() IS DISTINCT FROM 'service_role' THEN
     RAISE EXCEPTION 'Service role required';
   END IF;
 

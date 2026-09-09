@@ -42,7 +42,7 @@ test('AI usage is debited atomically and written to one durable ledger row per s
 });
 
 test('AI billing RPCs are restricted to the service role', () => {
-  assert.match(migration, /current_setting\('request\.jwt\.claim\.role', true\) IS DISTINCT FROM 'service_role'/);
+  assert.match(migration, /auth\.role\(\) IS DISTINCT FROM 'service_role'/);
   assert.match(
     migration,
     /REVOKE ALL ON FUNCTION public\.record_ai_session_usage\(UUID, UUID, INTEGER\)[\s\S]*FROM PUBLIC, anon, authenticated/,
