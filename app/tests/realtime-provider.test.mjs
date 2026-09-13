@@ -52,7 +52,7 @@ test('dashboard exposes a compact provider switch and locks it during active ses
   assert.match(dashboard, /realtimeSession\.set\(\{/);
   assert.doesNotMatch(dashboard, /initialState,/);
   assert.match(dashboard, /Promise\.race\(\[initialUpdatePromise, firstFramePromise\]\)/);
-  assert.match(dashboard, /HD 720p/);
+  assert.match(dashboard, /HD 1472×832/);
   assert.match(dashboard, /const PRO_CAMERA_FPS = 30/);
   assert.match(dashboard, /buildProviderVideoInputConstraints\(attemptedMode, provider/);
 });

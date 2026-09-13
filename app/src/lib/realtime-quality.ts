@@ -31,10 +31,12 @@ export const QUALITY_MODE_PROFILES: Record<QualityMode, QualityProfile> = {
     maxKbps: 1000,
     contentHint: 'detail',
   },
+  // Matches the Xmax SDK's own desktop camera profile: 1472x832 publishes a
+  // clean 16:9 frame without the upscaling blur a 1280x720 capture can show.
   hd: {
-    label: 'Plus 720p',
-    width: 1280,
-    height: 720,
+    label: 'Plus HD',
+    width: 1472,
+    height: 832,
     targetFps: 24,
     maxFps: 24,
     maxKbps: 1200,

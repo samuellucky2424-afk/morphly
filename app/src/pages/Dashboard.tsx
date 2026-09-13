@@ -3285,7 +3285,7 @@ function Dashboard() {
             >
               <option value="fast">Fast Mode</option>
               <option value="balanced">Balanced Mode</option>
-              <option value="hd">HD 720p</option>
+              <option value="hd">HD 1472×832</option>
             </select>
             </div>
 
