@@ -14,6 +14,9 @@ import {
   XMAX_VIBEX_PROMPT,
   XMAX_REALTIME_MODEL,
 } from '@/lib/xmax-realtime';
+import { QUALITY_MODE_PROFILES } from '@/lib/realtime-quality';
+
+const DEFAULT_CAMERA_PROFILE = QUALITY_MODE_PROFILES.hd;
 
 export { BACKGROUND_PRESETS, buildXmaxTransformPrompt } from '@/lib/background-presets';
 export type { BackgroundPreset } from '@/lib/background-presets';
@@ -96,9 +99,9 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
 
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 24, max: 24 },
+          width: { ideal: DEFAULT_CAMERA_PROFILE.width },
+          height: { ideal: DEFAULT_CAMERA_PROFILE.height },
+          frameRate: { ideal: DEFAULT_CAMERA_PROFILE.targetFps, max: DEFAULT_CAMERA_PROFILE.maxFps },
         },
         audio: false,
       });
@@ -120,11 +123,11 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
       const realtimeSession = await client.realtime.connect(stream, {
         model,
         stream: {
-          width: 1280,
-          height: 720,
-          fps: 24,
-          maxKbps: 1200,
-          contentHint: 'motion',
+          width: DEFAULT_CAMERA_PROFILE.width,
+          height: DEFAULT_CAMERA_PROFILE.height,
+          fps: DEFAULT_CAMERA_PROFILE.targetFps,
+          maxKbps: DEFAULT_CAMERA_PROFILE.maxKbps,
+          contentHint: DEFAULT_CAMERA_PROFILE.contentHint,
         },
         audio: { publish: false, subscribe: false },
         context: { prompt: initialPrompt },
