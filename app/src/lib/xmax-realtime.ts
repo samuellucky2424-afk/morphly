@@ -20,12 +20,6 @@ export const XMAX_PASSTHROUGH_PROMPT =
 // the restyle of the subject and background together.
 export const XMAX_VIBEX_PROMPT = '视频风格变为参考图指定的风格';
 
-// Appended to every X2 prompt. Realtime restyling re-generates each frame, so
-// without an explicit temporal instruction the background drifts and wobbles as
-// the subject moves.
-export const XMAX_STABILITY_GUIDANCE =
-  'Keep the background stable and consistent across frames. Do not shift, warp, jitter, or flicker the background when the subject moves.';
-
 const XMAX_REFERENCE_MIME_TYPES = new Set([
   'image/jpeg',
   'image/png',
@@ -37,7 +31,7 @@ export function buildXmaxRealtimeContext(
   refImageUrl?: string | null,
 ): XmaxRealtimeContext {
   return {
-    prompt: `${transform.prompt.trim() || XMAX_VIBEX_PROMPT} ${XMAX_STABILITY_GUIDANCE}`,
+    prompt: transform.prompt.trim() || XMAX_VIBEX_PROMPT,
     refImageUrl: transform.image ? refImageUrl ?? null : null,
   };
 }

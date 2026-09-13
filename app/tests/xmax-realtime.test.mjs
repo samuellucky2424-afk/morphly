@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url';
 import {
   XMAX_PASSTHROUGH_PROMPT,
   XMAX_VIBEX_PROMPT,
-  XMAX_STABILITY_GUIDANCE,
   XMAX_REALTIME_MODEL,
   buildXmaxRealtimeContext,
   getXmaxRealtimeUserMessage,
@@ -26,16 +25,15 @@ test('an empty transform defaults to the VibeX restyle prompt', () => {
     prompt: '   ',
     image: null,
   }), {
-    prompt: `${XMAX_VIBEX_PROMPT} ${XMAX_STABILITY_GUIDANCE}`,
+    prompt: XMAX_VIBEX_PROMPT,
     refImageUrl: null,
   });
 });
 
-test('every prompt carries the temporal stability guidance that stops background wobble', () => {
-  assert.match(XMAX_STABILITY_GUIDANCE, /stable and consistent across frames/i);
-  assert.match(
+test('prompts are sent verbatim without any appended guidance', () => {
+  assert.equal(
     buildXmaxRealtimeContext({ prompt: 'Restyle as anime', image: null }).prompt,
-    /Restyle as anime[\s\S]*stable and consistent across frames/i,
+    'Restyle as anime',
   );
 });
 
@@ -56,7 +54,7 @@ test('a prompt and uploaded reference URL are sent atomically', () => {
     prompt: '  Transform into this character  ',
     image,
   }, 'https://cdn.example/reference.jpg'), {
-    prompt: `Transform into this character ${XMAX_STABILITY_GUIDANCE}`,
+    prompt: 'Transform into this character',
     refImageUrl: 'https://cdn.example/reference.jpg',
   });
 });
