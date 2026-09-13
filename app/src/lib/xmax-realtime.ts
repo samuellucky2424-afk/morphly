@@ -15,10 +15,10 @@ export const XMAX_REFERENCE_MAX_DIMENSION = 2048;
 export const XMAX_PASSTHROUGH_PROMPT =
   'Preserve the person, clothing, background, lighting, framing, and natural camera appearance exactly as the input.';
 // Default prompt for every Xmax X2.0 realtime call (all platforms). This is the
-// documented VibeX behavior expressed as a prompt, so no `mode=VibeX` model
-// parameter is ever needed: one style reference image drives the restyle.
-export const XMAX_VIBEX_PROMPT =
-  'Restyle the subject and background together using a selected visual aesthetic. The video style changes to the style specified in the reference image.';
+// vendor's documented VibeX preset prompt, used verbatim (Xmax's own wording)
+// so no `mode=VibeX` parameter is ever needed: one style reference image drives
+// the restyle of the subject and background together.
+export const XMAX_VIBEX_PROMPT = '视频风格变为参考图指定的风格';
 
 // Appended to every X2 prompt. Realtime restyling re-generates each frame, so
 // without an explicit temporal instruction the background drifts and wobbles as
