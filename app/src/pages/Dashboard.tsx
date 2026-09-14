@@ -23,10 +23,10 @@ import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import {
-  CREDITS_PER_SECOND,
   CREDITS_PER_SECOND_BLENDED,
   CREDITS_PER_SECOND_STANDARD,
   getCreditRatePerSecond,
+  getProviderCreditMultiplier,
 } from '@/lib/billing';
 import {
   getInstallationId,
@@ -443,6 +443,7 @@ function Dashboard() {
     decart: null,
   });
   const [isUpdaterBlocking, setIsUpdaterBlocking] = useState(false);
+  const [isProRateNoticeVisible, setIsProRateNoticeVisible] = useState(false);
   const [isTourRunning, setIsTourRunning] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isValidatingImage, setIsValidatingImage] = useState(false);
@@ -454,7 +455,9 @@ function Dashboard() {
   const currentCreditRate = getCreditRatePerSecond(
     Boolean(referenceImage),
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
+    selectedProvider,
   );
+  const minCreditsToStart = getCreditRatePerSecond(false, false, selectedProvider);
 
   const activePrompt = buildRealtimeTransformPrompt(
     selectedProvider,
@@ -532,6 +535,7 @@ function Dashboard() {
   const activeBgPresetRef = useRef(activeBgPreset);
   const customBgPromptRef = useRef(customBgPrompt);
   const isBlendedModeRef = useRef(isBlendedMode);
+  const selectedProviderRef = useRef(selectedProvider);
   const referenceImageRef = useRef(referenceImage);
   const isStreamingRef = useRef(isStreaming);
   const hasRemoteFrameRef = useRef(hasRemoteFrame);
@@ -563,6 +567,18 @@ function Dashboard() {
   useEffect(() => {
     isBlendedModeRef.current = isBlendedMode;
   }, [isBlendedMode]);
+
+  useEffect(() => {
+    selectedProviderRef.current = selectedProvider;
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    if (!isProRateNoticeVisible) return;
+    const dismissTimer = window.setTimeout(() => {
+      setIsProRateNoticeVisible(false);
+    }, 8000);
+    return () => window.clearTimeout(dismissTimer);
+  }, [isProRateNoticeVisible]);
 
   useEffect(() => {
     referenceImageRef.current = referenceImage;
@@ -797,9 +813,11 @@ function Dashboard() {
       // In simultaneous Avatar + Background blending mode, users are charged 4 credits/sec
       // (2x multiplier on 2 credits/sec base unit).
       // In single mode (Avatar only or Background only), charge normal 2 credits/sec.
-      const billingMultiplier = isBlendedModeRef.current
+      // The Pro engine bills at double the Plus rate (4 credits/sec standard, 8 blended).
+      const providerMultiplier = getProviderCreditMultiplier(selectedProviderRef.current);
+      const billingMultiplier = (isBlendedModeRef.current
         ? CREDITS_PER_SECOND_BLENDED / CREDITS_PER_SECOND_STANDARD
-        : 1;
+        : 1) * providerMultiplier;
       pendingBillableSecondsRef.current += Math.min(
         secondsDelta,
         60,
@@ -2661,7 +2679,7 @@ function Dashboard() {
       return 'Upload a reference image before starting.';
     }
     if (isValidatingImage) return 'Morphly is checking the reference image.';
-    if (credits < CREDITS_PER_SECOND) {
+    if (credits < minCreditsToStart) {
       return 'You do not have enough credits. Buy credits to continue.';
     }
     if (!isEngineReady) return engineLoadError || 'The Morphly engine is not ready yet.';
@@ -2686,7 +2704,7 @@ function Dashboard() {
     if (!isEngineReady) {
       throw new Error(engineLoadError || 'The Morphly engine is not ready yet.');
     }
-    if (credits < CREDITS_PER_SECOND) {
+    if (credits < minCreditsToStart) {
       throw new Error('You do not have enough credits. Buy credits to continue.');
     }
     if (isUpdaterBlocking) {
@@ -2984,8 +3002,12 @@ function Dashboard() {
   const handleProviderChange = (provider: string) => {
     if (isLoading || isStreaming) return;
     setDashboardError(null);
-    setSelectedProvider(resolveRealtimeProvider(provider));
+    const nextProvider = resolveRealtimeProvider(provider);
+    setSelectedProvider(nextProvider);
     setRuntimeModeCap('hd');
+    if (nextProvider === DECART_REALTIME_PROVIDER) {
+      setIsProRateNoticeVisible(true);
+    }
   };
 
   const handleFullScreenToggle = async () => {
@@ -3144,6 +3166,43 @@ function Dashboard() {
                   onClick={() => setDashboardError(null)}
                   aria-label="Dismiss error"
                   title="Dismiss error"
+                  className="grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <X aria-hidden="true" className="size-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isProRateNoticeVisible && (
+          <div className="pointer-events-none absolute inset-x-0 top-16 z-30 flex justify-center px-4">
+            <div
+              data-testid="pro-rate-notice"
+              role="alert"
+              aria-live="assertive"
+              aria-atomic="true"
+              aria-labelledby="pro-rate-notice-title"
+              aria-describedby="pro-rate-notice-message"
+              className="pointer-events-auto flex w-full max-w-xl items-start gap-3 rounded-lg border border-warning/25 bg-background p-3.5 text-foreground shadow-[0_18px_45px_rgba(0,0,0,0.32)]"
+            >
+              <span className="grid size-10 shrink-0 place-items-center rounded-md bg-warning-soft text-warning">
+                <CircleAlert aria-hidden="true" className="size-5" />
+              </span>
+              <div className="min-w-0 flex-1 py-0.5">
+                <h2 id="pro-rate-notice-title" className="text-sm font-semibold leading-5 text-foreground">
+                  Pro uses more credits
+                </h2>
+                <p id="pro-rate-notice-message" className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Switching to Pro increases the amount of credits being deducted. Pro deducts {getCreditRatePerSecond(false, false, DECART_REALTIME_PROVIDER)} credits per second — double the Plus rate ({getCreditRatePerSecond(false, false, DEFAULT_REALTIME_PROVIDER)} credits per second).
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsProRateNoticeVisible(false)}
+                  aria-label="Dismiss Pro rate notice"
+                  title="Dismiss Pro rate notice"
                   className="grid size-11 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   <X aria-hidden="true" className="size-4" />
