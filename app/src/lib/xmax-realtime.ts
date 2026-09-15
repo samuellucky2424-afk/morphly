@@ -15,10 +15,10 @@ export const XMAX_REFERENCE_MAX_DIMENSION = 2048;
 export const XMAX_PASSTHROUGH_PROMPT =
   'Preserve the person, clothing, background, lighting, framing, and natural camera appearance exactly as the input.';
 // Default prompt for every Xmax X2.0 realtime call (all platforms). This is the
-// vendor's documented VibeX preset prompt, used verbatim (Xmax's own wording)
-// so no `mode=VibeX` parameter is ever needed: one style reference image drives
-// the restyle of the subject and background together.
-export const XMAX_VIBEX_PROMPT = '视频风格变为参考图指定的风格';
+// vendor's documented CharX preset prompt, used verbatim (Xmax's own wording)
+// so no `mode=CharX` parameter is ever needed: one character reference image
+// drives the substitution of the person in the video.
+export const XMAX_CHARX_PROMPT = '视频中角色替换成参考图中角色';
 
 const XMAX_REFERENCE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -31,7 +31,7 @@ export function buildXmaxRealtimeContext(
   refImageUrl?: string | null,
 ): XmaxRealtimeContext {
   return {
-    prompt: transform.prompt.trim() || XMAX_VIBEX_PROMPT,
+    prompt: transform.prompt.trim() || XMAX_CHARX_PROMPT,
     refImageUrl: transform.image ? refImageUrl ?? null : null,
   };
 }

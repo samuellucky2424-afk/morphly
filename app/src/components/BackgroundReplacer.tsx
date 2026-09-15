@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import { BACKGROUND_PRESETS } from '@/lib/background-presets';
 import {
-  XMAX_VIBEX_PROMPT,
+  XMAX_CHARX_PROMPT,
   XMAX_REALTIME_MODEL,
 } from '@/lib/xmax-realtime';
 import { QUALITY_MODE_PROFILES } from '@/lib/realtime-quality';
@@ -118,7 +118,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
       const initialPreset = BACKGROUND_PRESETS.find((p) => p.id === activePreset);
       const initialPrompt = customPrompt.trim()
         || initialPreset?.prompt
-        || XMAX_VIBEX_PROMPT;
+        || XMAX_CHARX_PROMPT;
 
       const realtimeSession = await client.realtime.connect(stream, {
         model,
@@ -177,7 +177,7 @@ export function BackgroundReplacer({ onStreamStateChange, className = '' }: Back
       try {
         setStatusMessage(`Switching to ${preset.label}...`);
         await realtimeSessionRef.current.set({
-          prompt: preset.prompt || XMAX_VIBEX_PROMPT,
+          prompt: preset.prompt || XMAX_CHARX_PROMPT,
           refImageUrl: null,
         });
         setStatusMessage('Live');

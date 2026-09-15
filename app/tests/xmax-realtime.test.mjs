@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   XMAX_PASSTHROUGH_PROMPT,
-  XMAX_VIBEX_PROMPT,
+  XMAX_CHARX_PROMPT,
   XMAX_REALTIME_MODEL,
   buildXmaxRealtimeContext,
   getXmaxRealtimeUserMessage,
@@ -20,12 +20,12 @@ test('Xmax realtime uses the documented X2.0 model', () => {
   assert.equal(XMAX_REALTIME_MODEL, 'x2.0');
 });
 
-test('an empty transform defaults to the VibeX restyle prompt', () => {
+test('an empty transform defaults to the CharX substitution prompt', () => {
   assert.deepEqual(buildXmaxRealtimeContext({
     prompt: '   ',
     image: null,
   }), {
-    prompt: XMAX_VIBEX_PROMPT,
+    prompt: XMAX_CHARX_PROMPT,
     refImageUrl: null,
   });
 });
@@ -37,13 +37,13 @@ test('prompts are sent verbatim without any appended guidance', () => {
   );
 });
 
-test('the default Original path restyles with VibeX, even with a style image uploaded', () => {
-  // The uploaded image is the VibeX style image, so the Original preset must
-  // never fall back to avatar substitution.
+test('the default Original path substitutes with CharX, even with a character image uploaded', () => {
+  // The uploaded image is the CharX character image, so the Original preset must
+  // keep using the vendor's CharX prompt verbatim.
   const originalBranch = backgroundPresets
     .match(/if \(preset\.id === 'original' \|\| !preset\.prompt\) \{[\s\S]*?\n  \}/);
   assert.ok(originalBranch, 'the Original preset branch exists');
-  assert.match(originalBranch[0], /return XMAX_VIBEX_PROMPT;/);
+  assert.match(originalBranch[0], /return XMAX_CHARX_PROMPT;/);
   assert.doesNotMatch(originalBranch[0], /Replace only the person/);
 });
 

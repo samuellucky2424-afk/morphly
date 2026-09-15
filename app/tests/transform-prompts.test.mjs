@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BACKGROUND_PRESETS, buildRealtimeTransformPrompt } from '../src/lib/background-presets.ts';
-import { XMAX_VIBEX_PROMPT } from '../src/lib/xmax-realtime.ts';
+import { XMAX_CHARX_PROMPT } from '../src/lib/xmax-realtime.ts';
 
 for (const preset of BACKGROUND_PRESETS) {
-  test(`Plus uses the reference as a style image for ${preset.id}`, () => {
+  test(`Plus uses the reference as a character image for ${preset.id}`, () => {
     const prompt = buildRealtimeTransformPrompt('xmax', true, preset.id);
-    assert.ok(prompt.startsWith(XMAX_VIBEX_PROMPT));
+    assert.ok(prompt.startsWith(XMAX_CHARX_PROMPT));
     assert.doesNotMatch(prompt, /substitute|replace only the person|preserve the reference person's identity/i);
     if (preset.prompt) assert.ok(prompt.includes(preset.prompt));
   });
@@ -23,7 +23,7 @@ test('custom backgrounds retain the selected mode and trim the background prefix
   const custom = '  Change the background to a library  ';
   const plus = buildRealtimeTransformPrompt('xmax', true, 'original', custom);
   const pro = buildRealtimeTransformPrompt('decart', true, 'original', custom);
-  assert.ok(plus.startsWith(XMAX_VIBEX_PROMPT));
+  assert.ok(plus.startsWith(XMAX_CHARX_PROMPT));
   assert.match(plus, /Change the background to a library\./);
   assert.doesNotMatch(plus, /replace only|identity/i);
   assert.match(pro, /Replace only the person in the video with the person in the reference image/);
@@ -45,7 +45,7 @@ test('Pro without an image preserves the camera or applies only the background',
 
 test('switching modes selects distinct defaults, including unknown presets', () => {
   for (const preset of ['original', 'unknown']) {
-    assert.equal(buildRealtimeTransformPrompt('xmax', true, preset), XMAX_VIBEX_PROMPT);
+    assert.equal(buildRealtimeTransformPrompt('xmax', true, preset), XMAX_CHARX_PROMPT);
     assert.match(buildRealtimeTransformPrompt('decart', true, preset), /^Substitute the character/);
   }
 });

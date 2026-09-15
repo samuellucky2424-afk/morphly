@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 import { Briefcase, Camera, Home, Trees } from 'lucide-react';
-import { XMAX_VIBEX_PROMPT } from './xmax-realtime.ts';
+import { XMAX_CHARX_PROMPT } from './xmax-realtime.ts';
 import type { RealtimeProvider } from './realtime-provider';
 
 export interface BackgroundPreset {
@@ -63,16 +63,16 @@ export function buildXmaxTransformPrompt(
   if (customTrimmed) {
     const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
     const backgroundPrompt = `Change the background to ${cleanCustom}.`;
-    return hasReferenceImage ? `${XMAX_VIBEX_PROMPT} ${backgroundPrompt}` : backgroundPrompt;
+    return hasReferenceImage ? `${XMAX_CHARX_PROMPT} ${backgroundPrompt}` : backgroundPrompt;
   }
 
   const preset = BACKGROUND_PRESETS.find((item) => item.id === presetId) || BACKGROUND_PRESETS[0];
   if (preset.id === 'original' || !preset.prompt) {
-    // Plus treats the reference as a style image in every background setting.
-    return XMAX_VIBEX_PROMPT;
+    // Plus treats the reference as a character image in every background setting.
+    return XMAX_CHARX_PROMPT;
   }
 
-  return hasReferenceImage ? `${XMAX_VIBEX_PROMPT} ${preset.prompt}` : preset.prompt;
+  return hasReferenceImage ? `${XMAX_CHARX_PROMPT} ${preset.prompt}` : preset.prompt;
 }
 
 export function buildDecartTransformPrompt(
