@@ -165,7 +165,7 @@ const AdminAPI = {
       window.morphlyAccessToken = accessToken || null;
     }
     if (!accessToken) throw new Error("Your admin session has expired.");
-    const response = await fetch(`${CONFIG.apiBase}${path}`, { ...options, cache: "no-store", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) } });
+    const response = await fetch(`${CONFIG.apiBase}${path}`, { ...options, signal: options.signal || AbortSignal.timeout(35000), cache: "no-store", headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}`, ...(options.headers || {}) } });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || data.message || `Request failed (${response.status})`);
     return data;
@@ -1043,7 +1043,7 @@ function bindEvents() {
     button.disabled = true;
     try {
       await AdminAPI.disqualifyReferral(referral.id, reason.trim());
-      await loadLiveData();
+      await loadLiveData({ force: true });
       renderAll();
       showToast("Referral disqualified and recorded in the audit log.");
     } catch (error) {
@@ -1074,7 +1074,35 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeUserDrawer(); });
 }
 
-async function loadLiveData() {
+let liveDataPromise = null;
+let reloadRequested = false;
+let loadingScope = null;
+
+function reportScope() {
+  return JSON.stringify([state.period, state.platform, state.source]);
+}
+
+function loadLiveData({ force = false } = {}) {
+  if (liveDataPromise) {
+    if (force || loadingScope !== reportScope()) reloadRequested = true;
+    return liveDataPromise;
+  }
+  liveDataPromise = (async () => {
+    let result;
+    do {
+      reloadRequested = false;
+      loadingScope = reportScope();
+      result = await loadLiveDataPass(loadingScope);
+    } while (reloadRequested);
+    return result;
+  })().finally(() => {
+    liveDataPromise = null;
+    loadingScope = null;
+  });
+  return liveDataPromise;
+}
+
+async function loadLiveDataPass(scope) {
   const definitions = [
     { key: "overview", path: scopedEndpoint(CONFIG.endpoints.overview) },
     { key: "users", path: scopedEndpoint(CONFIG.endpoints.users) },
@@ -1085,20 +1113,52 @@ async function loadLiveData() {
     { key: "logs", path: scopedEndpoint(CONFIG.endpoints.logs) },
     { key: "audit", path: CONFIG.endpoints.audit }
   ];
-  const requests = await Promise.allSettled(definitions.map((definition) => AdminAPI.request(definition.path)));
-  const results = Object.fromEntries(definitions.map((definition, index) => [definition.key, requests[index]]));
-  state.loadErrors = Object.fromEntries(
-    definitions
-      .filter((definition) => results[definition.key].status === "rejected")
-      .map((definition) => [definition.key, results[definition.key].reason?.message || "Unknown API error"])
-  );
+  state.loadErrors = {};
+  let next = 0;
+  let completed = 0;
+  const refreshButton = $("#refreshDataButton");
+  refreshButton.disabled = true;
+  $("#lastUpdated").textContent = "Loading reports...";
+  // Each report already fans out into multiple database queries. Limit the
+  // browser to two reports and paint each result as soon as it arrives.
+  async function worker() {
+    while (next < definitions.length && scope === reportScope()) {
+      const definition = definitions[next++];
+      try {
+        const value = await AdminAPI.request(definition.path);
+        if (scope !== reportScope()) continue;
+        applyLiveResults({ [definition.key]: { status: "fulfilled", value } });
+        state.loadedAt = new Date();
+      } catch (error) {
+        if (scope !== reportScope()) continue;
+        state.loadErrors[definition.key] = error.message || "Unknown API error";
+      }
+      completed += 1;
+      if (scope !== reportScope()) continue;
+      renderAll();
+      $("#lastUpdated").textContent = `Loading reports (${completed}/${definitions.length})...`;
+      updateLoadWarning();
+    }
+  }
+  try {
+    await Promise.all([worker(), worker()]);
+    return { failures: Object.keys(state.loadErrors).length };
+  } finally {
+    refreshButton.disabled = false;
+    if (scope === reportScope()) renderAll();
+  }
+}
 
+function updateLoadWarning() {
   const warning = $("#liveDataWarning");
   const failures = Object.entries(state.loadErrors);
   warning.hidden = failures.length === 0;
   $("#liveDataWarningText").textContent = failures.map(([key, message]) => key + ": " + message).join(" | ");
 
-  if (results.users.status === "fulfilled") {
+}
+
+function applyLiveResults(results) {
+  if (results.users?.status === "fulfilled") {
     const records = Array.isArray(results.users.value?.users) ? results.users.value.users : [];
     state.users = records.map((user) => {
       const createdAt = user.createdAt || user.created_at || null;
@@ -1124,7 +1184,7 @@ async function loadLiveData() {
     });
   }
 
-  if (results.usage.status === "fulfilled") {
+  if (results.usage?.status === "fulfilled") {
     const usage = results.usage.value || {};
     state.usage = {
       ...usage,
@@ -1135,11 +1195,11 @@ async function loadLiveData() {
     };
   }
 
-  if (results.referrals.status === "fulfilled") {
+  if (results.referrals?.status === "fulfilled") {
     state.referralData = results.referrals.value || { referrals: [], totals: {}, audit: [] };
   }
 
-  if (results.packages.status === "fulfilled") {
+  if (results.packages?.status === "fulfilled") {
     const records = Array.isArray(results.packages.value?.packages) ? results.packages.value.packages : [];
     state.packages = records.map((pkg) => ({
       ...pkg,
@@ -1153,19 +1213,19 @@ async function loadLiveData() {
     }));
   }
 
-  if (results.transactions.status === "fulfilled") {
+  if (results.transactions?.status === "fulfilled") {
     const records = Array.isArray(results.transactions.value?.transactions) ? results.transactions.value.transactions : [];
     transactions = records.map(normalizeTransaction)
       .sort((left, right) => (parseTimestamp(right.date) || 0) - (parseTimestamp(left.date) || 0));
   }
 
-  if (results.logs.status === "fulfilled") {
+  if (results.logs?.status === "fulfilled") {
     const records = Array.isArray(results.logs.value?.logs) ? results.logs.value.logs : [];
     systemLogs = records.map(normalizeSystemLog)
       .sort((left, right) => (parseTimestamp(right.timestamp) || 0) - (parseTimestamp(left.timestamp) || 0));
   }
 
-  if (results.audit.status === "fulfilled") {
+  if (results.audit?.status === "fulfilled") {
     const records = Array.isArray(results.audit.value?.entries) ? results.audit.value.entries : [];
     state.audit = records.map((entry) => ({
       ...entry,
@@ -1177,7 +1237,7 @@ async function loadLiveData() {
     }));
   }
 
-  if (results.overview.status === "fulfilled") {
+  if (results.overview?.status === "fulfilled") {
     const overview = results.overview.value || {};
     Object.assign(baseMetrics, {
       downloads: safeNumber(overview.downloads),
@@ -1199,25 +1259,27 @@ async function loadLiveData() {
     });
   }
 
-  if (requests.some((result) => result.status === "fulfilled")) state.loadedAt = new Date();
-  return { failures: failures.length };
 }
 async function startAuthenticatedApp() {
   $("#loginGate").hidden = true;
   $("#loginGate").style.display = "none";
   $("#adminApp").hidden = false;
-  bindEvents();
+  if (!startAuthenticatedApp.bound) {
+    bindEvents();
+    startAuthenticatedApp.bound = true;
+  }
   await loadLiveData();
   renderAll();
   window.clearInterval(startAuthenticatedApp.refreshTimer);
   startAuthenticatedApp.refreshTimer = window.setInterval(async () => {
+    if (document.hidden || liveDataPromise) return;
     try { await loadLiveData(); renderAll(); }
     catch (error) { console.error("Automatic live-data refresh failed", error); }
   }, 30000);
 }
 
 async function init() {
-  const response = await fetch(`${CONFIG.apiBase}${CONFIG.endpoints.config}`);
+  const response = await fetch(`${CONFIG.apiBase}${CONFIG.endpoints.config}`, { signal: AbortSignal.timeout(15000) });
   const config = await response.json();
   if (!config.supabaseUrl || !config.supabaseAnonKey) throw new Error("Supabase public configuration is missing.");
   window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
@@ -1231,13 +1293,31 @@ async function init() {
   if (session) {
     try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (me.isAdmin) { state.currentAdmin = me; await startAuthenticatedApp(); return; } } catch (error) { $("#loginError").textContent = error.message; }
   }
+  const loginButton = $('#adminLoginForm button[type="submit"]');
+  loginButton.disabled = false;
+  loginButton.textContent = "Sign in";
   $("#adminLoginForm").addEventListener("submit", async (event) => {
-    event.preventDefault(); $("#loginError").textContent = "";
-    const { data, error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value, password: $("#adminPassword").value });
-    if (error) { $("#loginError").textContent = error.message; return; }
-    window.morphlyAccessToken = data.session?.access_token || null;
-    try { const me = await AdminAPI.request(CONFIG.endpoints.me); if (!me.isAdmin) throw new Error("Admin access required."); state.currentAdmin = me; await startAuthenticatedApp(); }
-    catch (appError) { $("#loginError").textContent = appError.message; }
+    event.preventDefault();
+    if (loginButton.disabled) return;
+    loginButton.disabled = true;
+    loginButton.textContent = "Signing in...";
+    $("#adminLoginForm").setAttribute("aria-busy", "true");
+    $("#loginError").textContent = "";
+    try {
+      const { data, error } = await window.morphlySupabase.auth.signInWithPassword({ email: $("#adminEmail").value.trim().toLowerCase(), password: $("#adminPassword").value });
+      if (error) throw error;
+      window.morphlyAccessToken = data.session?.access_token || null;
+      const me = await AdminAPI.request(CONFIG.endpoints.me);
+      if (!me.isAdmin) throw new Error("Admin access required.");
+      state.currentAdmin = me;
+      await startAuthenticatedApp();
+    } catch (error) {
+      $("#loginError").textContent = error.message || "Unable to sign in. Please try again.";
+    } finally {
+      loginButton.disabled = false;
+      loginButton.textContent = "Sign in";
+      $("#adminLoginForm").setAttribute("aria-busy", "false");
+    }
   });
   $("#adminForgotPassword").addEventListener("click", async () => {
     const button = $("#adminForgotPassword");

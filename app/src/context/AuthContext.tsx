@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getDefaultRoute, ROUTES } from '@/lib/routes';
 import { apiFetch } from '@/lib/api-client';
@@ -44,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const hydrationRef = useRef<{ token: string; promise: Promise<User> } | null>(null);
 
   const getAdminState = useCallback(async (accessToken?: string | null) => {
     if (!accessToken) {
@@ -52,6 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       const response = await apiFetch('/admin-me', {
+        signal: AbortSignal.timeout(15000),
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
@@ -72,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       };
     } catch (adminError) {
       console.warn('Failed to resolve admin access:', adminError);
-      return { isAdmin: false, adminRole: null as string | null };
+      throw new Error('Unable to check account access. Please try signing in again.');
     }
   }, []);
 
@@ -97,6 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response = await apiFetch('/ensure-user-wallet', {
         method: 'POST',
+        signal: AbortSignal.timeout(15000),
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
@@ -128,22 +131,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const hydrateUserFromSession = useCallback(async (currentSession: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
-    if (currentSession?.user) {
-      await ensureUserWallet(currentSession.access_token);
-      const adminState = await getAdminState(currentSession.access_token);
-      setUser(formatUser(currentSession.user, adminState));
-    } else {
+    if (!currentSession?.user) {
+      hydrationRef.current = null;
       setUser(null);
+      setInitializing(false);
+      return null;
     }
 
+    // INITIAL_SESSION, SIGNED_IN and login can all arrive for the same token.
+    // Share their work, and run independent setup checks concurrently.
+    if (hydrationRef.current?.token !== currentSession.access_token) {
+      hydrationRef.current = {
+        token: currentSession.access_token,
+        promise: Promise.all([
+          ensureUserWallet(currentSession.access_token),
+          getAdminState(currentSession.access_token),
+        ]).then(([, adminState]) => formatUser(currentSession.user, adminState)),
+      };
+    }
+    const hydration = hydrationRef.current;
+    let nextUser: User;
+    try {
+      nextUser = await hydration.promise;
+    } catch (hydrationError) {
+      if (hydrationRef.current === hydration) {
+        hydrationRef.current = null;
+        setError(hydrationError instanceof Error ? hydrationError.message : 'Unable to restore your session.');
+        setInitializing(false);
+      }
+      return null;
+    }
+    // A late response must not restore an account after sign-out/account change.
+    if (hydrationRef.current !== hydration) return null;
+    setUser(nextUser);
     setInitializing(false);
+    return nextUser;
   }, [ensureUserWallet, getAdminState]);
 
   useEffect(() => {
+    let active = true;
     // Check active session
     supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-      void hydrateUserFromSession(currentSession);
+      if (active) void hydrateUserFromSession(currentSession);
     }).catch(() => {
+      if (!active) return;
       setUser(null);
       setInitializing(false);
       setError('Unable to restore your session. Please sign in again.');
@@ -151,13 +182,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, currentSession) => {
+      (event, currentSession) => {
+        if (event === 'USER_UPDATED') hydrationRef.current = null;
         void hydrateUserFromSession(currentSession);
       }
     );
 
     return () => {
+      active = false;
       subscription.unsubscribe();
+      hydrationRef.current = null;
     };
   }, [hydrateUserFromSession]);
 
@@ -170,7 +204,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     
     try {
-      const { error: authError } = await supabase.auth.signInWithPassword({
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
         email: normalizeEmail(email),
         password,
       });
@@ -179,15 +213,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw authError; // propagate up
       }
 
-      const { data: { session: signedInSession } } = await supabase.auth.getSession();
-      await ensureUserWallet(signedInSession?.access_token);
-      const adminState = await getAdminState(signedInSession?.access_token);
-
-      if (signedInSession?.user) {
-        setUser(formatUser(signedInSession.user, adminState));
-      }
+      if (!data.session) throw new Error('Unable to establish your session. Please sign in again.');
+      const signedInUser = await hydrateUserFromSession(data.session);
+      if (!signedInUser) return;
       
-      navigate(getDefaultRoute(adminState.isAdmin), { replace: true });
+      navigate(getDefaultRoute(signedInUser.isAdmin), { replace: true });
       trackLogin();
     } catch (err: any) {
       const message = err.message || 'Login failed';
@@ -262,6 +292,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     setLoading(true);
+    hydrationRef.current = null;
     try {
       await supabase.auth.signOut({ scope: 'local' });
     } catch (err) {
