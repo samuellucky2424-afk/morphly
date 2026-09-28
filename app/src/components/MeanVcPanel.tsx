@@ -595,6 +595,7 @@ export function MeanVcPanel() {
   const virtualMicrophoneReady = Boolean(virtualMicrophoneOutput && virtualMicrophoneInput);
 
   const [isInstallingVbCable, setIsInstallingVbCable] = useState(false);
+  const [cableFeedback, setCableFeedback] = useState<{ message: string; failed: boolean } | null>(null);
 
   const installVirtualMicrophone = async () => {
     setError(null);
@@ -604,23 +605,26 @@ export function MeanVcPanel() {
     }
 
     setIsInstallingVbCable(true);
+    setCableFeedback(null);
     try {
       const result = await window.electron.invoke('virtual-microphone:install') as {
         success: boolean;
         error?: string;
+        restartRequired?: boolean;
       };
 
       if (!result.success) {
-        setError(result.error || 'VB-CABLE installation failed.');
+        setCableFeedback({ message: result.error || 'VB-CABLE installation failed.', failed: true });
         return;
       }
 
-      // Refresh audio devices after successful install so the new
-      // VB-CABLE virtual device appears in the dropdowns immediately.
-      const refreshedStatus = await requestMorphlyVc<MeanVcStatus>('status');
-      setStatus(refreshedStatus);
+      // The resident audio engine enumerates devices at startup. A status poll
+      // cannot refresh PortAudio's cached endpoints after a driver install.
+      setCableFeedback({ failed: false, message: result.restartRequired
+        ? 'VB-CABLE was verified. Restart Windows to finish setup, then reopen Morphly.'
+        : 'VB-CABLE was verified. Fully quit Morphly, including its tray icon, then reopen it to load the cable devices.' });
     } catch (installError) {
-      setError(installError instanceof Error ? installError.message : 'Unable to install VB-CABLE.');
+      setCableFeedback({ failed: true, message: installError instanceof Error ? installError.message : 'Unable to install VB-CABLE.' });
     } finally {
       setIsInstallingVbCable(false);
     }
@@ -822,7 +826,7 @@ export function MeanVcPanel() {
                     <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
                       {virtualMicrophoneReady
                         ? 'Use CABLE Output as the microphone in WhatsApp and calling apps.'
-                        : 'Install VB-CABLE, then refresh the device list.'}
+                        : 'Install VB-CABLE, then fully quit and reopen Morphly.'}
                     </p>
                   </div>
                   {!virtualMicrophoneReady ? (
@@ -830,14 +834,14 @@ export function MeanVcPanel() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={isInstallingVbCable}
+                      disabled={isInstallingVbCable || runtimeActive}
                       onClick={() => void installVirtualMicrophone()}
                       className="h-8 shrink-0 gap-1.5 rounded border-border bg-background text-[11px] text-foreground hover:bg-background disabled:opacity-50"
                     >
                       {isInstallingVbCable ? (
                         <>
                           <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
-                          <span>Installing...</span>
+                          <span>Checking / installing...</span>
                         </>
                       ) : (
                         <>
@@ -852,6 +856,15 @@ export function MeanVcPanel() {
                     </Button>
                   ) : null}
                 </div>
+                {isInstallingVbCable ? (
+                  <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+                    Checking Windows for VB-CABLE. If Windows asks for administrator permission, choose Yes. Setup and verification can take a few minutes.
+                  </p>
+                ) : cableFeedback ? (
+                  <p role={cableFeedback.failed ? 'alert' : 'status'} className={`mt-2 text-xs leading-5 ${cableFeedback.failed ? 'text-destructive' : 'text-success'}`}>
+                    {cableFeedback.message}
+                  </p>
+                ) : null}
               </div>
             </div>
             {runtimeActive ? (

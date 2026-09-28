@@ -133,7 +133,7 @@ test('virtual microphone routing detects VB-CABLE and provides compliant setup g
   assert.match(panel, /CABLE Input/);
   assert.match(panel, /CABLE Output/);
   assert.match(panel, /isMultiChannelVirtualCableDevice/);
-  assert.match(panel, /Install VB-CABLE, then refresh the device list/);
+  assert.match(panel, /Install VB-CABLE, then fully quit and reopen Morphly/);
   assert.match(panel, /virtualMicrophoneOutput\?\.id/);
   assert.match(electronMain, /https:\/\/vb-audio\.com\/Cable\//);
   assert.match(electronPreload, /virtual-microphone:open-setup/);

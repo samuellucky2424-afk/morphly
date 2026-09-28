@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.14",
+  "version": "2.5.15",
   "description": "Morphly Desktop with virtual camera support and an optional on-demand MorphlyVC voice engine.",
   "author": "Morphly",
   "repository": {
@@ -68,6 +68,10 @@
       {
         "from": "build/VBCABLE_Setup_x64.exe",
         "to": "vbcable/VBCABLE_Setup_x64.exe"
+      },
+      {
+        "from": "build/detect-vbcable.ps1",
+        "to": "vbcable/detect-vbcable.ps1"
       }
     ],
     "afterPack": "build/afterPack.cjs",

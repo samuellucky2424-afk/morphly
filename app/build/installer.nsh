@@ -109,19 +109,45 @@ mediaFoundationInstallFailed:
 
 vbCableInstall:
   DetailPrint "Checking VB-Audio Virtual Cable installation..."
-  SetRegView 64
-  ReadRegStr $2 HKLM "SOFTWARE\VB-Audio\Cable" "InstallDir"
-  StrCmp $2 "" 0 vbCableAlreadyInstalled
+  ; Use the same device probe as the app. VB-Audio's settings key has no InstallDir.
+  StrCpy $R3 "$WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
+  IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 +2
+  StrCpy $R3 "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+  nsExec::ExecToLog /TIMEOUT=15000 '"$R3" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\vbcable\detect-vbcable.ps1" -ExitCodeOnly'
+  Pop $2
+  StrCmp $2 "0" vbCableAlreadyInstalled
+  StrCmp $2 "1" 0 vbCableUnverified
 
-  IfFileExists "$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" 0 customInstallDone
+  IfFileExists "$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" 0 vbCableUnverified
   DetailPrint "Installing VB-Audio Virtual Cable for voice changer..."
   nsExec::ExecToLog '"$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" -i -h'
   Pop $0
   DetailPrint "VB-Audio Virtual Cable install exit code: $0"
+  StrCmp $0 "3010" vbCableRebootRequired
+  StrCmp $0 "1641" vbCableRebootRequired
+  StrCmp $0 "0" vbCableVerifyStart vbCableUnverified
+
+vbCableRebootRequired:
+  SetRebootFlag true
+
+vbCableVerifyStart:
+  StrCpy $R4 6
+vbCableVerify:
+  nsExec::ExecToLog /TIMEOUT=15000 '"$R3" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\vbcable\detect-vbcable.ps1" -ExitCodeOnly'
+  Pop $2
+  StrCmp $2 "0" vbCableAlreadyInstalled
+  IntOp $R4 $R4 - 1
+  StrCmp $R4 "0" vbCableUnverified
+  Sleep 1500
+  Goto vbCableVerify
+
+vbCableUnverified:
+  DetailPrint "VB-CABLE could not be verified. Restart Windows and check the virtual microphone in Morphly."
+  MessageBox MB_ICONEXCLAMATION|MB_OK "VB-CABLE could not be verified. Restart Windows and check the virtual microphone in Morphly. If it is still unavailable, reinstall VB-CABLE." /SD IDOK
   Goto customInstallDone
 
 vbCableAlreadyInstalled:
-  DetailPrint "VB-Audio Virtual Cable is already installed."
+  DetailPrint "VB-Audio Virtual Cable driver verified."
 
 customInstallDone:
   SetRegView 64
