@@ -34,11 +34,14 @@ Validation: C++ build, NSIS install/uninstall macro compilation, repair-service 
 
 ## Voice performance — buffering fixes implemented and measured
 
-User reports lag despite strong hardware. The affected machine has not been benchmarked; its exact cause is not confirmed.
+The affected i5-1135G7 (4 cores / 8 threads, 16 GB RAM) was benchmarked on September 28, 2026. The original two-step model took 123.23 ms mean / 180.77 ms p95 per 80 ms of audio under the observed system load, exceeding real-time deadlines. VoiceAI was simultaneously consuming roughly three cores, and memory pressure caused paging during model loading. Increasing inference threads did not solve the bottleneck. Detailed changes and reproduction commands are in `docs/voice-cpu-performance.md`.
 
 Implemented in `app/server/meanvc-realtime.py` and `app/server/meanvc-runtime.js`:
 
 - The bundled engine uses CPU inference.
+- VC linear layers use dynamic INT8 CPU inference, with an all-or-nothing fallback to float32 on unsupported runtimes. ASR and vocoder precision is unchanged.
+- Synthetic calibration selects up to the requested two inference steps, reducing to one when needed for CPU headroom. This trades some potential voice fidelity for throughput; `--cpu-precision float32 --fixed-steps --steps 2` preserves the original precision and step count for comparison.
+- The large reference-speaker model loads only when extracting a voice embedding and is released afterward. The inference worker warms before audio devices start.
 - Device blocks are 160 ms; inference processes two 80 ms model blocks.
 - Lower requested driver latency; WASAPI preferred with shared-mode format conversion and matching microphone/output drivers. Full device names remain distinguishable, including after status refresh.
 - One queued input and at most two queued outputs; stale audio is discarded. Playback starts with one block and adds a safety block when measured processing approaches the deadline. Short fades soften underruns without replaying stale speech.

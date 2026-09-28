@@ -83,6 +83,19 @@ class VoiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'same audio driver'):
             bridge.BufferedVoiceStream(self.pipeline,bridge.PitchProcessor(),1,2,self.failures.append)
         self.assertEqual(self.stream_factory.call_count,1)
+    def test_worker_warms_before_microphone_opens(self):
+        warmed = threading.Event()
+        self.pipeline.prepare_realtime = warmed.set
+        self.stream_factory.return_value.start.side_effect = lambda: self.assertTrue(warmed.is_set())
+        self.voice.start()
+        self.voice.stop()
+        self.assertEqual(self.failures, [])
+    def test_failed_worker_warmup_never_opens_microphone(self):
+        self.pipeline.prepare_realtime = MagicMock(side_effect=RuntimeError('warmup failed'))
+        with self.assertRaisesRegex(RuntimeError, 'warmup failed'):
+            self.voice.start()
+        self.stream_factory.return_value.start.assert_not_called()
+        self.assertFalse(self.voice.worker.is_alive())
     def test_device_enumeration_prefers_wasapi_without_truncating_names(self):
         endpoints=[{'name':'Microphone ABC same prefix One','hostapi':0,'max_input_channels':1,'max_output_channels':0},
                    {'name':'Output','hostapi':0,'max_input_channels':0,'max_output_channels':2},

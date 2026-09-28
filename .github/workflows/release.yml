@@ -68,6 +68,8 @@ jobs:
       shell: pwsh
       run: |
         & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-buffer.test.py
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-cpu.test.py
         if ($LASTEXITCODE -ne 0) { throw "MorphlyVC audio regression tests failed." }
 
     - name: Build Electron app without publishing

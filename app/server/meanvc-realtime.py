@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from collections import deque
 import json
 import queue
@@ -114,6 +115,8 @@ class BufferedVoiceStream:
         self.input_queue = queue.Queue(maxsize=1)
         self.output_queue = queue.Queue(maxsize=2)
         self.stop_event = threading.Event()
+        self.worker_ready = threading.Event()
+        self.startup_error = None
         self.playback_started = False
         self.underruns = 0
         self.input_drops = 0
@@ -173,6 +176,12 @@ class BufferedVoiceStream:
         continuous_output = np.array([], dtype=np.float32)
         chunk_count = 0
         try:
+            # Torch's execution context is thread-local. Warm the actual audio
+            # worker before opening devices, including its cold model paths.
+            prepare = getattr(self.pipeline, 'prepare_realtime', None)
+            if prepare is not None:
+                prepare()
+            self.worker_ready.set()
             while not self.stop_event.is_set():
                 try:
                     entry = self.input_queue.get(timeout=0.1)
@@ -216,7 +225,10 @@ class BufferedVoiceStream:
                 if time.monotonic() - self.last_report_at >= 2:
                     self.report_performance()
         except Exception as error:
+            self.startup_error = error
             self.on_error(error)
+        finally:
+            self.worker_ready.set()
 
     def _callback(self, indata, outdata, _frames, _time_info, status) -> None:
         # No logging, model calls or blocking I/O on the audio callback thread.
@@ -268,12 +280,18 @@ class BufferedVoiceStream:
             'underruns': self.underruns, 'inputDrops': self.input_drops, 'outputDrops': self.output_drops,
             'deviceWarnings': self.device_warnings, 'hostapi': self.hostapi,
             'threads': torch.get_num_threads(),
+            'modelSteps': getattr(self.pipeline, '_num_steps', None),
+            'cpuPrecision': getattr(self.pipeline, 'cpu_precision', 'float32'),
         }), flush=True)
         self.last_report_at = time.monotonic()
 
     def start(self) -> None:
         self.worker.start()
         try:
+            if not self.worker_ready.wait(timeout=60):
+                raise RuntimeError('CPU voice engine warmup timed out.')
+            if self.startup_error is not None:
+                raise self.startup_error
             self.stream.start()
         except Exception:
             self.stop()
@@ -366,8 +384,59 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-device", type=int)
     parser.add_argument("--output-device", type=int)
     parser.add_argument("--steps", type=int, default=2, choices=range(1, 5))
+    parser.add_argument("--fixed-steps", action="store_true", help="Disable CPU calibration of the requested step count")
+    parser.add_argument("--cpu-precision", choices=('int8', 'float32'), default='int8')
     parser.add_argument("--pitch", type=float, default=0.0)
     return parser.parse_args()
+
+
+def optimize_cpu_models(pipeline, precision: str) -> None:
+    """Quantize only the supported VC linear layers; retain floating-point I/O."""
+    pipeline.cpu_precision = 'float32'
+    if precision == 'float32':
+        return
+    names = ('vc_jit_cold', 'vc_jit_t4', 'vc_jit_t8', 'vc_jit_steady')
+    try:
+        from torch.ao.quantization import quantize_dynamic_jit, default_dynamic_qconfig
+        optimized = [quantize_dynamic_jit(getattr(pipeline, name).eval(),
+                     {'': default_dynamic_qconfig}) for name in names]
+    except (RuntimeError, AttributeError, NotImplementedError) as error:
+        print(f'[CPU] INT8 unavailable; using float32: {error}', flush=True)
+        return
+    # Swap together so failures leave a consistent, usable float pipeline.
+    for name, model in zip(names, optimized):
+        setattr(pipeline, name, model)
+    pipeline.cpu_precision = 'int8'
+
+
+@torch.inference_mode()
+def prepare_cpu_stream(pipeline, requested_steps: int, fixed_steps: bool = False) -> None:
+    """Measure on the inference thread, leaving CPU headroom for audio and pitch."""
+    torch.set_num_threads(1)
+    pipeline._num_steps = requested_steps
+    samples = np.random.default_rng(7).normal(0, .03, pipeline.CHUNK).astype(np.float32)
+    while True:
+        pipeline.reset()
+        timings = []
+        for index in range(32):
+            started = time.perf_counter()
+            converted = pipeline.process_chunk(samples)
+            if converted is not None and not np.isfinite(converted).all():
+                raise RuntimeError('CPU voice model produced invalid audio during warmup.')
+            pipeline._bn_save_list.clear()
+            if index >= 8:
+                timings.append((time.perf_counter() - started) * 1000)
+        p95 = float(np.percentile(timings, 95))
+        if fixed_steps or p95 <= MODEL_BLOCK_MS * .75 or pipeline._num_steps <= 1:
+            break
+        pipeline._num_steps -= 1
+    pipeline.reset()
+    print('[CPU] ' + json.dumps({
+        'precision': pipeline.cpu_precision, 'requestedSteps': requested_steps,
+        'modelSteps': pipeline._num_steps, 'p95Ms': round(p95, 1),
+        'modelBlockMs': MODEL_BLOCK_MS, 'threads': torch.get_num_threads(),
+        'realtime': p95 < MODEL_BLOCK_MS,
+    }), flush=True)
 
 
 def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
@@ -389,11 +458,14 @@ def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
         # in-memory vector lets Morphly warm every heavy network before a user
         # supplies a voice. update_speaker() replaces it before audio starts.
         original_extract = vc_module._run_rt_jit.extract_embedding
+        original_init = vc_module._run_rt_jit.init_speaker_model
 
         def neutral_embedding(_model, _target_wav, device="cpu"):
             return torch.zeros((1, 256), dtype=torch.float32, device=device)
 
         vc_module._run_rt_jit.extract_embedding = neutral_embedding
+        # WavLM is needed only while reading a reference, not during live audio.
+        vc_module._run_rt_jit.init_speaker_model = lambda *a, **k: None
         try:
             pipeline = vc_module.VCPipelineJIT(
                 target_wav="MorphlyVC idle profile",
@@ -403,14 +475,28 @@ def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
             )
         finally:
             vc_module._run_rt_jit.extract_embedding = original_extract
+            vc_module._run_rt_jit.init_speaker_model = original_init
 
-    with torch.inference_mode():
-        pipeline.reset()
-        pipeline.warmup()
-        # Warm the steady-state VC trace as well as the first three ASR chunks.
-        for _ in range(8):
-            pipeline.process_chunk(np.zeros(pipeline.CHUNK, dtype=np.float32))
-    pipeline.reset()
+    pipeline.spk_model = None
+    gc.collect()
+
+    def update_speaker(target: str) -> None:
+        runtime = vc_module._run_rt_jit
+        speaker = runtime.init_speaker_model(runtime.SPEAKER_MODEL_PATH, 'cpu',
+                                             wavlm_config=runtime.WAVLM_CONFIG_PATH)
+        try:
+            with torch.inference_mode():
+                embedding = runtime.extract_embedding(speaker, target, device='cpu')
+            pipeline.vc_spk_emb = embedding
+        finally:
+            del speaker
+            gc.collect()
+
+    pipeline.update_speaker = update_speaker
+    optimize_cpu_models(pipeline, getattr(args, 'cpu_precision', 'int8'))
+    pipeline.prepare_realtime = lambda: prepare_cpu_stream(
+        pipeline, args.steps, getattr(args, 'fixed_steps', False))
+    pipeline.prepare_realtime()
     return pipeline
 
 
@@ -528,11 +614,12 @@ def main() -> int:
             for index in range(max(20, min(1000, args.benchmark_blocks))):
                 started = time.perf_counter()
                 pipeline.process_chunk(samples)
+                pipeline._bn_save_list.clear()
                 if index % 50 == 49:
                     pipeline._reset_vc_kv_cache()
                 if index >= 10:
                     timings.append((time.perf_counter() - started) * 1000)
-        print('[Benchmark] ' + json.dumps({'microphoneOpen': False, 'modelBlockMs': MODEL_BLOCK_MS, 'audioBlockMs': AUDIO_BLOCK_MS, 'threads': torch.get_num_threads(), 'meanMs': round(float(np.mean(timings)), 2), 'p95Ms': round(float(np.percentile(timings, 95)), 2), 'maxMs': round(max(timings), 2)}), flush=True)
+        print('[Benchmark] ' + json.dumps({'microphoneOpen': False, 'modelBlockMs': MODEL_BLOCK_MS, 'audioBlockMs': AUDIO_BLOCK_MS, 'modelSteps': pipeline._num_steps, 'cpuPrecision': pipeline.cpu_precision, 'threads': torch.get_num_threads(), 'meanMs': round(float(np.mean(timings)), 2), 'p95Ms': round(float(np.percentile(timings, 95)), 2), 'maxMs': round(max(timings), 2)}), flush=True)
         return 0
     devices = device_summary()
     if args.check:
