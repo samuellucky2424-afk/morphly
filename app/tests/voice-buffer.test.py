@@ -129,6 +129,93 @@ class DeviceBootstrapTests(unittest.TestCase):
         self.assertIn('"outputCount": 1', output.getvalue())
         fake.Stream.assert_not_called()
 
+
+class CableTests(VoiceTests):
+    def setUp(self):
+        super().setUp()
+        self.device.side_effect = lambda index: {'hostapi': 2, 'name': 'Microphone' if index == 1 else 'CABLE Input (VB-Audio Virtual Cable)'}
+        self.voice = bridge.BufferedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append)
+
+    def test_constructor_does_not_start_microphone(self):
+        self.stream_factory.return_value.start.assert_not_called()
+        self.assertEqual(self.stream_factory.call_args.kwargs['blocksize'], 320)
+        self.assertEqual(self.voice.chunk_size, 2560)
+
+    def test_driver_mismatch_fails_before_opening_stream(self):
+        calls = self.stream_factory.call_count
+        self.device.side_effect = [{'hostapi': 1}, {'hostapi': 2}]
+        with self.assertRaisesRegex(ValueError, 'same audio driver'):
+            bridge.BufferedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append)
+        self.assertEqual(self.stream_factory.call_count, calls)
+
+    def test_device_enumeration_prefers_wasapi_without_truncating_names(self):
+        self.device.side_effect = None
+        super().test_device_enumeration_prefers_wasapi_without_truncating_names()
+
+    def test_small_callbacks_preserve_capture_and_playback_samples(self):
+        samples = np.linspace(-.8, .8, 2560, dtype=np.float32)
+        self.voice.recovering = False
+        self.voice._enqueue_output((time.monotonic(), samples.copy()))
+        played = []
+        for offset in range(0, len(samples), 320):
+            incoming = samples[offset:offset + 320].reshape(-1, 1)
+            output = np.empty_like(incoming)
+            self.voice._callback(incoming, output, len(output), None, False)
+            played.append(output[:, 0].copy())
+        np.testing.assert_array_equal(np.concatenate(played), samples)
+        np.testing.assert_array_equal(self.voice.input_queue.get_nowait()[1], samples)
+        self.assertEqual(self.voice.input_drops, 0)
+        self.assertEqual(self.voice.underruns, 0)
+        self.assertIsNone(self.voice.playback_block)
+        self.assertEqual(self.pipeline.calls, [])
+
+    def test_variable_callbacks_cross_blocks_without_losing_tail(self):
+        samples = np.linspace(-.8, .8, 5120, dtype=np.float32)
+        self.voice.recovering = False
+        for block in np.split(samples, 2):
+            self.voice._enqueue_output((time.monotonic(), block))
+        played = []
+        captured = []
+        offset = 0
+        for size in (13, 307, 1000, 1500, 2000, 300):
+            incoming = samples[offset:offset + size].reshape(-1, 1)
+            output = np.empty_like(incoming)
+            self.voice._callback(incoming, output, size, None, False)
+            played.append(output[:, 0].copy())
+            if not self.voice.input_queue.empty():
+                captured.append(self.voice.input_queue.get_nowait()[1])
+            offset += size
+        np.testing.assert_array_equal(np.concatenate(played), samples)
+        np.testing.assert_array_equal(np.concatenate(captured), samples)
+        self.assertEqual(self.voice.underruns, 0)
+        self.assertEqual(self.voice.input_drops, 0)
+
+    def test_recovery_fade_spans_short_callbacks(self):
+        self.voice._enqueue_output((time.monotonic(), self.block()[:, 0]))
+        played = []
+        for _ in range(10):
+            output = np.empty((16, 1), np.float32)
+            self.voice._callback(np.zeros_like(output), output, 16, None, False)
+            played.append(output[:, 0].copy())
+        actual = np.concatenate(played)
+        np.testing.assert_array_equal(actual[:80], self.voice.fade_in)
+        np.testing.assert_array_equal(actual[80:], np.ones(80))
+
+    def test_cable_starvation_recovers_without_discarding_next_block(self):
+        self.voice.recovering = False
+        self.voice._enqueue_output((time.monotonic(), self.block(.5)[:, 0]))
+        output = np.empty((320, 1), np.float32)
+        for _ in range(9):
+            self.voice._callback(np.zeros_like(output), output, 320, None, False)
+        self.assertEqual(self.voice.underruns, 1)
+        self.assertAlmostEqual(float(output[0, 0]), .5)
+        self.assertTrue(np.all(output[80:] == 0))
+        self.voice._enqueue_output((time.monotonic(), self.block(.8)[:, 0]))
+        for _ in range(8):
+            self.voice._callback(np.zeros_like(output), output, 320, None, False)
+        self.assertEqual(self.voice.underruns, 1)
+        self.assertAlmostEqual(float(output[-1, 0]), .8, places=5)
+
 class TranslationTests(VoiceTests):
     def encoded(self, value):
         import base64
@@ -161,5 +248,41 @@ class TranslationTests(VoiceTests):
         buffer.push(self.encoded(.5))
         buffer.clear()
         self.assertEqual(np.count_nonzero(buffer.take(2560)), 0)
+
+    def test_small_incoming_cable_callbacks_keep_network_packets_at_160ms(self):
+        self.device.side_effect = lambda index: {'hostapi': 2, 'name': 'CABLE-B Output' if index == 3 else 'Physical device'}
+        voice = bridge.TranslatedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append,
+            {'incoming': True, 'incomingDevice': 3, 'headphonesDevice': 4})
+        self.assertEqual(self.stream_factory.call_args.kwargs['blocksize'], 320)
+        samples = np.linspace(-.5, .5, 2560, dtype=np.float32)
+        voice.translated['incoming'].samples = samples.copy()
+        played = []
+        for offset in range(0, 2560, 320):
+            incoming = samples[offset:offset + 320].reshape(-1, 1)
+            output = np.empty_like(incoming)
+            voice._incoming_callback(incoming, output, 320, None, False)
+            played.append(output[:, 0].copy())
+        self.assertEqual(voice.capture_queue.qsize(), 1)
+        direction, captured = voice.capture_queue.get_nowait()
+        self.assertEqual(direction, 'incoming')
+        np.testing.assert_array_equal(captured, samples)
+        np.testing.assert_array_equal(np.concatenate(played), samples)
+        self.assertEqual(voice.input_queue.qsize(), 0)
+
+    def test_small_outgoing_callbacks_capture_once_and_feed_translated_speech_to_model(self):
+        self.device.side_effect = lambda index: {'hostapi': 2, 'name': 'Microphone' if index == 1 else 'CABLE-A Input'}
+        voice = bridge.TranslatedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append, {'incoming': False})
+        samples = np.linspace(-.5, .5, 2560, dtype=np.float32)
+        translated = np.full(2560, .25, dtype=np.float32)
+        voice.translated['outgoing'].samples = translated.copy()
+        for offset in range(0, 2560, 320):
+            incoming = samples[offset:offset + 320].reshape(-1, 1)
+            voice._callback(incoming, np.empty_like(incoming), 320, None, False)
+        self.assertEqual(voice.capture_queue.qsize(), 1)
+        direction, captured = voice.capture_queue.get_nowait()
+        self.assertEqual(direction, 'outgoing')
+        np.testing.assert_array_equal(captured, samples)
+        np.testing.assert_array_equal(voice.input_queue.get_nowait()[1], translated)
+        self.assertEqual(voice.input_drops, 0)
 
 if __name__=='__main__': unittest.main()

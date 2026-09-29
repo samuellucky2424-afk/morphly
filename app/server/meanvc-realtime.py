@@ -91,6 +91,33 @@ MODEL_BLOCK_MS = 80
 MODEL_BLOCK_SAMPLES = SAMPLE_RATE * MODEL_BLOCK_MS // 1000
 AUDIO_BLOCK_MS = 160
 AUDIO_BLOCK_SAMPLES = SAMPLE_RATE * AUDIO_BLOCK_MS // 1000
+CABLE_BLOCK_SAMPLES = SAMPLE_RATE * 20 // 1000
+
+
+def device_block_size(*devices):
+    # VB-CABLE's internal buffer must accommodate several application buffers.
+    # Keep transport small even though inference works in 160 ms batches.
+    if any('cable' in str(device.get('name', '')).lower() for device in devices):
+        return CABLE_BLOCK_SAMPLES
+    return AUDIO_BLOCK_SAMPLES
+
+
+class AudioBlockAccumulator:
+    """Assemble device fragments without retaining an unbounded capture queue."""
+    def __init__(self, size):
+        self.samples = np.empty(size, dtype=np.float32)
+        self.used = 0
+
+    def feed(self, samples):
+        offset = 0
+        while offset < len(samples):
+            count = min(len(samples) - offset, len(self.samples) - self.used)
+            self.samples[self.used:self.used + count] = samples[offset:offset + count]
+            self.used += count
+            offset += count
+            if self.used == len(self.samples):
+                self.used = 0
+                yield self.samples.copy()
 
 
 class PitchProcessor:
@@ -192,9 +219,14 @@ class BufferedVoiceStream:
         self.fade_samples = min(80, self.chunk_size)
         self.fade_in = np.linspace(0, 1, self.fade_samples, dtype=np.float32)
         self.target_output_blocks = 1
+        self.capture_blocks = AudioBlockAccumulator(self.chunk_size)
+        self.playback_block = None
+        self.playback_offset = 0
+        self.fade_offset = 0
         self.worker = threading.Thread(target=self._process, name="morphlyvc-audio-worker", daemon=True)
         input_info = sd.query_devices(input_device)
         output_info = sd.query_devices(output_device)
+        self.device_chunk_size = device_block_size(input_info, output_info)
         if input_info['hostapi'] != output_info['hostapi']:
             raise ValueError('Choose microphone and output devices using the same audio driver (for example, WASAPI).')
         self.hostapi = sd.query_hostapis(input_info['hostapi'])['name']
@@ -203,7 +235,7 @@ class BufferedVoiceStream:
         sd.check_output_settings(device=output_device, samplerate=SAMPLE_RATE, channels=1, dtype='float32', extra_settings=extra)
         self.stream = sd.Stream(
             samplerate=SAMPLE_RATE,
-            blocksize=self.chunk_size,
+            blocksize=self.device_chunk_size,
             device=(input_device, output_device),
             channels=1,
             callback=self._callback,
@@ -260,7 +292,7 @@ class BufferedVoiceStream:
                 if len(samples) != self.chunk_size:
                     raise RuntimeError(
                         f"MorphlyVC received {len(samples)} samples instead of a full "
-                        f"{AUDIO_BLOCK_MS} ms device buffer."
+                        f"{AUDIO_BLOCK_MS} ms processing buffer."
                     )
 
                 started = time.perf_counter()
@@ -301,7 +333,8 @@ class BufferedVoiceStream:
         if status:
             self.device_warnings += 1
 
-        self._enqueue_latest_input((time.monotonic(), indata[:, 0].copy()))
+        for block in self.capture_blocks.feed(indata[:, 0]):
+            self._enqueue_latest_input((time.monotonic(), block))
 
         # Start with one block. Add one safety block only when measured processing
         # approaches the audio deadline; never allow an unbounded backlog.
@@ -310,24 +343,39 @@ class BufferedVoiceStream:
                 return
             self.playback_started = True
 
-        try:
-            captured_at, block = self.output_queue.get_nowait()
-            while time.monotonic() - captured_at > AUDIO_BLOCK_MS / 1000 * 3:
-                self.output_drops += 1
-                captured_at, block = self.output_queue.get_nowait()
-        except queue.Empty:
-            self.underruns += 1
-            outdata[:self.fade_samples, 0] = self.last_sample * (1 - self.fade_in)
-            self.last_sample = 0.0
-            self.recovering = True
-            self.playback_started = False
-            return
+        written = 0
+        while written < len(outdata):
+            if self.playback_block is None:
+                try:
+                    captured_at, block = self.output_queue.get_nowait()
+                    while time.monotonic() - captured_at > AUDIO_BLOCK_MS / 1000 * 3:
+                        self.output_drops += 1
+                        captured_at, block = self.output_queue.get_nowait()
+                    self.playback_block = block
+                    self.playback_offset = 0
+                except queue.Empty:
+                    self.underruns += 1
+                    previous = float(outdata[written - 1, 0]) if written else self.last_sample
+                    count = min(self.fade_samples, len(outdata) - written)
+                    outdata[written:written + count, 0] = previous * (1 - self.fade_in[:count])
+                    self.last_sample = 0.0
+                    self.recovering = True
+                    self.fade_offset = 0
+                    self.playback_started = False
+                    return
 
-        available = min(len(outdata), len(block))
-        outdata[:available, 0] = block[:available]
-        if self.recovering:
-            outdata[:self.fade_samples, 0] *= self.fade_in
-            self.recovering = False
+            count = min(len(outdata) - written, len(self.playback_block) - self.playback_offset)
+            outdata[written:written + count, 0] = self.playback_block[self.playback_offset:self.playback_offset + count]
+            if self.recovering:
+                fading = min(count, self.fade_samples - self.fade_offset)
+                outdata[written:written + fading, 0] *= self.fade_in[self.fade_offset:self.fade_offset + fading]
+                self.fade_offset += fading
+                self.recovering = self.fade_offset < self.fade_samples
+            written += count
+            self.playback_offset += count
+            if self.playback_offset == len(self.playback_block):
+                self.playback_block = None
+                self.playback_offset = 0
         self.last_sample = float(outdata[-1, 0])
 
     def report_performance(self) -> None:
@@ -336,6 +384,7 @@ class BufferedVoiceStream:
         latency = self.stream.latency
         print('[Performance] ' + json.dumps({
             'blockMs': AUDIO_BLOCK_MS, 'processingMs': round(float(np.mean(self.processing_ms)), 1) if self.processing_ms else 0,
+            'deviceBlockMs': self.device_chunk_size * 1000 / SAMPLE_RATE,
             'p95Ms': round(p95, 1), 'realTimeFactor': round(p95 / AUDIO_BLOCK_MS, 2),
             'inputLatencyMs': round(latency[0] * 1000, 1), 'outputLatencyMs': round(latency[1] * 1000, 1),
             'inputQueueMs': self.input_queue.qsize() * AUDIO_BLOCK_MS,
@@ -415,17 +464,20 @@ class TranslatedVoiceStream(BufferedVoiceStream):
         self.capture_queue = queue.Queue(maxsize=8)
         self.incoming_stream = None
         self.translation_stopped = False
+        self.incoming_capture_blocks = AudioBlockAccumulator(AUDIO_BLOCK_SAMPLES)
         super().__init__(pipeline, pitch_processor, input_device, output_device, on_error)
         self.capture_worker = threading.Thread(target=self._send_audio, name='translation-capture', daemon=True)
         try:
             if translation.get('incoming'):
                 incoming = int(translation['incomingDevice'])
                 headphones = int(translation['headphonesDevice'])
-                incoming_api = sd.query_devices(incoming)['hostapi']
-                if incoming_api != sd.query_devices(headphones)['hostapi']:
+                incoming_info = sd.query_devices(incoming)
+                headphones_info = sd.query_devices(headphones)
+                incoming_api = incoming_info['hostapi']
+                if incoming_api != headphones_info['hostapi']:
                     raise ValueError('Choose incoming cable and headphones using the same audio driver.')
                 extra = sd.WasapiSettings(auto_convert=True) if sd.query_hostapis(incoming_api)['name'] == 'Windows WASAPI' else None
-                self.incoming_stream = sd.Stream(samplerate=SAMPLE_RATE, blocksize=self.chunk_size,
+                self.incoming_stream = sd.Stream(samplerate=SAMPLE_RATE, blocksize=device_block_size(incoming_info, headphones_info),
                     device=(incoming, headphones), channels=1, dtype='float32', latency='low',
                     extra_settings=(extra, extra), callback=self._incoming_callback)
         except Exception:
@@ -454,7 +506,9 @@ class TranslatedVoiceStream(BufferedVoiceStream):
         outdata.fill(0)
         if self.stop_event.is_set():
             return
-        self._capture('incoming', indata[:, 0].copy())
+        # Keep network packets at 160 ms despite the smaller cable callbacks.
+        for block in self.incoming_capture_blocks.feed(indata[:, 0]):
+            self._capture('incoming', block)
         outdata[:, 0] = self.translated['incoming'].take(frames)
 
     def _send_audio(self):
