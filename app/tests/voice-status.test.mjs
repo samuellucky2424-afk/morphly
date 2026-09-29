@@ -64,6 +64,14 @@ test('translated runtime routes audio through the relay, excludes tokens from st
   assert.equal(controller.getStatus().runtime.logs.some(log=>log.message.includes('AAAAAA==')),false);
   callbacks.onAudio({type:'audio',direction:'outgoing',data:'AAAAAA=='});
   assert.equal(commands.at(-1).type,'translation-audio');
+  child.stdout.write('[Stream] Running\n');
+  const commandCount = commands.length;
+  callbacks.onState('reconnecting');
+  assert.equal(controller.getStatus().runtime.state, 'running');
+  assert.match(controller.getStatus().runtime.message, /Reconnecting translation/);
+  assert.equal(commands.length, commandCount); // No Python stop/start or model reload.
+  callbacks.onState('connected');
+  assert.match(controller.getStatus().runtime.message, /translation are live/);
   controller.stop();assert.equal(closes,1);
   assert.equal(commands.at(-1).type,'stop');
   child.stdout.write('[Stream] Stopped\n');

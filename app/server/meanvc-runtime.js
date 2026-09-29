@@ -844,6 +844,12 @@ export function createMeanVcRuntimeController({
     let client;
     try { client = connectTranslationImpl({
       ...config, gatewayUrl: options.translation.gatewayUrl, accessToken: options.translation.accessToken,
+      onState: (state) => {
+        if (generation !== translationGeneration) return;
+        if (runtimeState === 'running') runtimeMessage = state === 'reconnecting'
+          ? 'Reconnecting translation. Audio will resume automatically.'
+          : 'MorphlyVC voice conversion and translation are live.';
+      },
       onAudio: (message) => {
         if (generation !== translationGeneration) return;
         if (!warmProcess?.stdin?.writable || warmProcess.stdin.writableLength > 256 * 1024) {
