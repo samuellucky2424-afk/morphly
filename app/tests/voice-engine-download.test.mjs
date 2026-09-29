@@ -160,6 +160,15 @@ test('a completed archive needs no network requests after restarting the app', a
   assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
 });
 
+test('saved archive verification repairs a corrupt part without polluting the aggregate checksum', async t => {
+  const input = await fixture(t);
+  const corrupted = Buffer.from(input.original);
+  corrupted[12] ^= 0xff;
+  await fs.writeFile(input.destinationPath, corrupted);
+  await downloadVoiceEngineArchive(input);
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+});
+
 test('saved partial bytes survive failure and a new downloader invocation resumes them', async t => {
   const input = await fixture(t);
   await fs.writeFile(input.destinationPath, input.original.subarray(0, 4));

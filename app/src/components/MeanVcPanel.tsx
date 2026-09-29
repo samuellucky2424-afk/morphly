@@ -1019,8 +1019,8 @@ export function MeanVcPanel() {
                         : voiceEngine.phase === 'downloading'
                         ? `Downloading the voice engine — ${voiceEngine.percent}%`
                         : voiceEngine.phase === 'verifying'
-                          ? 'Checking the download...'
-                          : 'Installing the voice engine...'}
+                          ? `Checking the saved download — ${voiceEngine.percent}%`
+                          : `Installing the voice engine — ${voiceEngine.percent}%. Completed files are saved if you close Morphly.`}
                     </p>
                   ) : null}
                   {voiceEngine.error && !voiceEngine.retrying ? (

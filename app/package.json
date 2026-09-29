@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.19",
+  "version": "2.5.20",
   "description": "Morphly Desktop with virtual camera support and automatic, resumable MorphlyVC voice engine setup.",
   "author": "Morphly",
   "repository": {

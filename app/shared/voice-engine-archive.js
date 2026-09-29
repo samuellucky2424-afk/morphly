@@ -28,13 +28,14 @@ export function validateVoiceEngineManifest(manifest) {
   return manifest;
 }
 
-async function streamSliceToHash(filePath, start, end, hash) {
+async function streamSliceToHash(filePath, start, end, hash, onBytes = () => {}) {
   if (start >= end) return 0;
   const stream = fs.createReadStream(filePath, { start, end: end - 1, highWaterMark: 1024 * 1024 });
   let bytesRead = 0;
   for await (const chunk of stream) {
-    hash.update(chunk);
+    for (const item of Array.isArray(hash) ? hash : [hash]) item.update(chunk);
     bytesRead += chunk.length;
+    onBytes(bytesRead);
   }
   return bytesRead;
 }
@@ -77,10 +78,10 @@ export async function downloadVoiceEngineArchive({
     currentSize = 0;
   }
 
-  // Report the saved byte count immediately, including an incomplete first part.
-  onProgress({ phase: 'downloading', percent: Math.min(99, Math.floor(currentSize / manifest.size * 100)), receivedBytes: currentSize, totalBytes: manifest.size, resumed: currentSize > 0 });
+  // Keep the saved byte count, but give local verification its own progress.
+  onProgress({ phase: currentSize ? 'verifying' : 'downloading', percent: 0, receivedBytes: currentSize, totalBytes: manifest.size, resumed: currentSize > 0 });
 
-  const archiveHash = createHash('sha256');
+  let archiveHash = createHash('sha256');
   let verifiedBytes = 0;
   let lastReportedPercent = -1;
 
@@ -88,13 +89,19 @@ export async function downloadVoiceEngineArchive({
   for (const part of partRanges) {
     if (currentSize >= part.end) {
       const partCheckHash = createHash('sha256');
-      await streamSliceToHash(destinationPath, part.start, part.end, partCheckHash);
+      const candidateHash = archiveHash.copy();
+      await streamSliceToHash(destinationPath, part.start, part.end, [partCheckHash, candidateHash], bytes => {
+        const percent = Math.floor((part.start + bytes) / manifest.size * 100);
+        if (percent !== lastReportedPercent) {
+          lastReportedPercent = percent;
+          onProgress({ phase: 'verifying', percent, receivedBytes: currentSize, totalBytes: manifest.size, resumed: true });
+        }
+      });
       if (partCheckHash.digest('hex') === part.sha256) {
-        await streamSliceToHash(destinationPath, part.start, part.end, archiveHash);
+        archiveHash = candidateHash;
         verifiedBytes = part.end;
         const percent = Math.min(99, Math.floor(currentSize / manifest.size * 100));
         lastReportedPercent = percent;
-        onProgress({ phase: 'downloading', percent, receivedBytes: currentSize, totalBytes: manifest.size, resumed: true });
         continue;
       }
       // Checksum mismatch for this completed part; truncate back to start of part
