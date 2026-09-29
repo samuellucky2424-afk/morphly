@@ -73,3 +73,142 @@ test('engine downloads are pinned to the installed desktop version', () => {
   assert.equal(getVoiceEngineReleaseBase('2.5.6'), 'https://github.com/samuellucky2424-afk/morphly/releases/download/v2.5.6');
   assert.throws(() => getVoiceEngineReleaseBase('../latest'));
 });
+
+test('resumes partially downloaded archive and verifies full checksum', async (t) => {
+  const input = await fixture(t);
+  // Pre-write first 20 bytes (out of 51 bytes in input.original) to destinationPath
+  const partialBytes = 20;
+  await fs.writeFile(input.destinationPath, input.original.subarray(0, partialBytes));
+
+  const requestedRanges = [];
+  input.requestStream = async (url, options = {}) => {
+    const filename = new URL(url).pathname.split('/').at(-1);
+    const data = await fs.readFile(path.join(input.root, filename));
+    const startByte = options.startByte || 0;
+    requestedRanges.push({ filename, startByte });
+    return Readable.from([data.subarray(startByte)]);
+  };
+
+  const progress = [];
+  await downloadVoiceEngineArchive({
+    ...input,
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+  assert.ok(requestedRanges.some((r) => r.startByte > 0), 'Should have requested Range starting from existing bytes');
+  assert.equal(progress.at(-1).phase, 'verifying');
+});
+
+test('auto-retries and resumes without restarting from the beginning when connection is interrupted', async (t) => {
+  const input = await fixture(t);
+  let failedOnce = false;
+
+  input.requestStream = async (url, options = {}) => {
+    const filename = new URL(url).pathname.split('/').at(-1);
+    const data = await fs.readFile(path.join(input.root, filename));
+    const startByte = options.startByte || 0;
+
+    // Simulate network interruption midway through part 2
+    if (!failedOnce && filename.endsWith('part-002') && startByte === 0) {
+      failedOnce = true;
+      return Readable.from((async function* () {
+        yield data.subarray(0, 5); // Deliver 5 bytes, then drop connection
+        throw new Error('Connection reset by peer');
+      })());
+    }
+
+    return Readable.from([data.subarray(startByte)]);
+  };
+
+  const progress = [];
+  await downloadVoiceEngineArchive({
+    ...input,
+    maxRetries: 3,
+    initialRetryDelayMs: 10,
+    maxRetryDelayMs: 50,
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+  assert.equal(failedOnce, true);
+  assert.ok(progress.some((p) => p.retrying === true), 'Should report retrying on network error');
+});
+
+
+test('short responses keep their downloaded bytes and resume at the exact offset', async t => {
+  const input = await fixture(t);
+  const ranges = [];
+  let shortened = false;
+  input.requestStream = async (url, options = {}) => {
+    const name = new URL(url).pathname.split('/').at(-1);
+    const data = await fs.readFile(path.join(input.root, name));
+    const start = options.startByte || 0;
+    ranges.push([name, start]);
+    if (!shortened) { shortened = true; return Readable.from([data.subarray(0, 4)]); }
+    return Readable.from([data.subarray(start)]);
+  };
+  await downloadVoiceEngineArchive({ ...input, maxRetries: 3, initialRetryDelayMs: 1 });
+  assert.equal(ranges[1][1], 4);
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+});
+
+test('a completed archive needs no network requests after restarting the app', async t => {
+  const input = await fixture(t);
+  await fs.writeFile(input.destinationPath, input.original);
+  await downloadVoiceEngineArchive({ ...input, requestStream: () => assert.fail('already complete') });
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+});
+
+test('saved partial bytes survive failure and a new downloader invocation resumes them', async t => {
+  const input = await fixture(t);
+  await fs.writeFile(input.destinationPath, input.original.subarray(0, 4));
+  await assert.rejects(downloadVoiceEngineArchive({ ...input, cleanOnFailure: false, requestStream: async () => { throw new Error('offline'); } }));
+  assert.equal((await fs.stat(input.destinationPath)).size, 4);
+  let firstStart;
+  await downloadVoiceEngineArchive({ ...input, requestStream: async (url, options) => {
+    firstStart ??= options.startByte;
+    const data = await fs.readFile(path.join(input.root, new URL(url).pathname.split('/').at(-1)));
+    const response = Readable.from([data.subarray(options.startByte)]);
+    response.statusCode = options.startByte ? 206 : 200;
+    response.headers = { 'content-range': `bytes ${options.startByte}-${data.length - 1}/${data.length}` };
+    return response;
+  } });
+  assert.equal(firstStart, 4);
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+});
+
+test('servers ignoring Range restart only the current part, preserving verified parts', async t => {
+  const input = await fixture(t);
+  await fs.writeFile(input.destinationPath, input.original.subarray(0, 15));
+  const names = [];
+  await downloadVoiceEngineArchive({ ...input, requestStream: async url => {
+    const name = new URL(url).pathname.split('/').at(-1); names.push(name);
+    const response = Readable.from([await fs.readFile(path.join(input.root, name))]);
+    response.statusCode = 200;
+    return response;
+  } });
+  assert.ok(names[0].endsWith('part-002'));
+  assert.deepEqual(await fs.readFile(input.destinationPath), input.original);
+});
+
+test('incorrect Content-Range is rejected before saved bytes are modified', async t => {
+  const input = await fixture(t);
+  await fs.writeFile(input.destinationPath, input.original.subarray(0, 4));
+  await assert.rejects(downloadVoiceEngineArchive({ ...input, cleanOnFailure: false, maxRetries: Infinity, requestStream: async () => {
+    const response = Readable.from([Buffer.from('wrong')]);
+    response.statusCode = 206; response.headers = { 'content-range': 'bytes 0-10/11' };
+    return response;
+  } }), /invalid byte range/);
+  assert.equal((await fs.stat(input.destinationPath)).size, 4);
+});
+
+test('temporary failures retry beyond the previous cap; permanent and disk errors stop', async () => {
+  const { retryDownload } = await import('../shared/download-retry.js');
+  let calls = 0;
+  const result = await retryDownload(async () => { if (++calls < 105) throw new Error('offline'); return 'done'; }, { wait: async () => {} });
+  assert.equal(result, 'done'); assert.equal(calls, 105);
+  for (const error of [Object.assign(new Error('missing asset'), { statusCode: 404 }), Object.assign(new Error('disk full'), { code: 'ENOSPC' })]) {
+    await assert.rejects(retryDownload(async () => { throw error; }, { wait: () => assert.fail('must not retry') }));
+  }
+});

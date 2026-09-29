@@ -163,7 +163,7 @@ jobs:
         if (!(Test-Path $asarCli)) { throw "Missing ASAR inspection CLI: $asarCli" }
         $asarEntries = @(& $asarCli list $appAsar)
         if ($LASTEXITCODE -ne 0) { throw "Unable to inspect packaged app archive: $appAsar" }
-        foreach ($requiredEntry in @('\shared\load-environment.js', '\electron\virtual-microphone.js', '\server\translation-client.js', '\shared\translation.js', '\node_modules\ws\index.js')) {
+        foreach ($requiredEntry in @('\shared\load-environment.js', '\electron\virtual-microphone.js', '\electron\voice-engine-setup.js', '\shared\download-retry.js', '\shared\voice-audio-devices.js', '\server\translation-client.js', '\shared\translation.js', '\node_modules\ws\index.js')) {
           if ($asarEntries -notcontains $requiredEntry) {
             throw "Packaged app archive is missing required runtime module: $requiredEntry"
           }

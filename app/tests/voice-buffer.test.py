@@ -110,6 +110,25 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(len(result['inputs']),3)
         self.assertEqual(result['inputs'][0]['hostapi'],'Windows WASAPI')
 
+class DeviceBootstrapTests(unittest.TestCase):
+    def test_device_diagnostic_runs_without_torch_or_opening_microphone(self):
+        import runpy
+        import sys
+        import io
+        from contextlib import redirect_stdout
+        fake = MagicMock()
+        fake.default.device = (-1, -1)
+        fake.query_devices.return_value = [{'name': 'Speakers', 'hostapi': 0, 'max_input_channels': 0, 'max_output_channels': 2}]
+        fake.query_hostapis.return_value = [{'name': 'Windows WASAPI', 'default_input_device': -1, 'default_output_device': 0}]
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'sounddevice': fake, 'torch': None}), patch.object(sys, 'argv', ['bridge', '--devices-only']), redirect_stdout(output):
+            with self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(str(Path(__file__).parents[1] / 'server' / 'meanvc-realtime.py'), run_name='__main__')
+        self.assertEqual(stopped.exception.code, 0)
+        self.assertIn('"inputCount": 0', output.getvalue())
+        self.assertIn('"outputCount": 1', output.getvalue())
+        fake.Stream.assert_not_called()
+
 class TranslationTests(VoiceTests):
     def encoded(self, value):
         import base64

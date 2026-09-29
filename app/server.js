@@ -89,6 +89,13 @@ app.use('/api/local/meanvc', requireLocalMeanVcRequest);
 app.get('/api/local/meanvc/status', (_req, res) => {
   res.json(meanVcRuntime.getStatus());
 });
+app.post('/api/local/meanvc/refresh-devices', (_req, res) => {
+  try {
+    res.json(meanVcRuntime.refreshDevices());
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to refresh audio devices.' });
+  }
+});
 app.post(
   '/api/local/meanvc/reference',
   express.raw({ type: ['audio/wav', 'audio/x-wav', 'application/octet-stream'], limit: '25mb' }),

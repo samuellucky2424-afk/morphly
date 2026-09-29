@@ -14,9 +14,71 @@ import threading
 import time
 from pathlib import Path
 
+import sounddevice as sd
+
+
+def device_summary() -> dict[str, object]:
+    devices = sd.query_devices()
+    default_input, default_output = sd.default.device
+    input_devices: list[dict[str, object]] = []
+    output_devices: list[dict[str, object]] = []
+    hostapis = sd.query_hostapis()
+    # Prefer full-name WASAPI endpoints. Do not collapse different microphones
+    # sharing a 20-character prefix or assume host API indices are fixed.
+    priority = {'Windows WASAPI': 0, 'Core Audio': 0, 'ALSA': 0, 'Windows DirectSound': 1, 'MME': 2}
+    ordered = sorted(enumerate(devices), key=lambda entry: priority.get(hostapis[int(entry[1]['hostapi'])]['name'], 3))
+    for index, device in ordered:
+        hostapi_index = int(device["hostapi"])
+        hostapi_name = hostapis[hostapi_index]["name"]
+        if hostapi_name == 'Windows WDM-KS':
+            # Raw kernel pins often include disconnected/exclusive endpoints.
+            # Shared-mode WASAPI exposes the corresponding usable devices.
+            continue
+        name = str(device["name"])
+        if name in {'Microsoft Sound Mapper - Input', 'Microsoft Sound Mapper - Output', 'Primary Sound Capture Driver', 'Primary Sound Driver'}:
+            continue
+        if device["max_input_channels"] > 0:
+            input_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
+        if device["max_output_channels"] > 0:
+            output_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
+
+    common = next((item['hostapi'] for item in input_devices if any(out['hostapi'] == item['hostapi'] for out in output_devices)), None)
+    if common:
+        api = next(api for api in hostapis if api['name'] == common)
+        default_input = next((item['id'] for item in input_devices if item['id'] == api['default_input_device']), next(item['id'] for item in input_devices if item['hostapi'] == common))
+        default_output = next((item['id'] for item in output_devices if item['id'] == api['default_output_device']), next(item['id'] for item in output_devices if item['hostapi'] == common))
+    else:
+        default_input = input_devices[0]['id'] if input_devices else -1
+        default_output = output_devices[0]['id'] if output_devices else -1
+
+    return {
+        "defaultInput": int(default_input),
+        "defaultOutput": int(default_output),
+        "inputName": devices[default_input]["name"] if default_input >= 0 else '',
+        "outputName": devices[default_output]["name"] if default_output >= 0 else '',
+        "inputCount": len(input_devices),
+        "outputCount": len(output_devices),
+        "inputs": input_devices,
+        "outputs": output_devices,
+    }
+
+
+# Discover endpoints before loading Torch/models, without opening audio streams.
+# This also provides a lightweight diagnostic on machines where Torch cannot load.
+_preflight_devices = None
+if __name__ == '__main__' and ('--serve' in sys.argv or '--devices-only' in sys.argv):
+    try:
+        _preflight_devices = device_summary()
+        print(f"[Devices] Ready {json.dumps(_preflight_devices, ensure_ascii=True)}", flush=True)
+    except Exception as error:
+        print(f"[Devices] Error {error}", file=sys.stderr, flush=True)
+        if '--devices-only' in sys.argv:
+            sys.exit(1)
+    if '--devices-only' in sys.argv:
+        sys.exit(0)
+
 import numpy as np
 import soxr
-import sounddevice as sd
 import torch
 import torch.jit as torch_jit
 from audiotsm import wsola
@@ -456,51 +518,6 @@ def patch_torch_jit() -> None:
     torch_jit.script = safe_script
 
 
-def device_summary() -> dict[str, object]:
-    devices = sd.query_devices()
-    default_input, default_output = sd.default.device
-    input_devices: list[dict[str, object]] = []
-    output_devices: list[dict[str, object]] = []
-    hostapis = sd.query_hostapis()
-    # Prefer full-name WASAPI endpoints. Do not collapse different microphones
-    # sharing a 20-character prefix or assume host API indices are fixed.
-    priority = {'Windows WASAPI': 0, 'Core Audio': 0, 'ALSA': 0, 'Windows DirectSound': 1, 'MME': 2}
-    ordered = sorted(enumerate(devices), key=lambda entry: priority.get(hostapis[int(entry[1]['hostapi'])]['name'], 3))
-    for index, device in ordered:
-        hostapi_index = int(device["hostapi"])
-        hostapi_name = hostapis[hostapi_index]["name"]
-        if hostapi_name == 'Windows WDM-KS':
-            # Raw kernel pins often include disconnected/exclusive endpoints.
-            # Shared-mode WASAPI exposes the corresponding usable devices.
-            continue
-        name = str(device["name"])
-        if name in {'Microsoft Sound Mapper - Input', 'Microsoft Sound Mapper - Output', 'Primary Sound Capture Driver', 'Primary Sound Driver'}:
-            continue
-        if device["max_input_channels"] > 0:
-            input_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
-        if device["max_output_channels"] > 0:
-            output_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
-
-    common = next((item['hostapi'] for item in input_devices if any(out['hostapi'] == item['hostapi'] for out in output_devices)), None)
-    if common:
-        api = next(api for api in hostapis if api['name'] == common)
-        default_input = next((item['id'] for item in input_devices if item['id'] == api['default_input_device']), next(item['id'] for item in input_devices if item['hostapi'] == common))
-        default_output = next((item['id'] for item in output_devices if item['id'] == api['default_output_device']), next(item['id'] for item in output_devices if item['hostapi'] == common))
-    else:
-        default_input = input_devices[0]['id'] if input_devices else -1
-        default_output = output_devices[0]['id'] if output_devices else -1
-
-    return {
-        "defaultInput": int(default_input),
-        "defaultOutput": int(default_output),
-        "inputName": devices[default_input]["name"] if default_input >= 0 else '',
-        "outputName": devices[default_output]["name"] if default_output >= 0 else '',
-        "inputCount": len(input_devices),
-        "outputCount": len(output_devices),
-        "inputs": input_devices,
-        "outputs": output_devices,
-    }
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Morphly MeanVC2 realtime bridge")
@@ -761,7 +778,7 @@ def main() -> int:
                     timings.append((time.perf_counter() - started) * 1000)
         print('[Benchmark] ' + json.dumps({'microphoneOpen': False, 'modelBlockMs': MODEL_BLOCK_MS, 'audioBlockMs': AUDIO_BLOCK_MS, 'modelSteps': pipeline._num_steps, 'cpuPrecision': pipeline.cpu_precision, 'threads': torch.get_num_threads(), 'meanMs': round(float(np.mean(timings)), 2), 'p95Ms': round(float(np.percentile(timings, 95)), 2), 'maxMs': round(max(timings), 2)}), flush=True)
         return 0
-    devices = device_summary()
+    devices = _preflight_devices if _preflight_devices is not None else device_summary()
     if args.check:
         print(f"[Check] Ready {json.dumps(devices, ensure_ascii=True)}", flush=True)
         return 0

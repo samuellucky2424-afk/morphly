@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import os from 'node:os';
 import { createDesktopUpdater } from './updater.js';
+import { createVoiceEngineSetup } from './voice-engine-setup.js';
 import { createVirtualMicrophoneService } from './virtual-microphone.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
@@ -93,7 +94,7 @@ configureChromiumCachePaths();
 let mainWindow = null;
 let desktopUpdater = null;
 let morphlyVcRuntime = null;
-let voiceEngineInstallPromise = null;
+let voiceEngineSetup = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
@@ -1338,6 +1339,10 @@ function registerMorphlyVcHandlers() {
     requireMainRenderer(event);
     return runtime().getStatus();
   });
+  ipcMain.handle('morphlyvc:refresh-devices', (event) => {
+    requireMainRenderer(event);
+    return runtime().refreshDevices();
+  });
   ipcMain.handle('morphlyvc:reference', (event, payload) => {
     requireMainRenderer(event);
     const bytes = payload?.data;
@@ -1363,66 +1368,32 @@ function registerMorphlyVcHandlers() {
     requireMainRenderer(event);
     return runtime().stop();
   });
-  ipcMain.handle('morphlyvc:engine-status', (event) => {
-    requireMainRenderer(event);
-    const dataRoot = getVoiceEngineDataRoot();
-    return {
-      installed: isVoiceEngineInstalled(dataRoot),
-      installPath: getVoiceEnginePath(dataRoot),
-      available: isPackagedRuntime,
-    };
-  });
-  ipcMain.handle('morphlyvc:install-engine', (event) => {
-    requireMainRenderer(event);
-    if (voiceEngineInstallPromise) {
-      return voiceEngineInstallPromise;
-    }
-
-    const dataRoot = getVoiceEngineDataRoot();
-    voiceEngineInstallPromise = (async () => {
-      try {
-        const confirmation = await dialog.showMessageBox(mainWindow, {
-          type: 'question',
-          title: 'Install voice engine',
-          message: 'Do you want to install the Morphly voice changer engine?',
-          detail: 'This optional download is several gigabytes and may take a while. You only need it for voice changing. Morphly will download and install it automatically.',
-          buttons: ['Install voice engine', 'Not now'],
-          defaultId: 0,
-          cancelId: 1,
-          noLink: true,
-        });
-        if (confirmation.response !== 0) return { success: false, cancelled: true };
-        const result = await installVoiceEngine({
-          installRoot: dataRoot,
-          tempRoot: path.join(app.getPath('temp'), 'morphly-voice-engine'),
-          version: app.getVersion(),
-          onProgress: (progress) => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('morphlyvc:install-progress', progress);
-            }
-          },
-        });
-
-        // Recreate the controller so it serves the freshly installed runtime.
-        if (isPackagedRuntime) {
-          morphlyVcRuntime?.shutdown?.();
-          morphlyVcRuntime = createMorphlyVcController();
-        }
-
-        return { success: true, ...result };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error
-            ? error.message
-            : 'Morphly could not install the voice engine.',
-        };
-      } finally {
-        voiceEngineInstallPromise = null;
+  const dataRoot = getVoiceEngineDataRoot();
+  voiceEngineSetup = createVoiceEngineSetup({
+    isInstalled: () => isVoiceEngineInstalled(dataRoot) || (isPackagedRuntime && isVoiceEngineInstalled(path.join(process.resourcesPath, 'morphlyvc'))),
+    install: onProgress => installVoiceEngine({
+      installRoot: dataRoot,
+      tempRoot: path.join(dataRoot, 'downloads'),
+      version: app.getVersion(),
+      onProgress,
+    }),
+    onInstalled: () => {
+      if (isPackagedRuntime) {
+        morphlyVcRuntime?.shutdown?.();
+        morphlyVcRuntime = createMorphlyVcController();
       }
-    })();
-
-    return voiceEngineInstallPromise;
+    },
+    onState: state => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('morphlyvc:install-progress', state);
+    },
+  });
+  ipcMain.handle('morphlyvc:engine-status', event => {
+    requireMainRenderer(event);
+    return { ...voiceEngineSetup.getState(), installPath: getVoiceEnginePath(dataRoot), available: isPackagedRuntime };
+  });
+  ipcMain.handle('morphlyvc:install-engine', event => {
+    requireMainRenderer(event);
+    return voiceEngineSetup.start();
   });
   const cableResourcesPath = isPackagedRuntime
     ? path.join(process.resourcesPath, 'vbcable')
@@ -1477,6 +1448,8 @@ app.whenReady().then(async () => {
   registerUpdaterHandlers();
   createWindow();
   desktopUpdater.startBackgroundChecks();
+  // Start immediately on launch, independently of sign-in and dashboard mounts.
+  if (isPackagedRuntime) void voiceEngineSetup.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
