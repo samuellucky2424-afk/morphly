@@ -106,6 +106,8 @@ type AiSessionResponse = {
   credits?: number;
   maxSeconds?: number;
   sessionId?: string;
+  billingVersion?: number;
+  serverNow?: number;
   expiresAt?: string | null;
   model?: string;
   provider?: RealtimeProvider;
@@ -424,7 +426,7 @@ const viduSdkReadyPromise = import('@/lib/vidu-realtime');
 function Dashboard() {
   const { user, logout } = useAuth();
   const [onboardingChecked, setOnboardingChecked] = useState(false);
-  const { credits, setCredits, setSessionStatus } = useApp();
+  const { credits, setCredits, setSessionStatus, translationActive } = useApp();
   const navigate = useNavigate();
 
   const [isStreaming, setIsStreaming] = useState(false);
@@ -456,7 +458,7 @@ function Dashboard() {
   const [prompt] = useState(BASE_PROMPT);
 
   const isBlendedMode = Boolean(referenceImage) && (activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()));
-  const currentCreditRate = getCreditRatePerSecond(
+  const currentCreditRate = translationActive ? (isStreaming ? 4 : 2.5) : getCreditRatePerSecond(
     Boolean(referenceImage),
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
     selectedProvider,
@@ -499,6 +501,10 @@ function Dashboard() {
   const usageFlushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generationMeterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingBillableSecondsRef = useRef(0);
+  const pendingVideoSecondsRef = useRef(new Map<number, boolean>());
+  const usageFlushInFlightRef = useRef<Promise<void> | null>(null);
+  const billingVersionRef = useRef(1);
+  const billingClockOffsetRef = useRef(0);
   const lastGenerationMeterAtRef = useRef(0);
   const frameCallbackHandleRef = useRef<number | null>(null);
   const firstFrameReadyRef = useRef<(() => void) | null>(null);
@@ -731,16 +737,32 @@ function Dashboard() {
   }, []);
 
   const flushBillableUsage = useCallback(async (options?: { keepalive?: boolean; suppressAutoStop?: boolean }) => {
+    // A stop must wait for the preceding heartbeat before closing its session.
+    // Otherwise an in-flight report could arrive after close and lose usage.
+    while (usageFlushInFlightRef.current) await usageFlushInFlightRef.current;
     if (!user?.id || !sessionIdRef.current) {
       return true;
     }
 
     const secondsDelta = Math.floor(pendingBillableSecondsRef.current);
-    if (secondsDelta <= 0) {
+    const epochSeconds = [...pendingVideoSecondsRef.current.keys()].sort((a,b) => a-b).slice(0,60);
+    const blendedSeconds = epochSeconds.filter(second => pendingVideoSecondsRef.current.get(second));
+    const preciseBilling = billingVersionRef.current === 2;
+    if (preciseBilling ? epochSeconds.length === 0 : secondsDelta <= 0) {
       return true;
     }
 
     pendingBillableSecondsRef.current -= secondsDelta;
+    for (const second of epochSeconds) pendingVideoSecondsRef.current.delete(second);
+    let releaseFlush!: () => void;
+    let flushFinished = false;
+    usageFlushInFlightRef.current = new Promise<void>(resolve => { releaseFlush = resolve; });
+    const finishFlush = () => {
+      if (flushFinished) return;
+      flushFinished = true;
+      usageFlushInFlightRef.current = null;
+      releaseFlush();
+    };
 
     try {
       const response = await apiRequest<{
@@ -753,12 +775,14 @@ function Dashboard() {
           userId: user.id,
           sessionId: sessionIdRef.current,
           secondsDelta,
+          ...(preciseBilling ? { billingVersion: 2, epochSeconds, blendedSeconds } : {}),
         }),
       });
 
       if (response.remainingCredits !== undefined) {
         setCredits(response.remainingCredits);
       }
+      finishFlush();
 
       if (response.shouldStop && !options?.suppressAutoStop) {
         await handleStopRef.current?.({ silent: true });
@@ -770,7 +794,11 @@ function Dashboard() {
 
       return true;
     } catch (error) {
-      pendingBillableSecondsRef.current += secondsDelta;
+      if (!flushFinished) {
+        pendingBillableSecondsRef.current += secondsDelta;
+        for (const second of epochSeconds) pendingVideoSecondsRef.current.set(second, blendedSeconds.includes(second));
+      }
+      finishFlush();
       console.error('Failed to record billable usage:', error);
       return false;
     }
@@ -780,6 +808,7 @@ function Dashboard() {
     clearUsageFlushInterval();
     clearGenerationMeterInterval();
     pendingBillableSecondsRef.current = 0;
+    pendingVideoSecondsRef.current.clear();
   }, [clearGenerationMeterInterval, clearUsageFlushInterval]);
 
   const recordBillableGenerationTime = useCallback(() => {
@@ -799,6 +828,11 @@ function Dashboard() {
     );
 
     if (secondsDelta > 0) {
+      if (billingVersionRef.current === 2) {
+        for (let i=0;i<secondsDelta;i++) {
+          pendingVideoSecondsRef.current.set(Math.floor((lastGenerationMeterAtRef.current + billingClockOffsetRef.current) / 1000) + i, isBlendedModeRef.current);
+        }
+      }
       lastGenerationMeterAtRef.current += secondsDelta * 1000;
       // Xmax bills while generation is running. Meter elapsed time only after
       // a decoded remote frame is visible, so low-power frame rates do not
@@ -2305,6 +2339,11 @@ function Dashboard() {
             userId: activeUserId,
             sessionId: activeSessionId,
             secondsDelta: finalSecondsDelta > 0 ? finalSecondsDelta : undefined,
+            ...(billingVersionRef.current === 2 ? {
+              billingVersion: 2,
+              epochSeconds: [...pendingVideoSecondsRef.current.keys()].slice(0,60),
+              blendedSeconds: [...pendingVideoSecondsRef.current].filter(([, blended]) => blended).map(([second]) => second).slice(0,60),
+            } : {}),
           }),
         })
       : null;
@@ -2859,6 +2898,7 @@ function Dashboard() {
             installationId: getInstallationId(),
             platform: window.electron ? 'desktop' : 'web',
             provider: requestedProvider,
+            billingVersion: 2,
             ...(viduReference ? { referenceImage: viduReference, editingType: 'subject_replacement' } : {}),
           }),
         });
@@ -2872,6 +2912,8 @@ function Dashboard() {
 
         sessionTokenRef.current = sessionToken;
         sessionIdRef.current = startResponse.sessionId || '';
+        billingVersionRef.current = startResponse.billingVersion || 1;
+        billingClockOffsetRef.current = typeof startResponse.serverNow === 'number' ? startResponse.serverNow - Date.now() : 0;
 
         const responseProvider = resolveRealtimeProvider(startResponse.provider);
         if (responseProvider !== requestedProvider) {

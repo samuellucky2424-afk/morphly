@@ -3,6 +3,7 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { realtimeWalletBalance } from '../realtime-billing.js';
 
 const CREDITS_PER_SECOND = 2;
 
@@ -79,9 +80,9 @@ export default async function handler(req, res) {
     const walletData = walletResult.data;
     const activeSession = activeSessionResult.data;
 
-    const walletCredits = normalizeCredits(walletData?.credits);
+    const walletCredits = await realtimeWalletBalance(supabaseAdmin, userId, walletData?.credits);
 
-    if (!activeSession) {
+    if (!activeSession || activeSession.billing_version === 2) {
       return res.json({ credits: walletCredits, remainingCredits: walletCredits, shouldStop: walletCredits <= 0 });
     }
 

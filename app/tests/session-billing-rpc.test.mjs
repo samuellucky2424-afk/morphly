@@ -125,3 +125,18 @@ test('legacy claim format remains supported', async t => {
   assert.equal((await record(db, 1)).remainingCredits, 98);
   assert.equal((await finalize(db)).remainingCredits, 98);
 });
+
+test('combined billing upgrades the real legacy RPCs without double debits', async t => {
+  const db = await createDatabase(t);
+  await db.exec("ALTER TABLE sessions ADD COLUMN start_time TIMESTAMPTZ DEFAULT clock_timestamp()-interval '60 seconds'");
+  await db.exec(fs.readFileSync(new URL('../../supabase/migrations/20260929120000_add_combined_realtime_billing.sql', import.meta.url), 'utf8'));
+  await setClaims(db, 'service_role');
+  await db.exec('SET ROLE service_role');
+  await db.query('SELECT configure_realtime_video($1,$2,5)', [userId,sessionId]);
+  await assert.rejects(record(db, 1), /Timestamp billing required/);
+  const epoch = Math.floor(Date.now()/1000)-1;
+  const charged = await db.query('SELECT record_realtime_video_usage($1,$2,$3) AS result', [userId,sessionId,[epoch]]);
+  assert.equal(charged.rows[0].result.remainingCredits, 97.5);
+  assert.equal((await finalize(db, 10)).remainingCredits, 97.5);
+  assert.equal((await finalize(db, 10)).remainingCredits, 97.5);
+});

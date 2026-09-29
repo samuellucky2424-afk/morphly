@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { recordRealtimeVideo } from '../realtime-billing.js';
 
 const HEARTBEAT_SECONDS = 30;
 const CREDITS_PER_SECOND = 2;
@@ -80,6 +81,9 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'sessionId is required' });
     }
 
+    if (req.body?.billingVersion === 2) {
+      return res.json(await recordRealtimeVideo(supabaseAdmin, userId, req.body));
+    }
     const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
     if (secondsDelta <= 0) {
       return res.status(400).json({ error: 'secondsDelta must be greater than 0' });

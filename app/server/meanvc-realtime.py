@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gc
 from collections import deque
 import json
@@ -313,6 +314,135 @@ class BufferedVoiceStream:
             raise RuntimeError('Audio processing did not stop safely. Restart Morphly before starting another voice session.')
 
 
+class TranslationBuffer:
+    """Bounded PCM playback buffer; network resampling stays off audio callbacks."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.samples = np.array([], dtype=np.float32)
+        self.resampler = soxr.ResampleStream(24000, SAMPLE_RATE, 1, dtype='float32', quality='HQ')
+
+    def push(self, encoded):
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > 24000 * 2 * 4 or len(raw) % 2:
+            raise ValueError('Invalid translated audio frame.')
+        samples = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
+        with self.lock:
+            converted = self.resampler.resample_chunk(samples, last=False)
+            if len(self.samples) + len(converted) > SAMPLE_RATE * 4:
+                raise RuntimeError('Translation playback cannot keep up. Stop and reconnect.')
+            self.samples = np.concatenate([self.samples, converted])
+
+    def take(self, frames):
+        output = np.zeros(frames, dtype=np.float32)
+        with self.lock:
+            count = min(frames, len(self.samples))
+            output[:count] = self.samples[:count]
+            self.samples = self.samples[count:]
+        return output
+
+    def clear(self):
+        with self.lock:
+            self.samples = np.array([], dtype=np.float32)
+            self.resampler = soxr.ResampleStream(24000, SAMPLE_RATE, 1, dtype='float32', quality='HQ')
+
+
+class TranslatedVoiceStream(BufferedVoiceStream):
+    """Mic -> Gemini -> MeanVC -> cable A; cable B -> Gemini -> headphones."""
+    def __init__(self, pipeline, pitch_processor, input_device, output_device, on_error, translation):
+        self.translated = {'outgoing': TranslationBuffer(), 'incoming': TranslationBuffer()}
+        self.capture_queue = queue.Queue(maxsize=8)
+        self.incoming_stream = None
+        self.translation_stopped = False
+        super().__init__(pipeline, pitch_processor, input_device, output_device, on_error)
+        self.capture_worker = threading.Thread(target=self._send_audio, name='translation-capture', daemon=True)
+        try:
+            if translation.get('incoming'):
+                incoming = int(translation['incomingDevice'])
+                headphones = int(translation['headphonesDevice'])
+                incoming_api = sd.query_devices(incoming)['hostapi']
+                if incoming_api != sd.query_devices(headphones)['hostapi']:
+                    raise ValueError('Choose incoming cable and headphones using the same audio driver.')
+                extra = sd.WasapiSettings(auto_convert=True) if sd.query_hostapis(incoming_api)['name'] == 'Windows WASAPI' else None
+                self.incoming_stream = sd.Stream(samplerate=SAMPLE_RATE, blocksize=self.chunk_size,
+                    device=(incoming, headphones), channels=1, dtype='float32', latency='low',
+                    extra_settings=(extra, extra), callback=self._incoming_callback)
+        except Exception:
+            self.stream.close()
+            raise
+
+    def _capture(self, direction, samples):
+        try:
+            self.capture_queue.put_nowait((direction, samples))
+        except queue.Full:
+            # Never block PortAudio or retain stale microphone audio.
+            try:
+                self.capture_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.capture_queue.put_nowait((direction, samples))
+            except queue.Full:
+                pass
+
+    def _enqueue_latest_input(self, entry):
+        self._capture('outgoing', entry[1])
+        super()._enqueue_latest_input((time.monotonic(), self.translated['outgoing'].take(self.chunk_size)))
+
+    def _incoming_callback(self, indata, outdata, frames, _time_info, _status):
+        outdata.fill(0)
+        if self.stop_event.is_set():
+            return
+        self._capture('incoming', indata[:, 0].copy())
+        outdata[:, 0] = self.translated['incoming'].take(frames)
+
+    def _send_audio(self):
+        while not self.stop_event.is_set():
+            try:
+                direction, samples = self.capture_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            pcm = (np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes()
+            message = {'type': 'audio', 'direction': direction, 'data': base64.b64encode(pcm).decode('ascii')}
+            try:
+                sys.stdout.write('[TranslationAudio] ' + json.dumps(message) + '\n')
+                sys.stdout.flush()
+            except Exception as error:
+                self.on_error(error)
+                return
+
+    def receive_translation(self, command):
+        direction = command.get('direction')
+        if direction not in self.translated:
+            raise ValueError('Invalid translation direction.')
+        if command.get('clear'):
+            self.translated[direction].clear()
+        else:
+            self.translated[direction].push(command['data'])
+
+    def start(self):
+        self.capture_worker.start()
+        try:
+            super().start()
+            if self.incoming_stream:
+                self.incoming_stream.start()
+        except Exception:
+            self.stop()
+            raise
+
+    def stop(self):
+        if self.translation_stopped:
+            return
+        self.translation_stopped = True
+        self.stop_event.set()
+        if self.incoming_stream:
+            self.incoming_stream.abort()
+            self.incoming_stream.close()
+            self.incoming_stream = None
+        super().stop()
+        if self.capture_worker.ident:
+            self.capture_worker.join(timeout=2)
+
+
 def patch_torch_jit() -> None:
     """Match the compatibility patch used by the official MeanVC2 launcher."""
     original_script = torch_jit.script
@@ -551,12 +681,15 @@ def run_warm_engine(args: argparse.Namespace, devices: dict[str, object], stop_e
         pitch_processor = PitchProcessor(float(command.get("pitch", 0.0)))
         input_device = int(command.get("input_device", devices["defaultInput"]))
         output_device = int(command.get("output_device", devices["defaultOutput"]))
-        audio_stream = BufferedVoiceStream(
+        translation = command.get('translation')
+        stream_class = TranslatedVoiceStream if translation else BufferedVoiceStream
+        audio_stream = stream_class(
             pipeline,
             pitch_processor,
             input_device,
             output_device,
             lambda error: commands.put({"type": "audio-error", "message": str(error)}),
+            **({'translation': translation} if translation else {}),
         )
         audio_stream.start()
         print(
@@ -583,6 +716,13 @@ def run_warm_engine(args: argparse.Namespace, devices: dict[str, object], stop_e
             elif command_type == "pitch":
                 pitch_processor.set_semitones(float(command["semitones"]))
                 print(f"[Pitch] {pitch_processor.semitones:+.1f} semitones", flush=True)
+            elif command_type == "translation-audio":
+                if isinstance(audio_stream, TranslatedVoiceStream):
+                    try:
+                        audio_stream.receive_translation(command)
+                    except Exception:
+                        stop_audio()
+                        print('[Stream] Error Translation playback failed. Start again to reconnect.', file=sys.stderr, flush=True)
             elif command_type == "stop":
                 stop_audio()
                 print("[Stream] Stopped", flush=True)

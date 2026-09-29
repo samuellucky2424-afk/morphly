@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
+import { missingBillingFunction, realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
@@ -654,6 +655,7 @@ export default async function handler(req, res) {
       userCredits = normalizeCredits(refreshedWallet.data?.credits);
     }
 
+    userCredits = await realtimeWalletBalance(supabaseAdmin, userId, userCredits);
     if (userCredits < minimumCreditRate) {
       await logRequestEvent('start-session.insufficient_credits', {
         userId,
@@ -708,6 +710,14 @@ export default async function handler(req, res) {
       return res.status(500).json({ allowed: false, error: 'Failed to create session' });
     }
 
+    let billingVersion = 1;
+    if (req.body?.billingVersion === 2) {
+      const billingSetup = await supabaseAdmin.rpc('configure_realtime_video', {
+        p_user: userId, p_session: newSession.id, p_rate_half: provider === 'vidu' ? 5 : 4,
+      });
+      if (billingSetup.error && !missingBillingFunction(billingSetup.error)) throw billingSetup.error;
+      if (!billingSetup.error) billingVersion = 2;
+    }
     const providerCredentialStartedAt = Date.now();
     const providerSession = await createProviderTemporaryCredential({
       provider,
@@ -786,6 +796,8 @@ export default async function handler(req, res) {
       allowed: true,
       sessionId: newSession.id,
       credits: userCredits,
+      billingVersion,
+      serverNow: Date.now(),
       maxSeconds: providerSession.sessionLimit || maxSeconds,
       baseUrl: providerSession.baseUrl,
       token: providerSession.token,

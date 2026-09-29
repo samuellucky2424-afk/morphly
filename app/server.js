@@ -1,5 +1,6 @@
 import './shared/load-server-environment.js';
 import express from 'express';
+import { attachTranslationGateway } from './server/translation-gateway.js';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,7 +8,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { supabaseAdminConfigError } from './server/supabase-admin.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './server/supabase-admin.js';
 import { logRequestEvent } from '../shared/backend-logger.js';
 import { handleApiRoute } from './server/api-router.js';
 import { createMeanVcRuntimeController } from './server/meanvc-runtime.js';
@@ -108,9 +109,9 @@ app.post('/api/local/meanvc/prepare', (req, res) => {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to prepare the MorphlyVC voice.' });
   }
 });
-app.post('/api/local/meanvc/start', (req, res) => {
+app.post('/api/local/meanvc/start', async (req, res) => {
   try {
-    res.json(meanVcRuntime.start(req.body ?? {}));
+    res.json(await meanVcRuntime.start(req.body ?? {}));
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to start MorphlyVC.' });
   }
@@ -137,7 +138,7 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   if (supabaseAdminConfigError) {
     console.warn(`[config] ${supabaseAdminConfigError}`);
@@ -149,6 +150,8 @@ app.listen(PORT, () => {
     console.warn(`[config] ${viduConfigError}`);
   }
 });
+
+attachTranslationGateway(httpServer, { supabase: supabaseAdmin });
 
 process.once('exit', () => {
   meanVcRuntime.shutdown();

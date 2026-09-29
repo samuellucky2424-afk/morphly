@@ -110,4 +110,37 @@ class VoiceTests(unittest.TestCase):
         self.assertEqual(len(result['inputs']),3)
         self.assertEqual(result['inputs'][0]['hostapi'],'Windows WASAPI')
 
+class TranslationTests(VoiceTests):
+    def encoded(self, value):
+        import base64
+        return base64.b64encode(np.full(4800, int(value * 32767), dtype='<i2').tobytes()).decode('ascii')
+
+    def test_translation_audio_is_injected_before_meanvc_without_microphone_loopback(self):
+        voice = bridge.TranslatedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append, {'incoming': False})
+        voice.receive_translation({'direction': 'outgoing', 'data': self.encoded(.25)})
+        voice._enqueue_latest_input((time.monotonic(), self.block(.9)[:, 0]))
+        direction, captured = voice.capture_queue.get_nowait()
+        self.assertEqual(direction, 'outgoing')
+        self.assertAlmostEqual(float(np.mean(captured)), .9, places=4)
+        _, model_input = voice.input_queue.get_nowait()
+        self.assertGreater(float(np.mean(model_input)), .2)
+        self.assertLess(float(np.mean(model_input)), .3)
+        voice.stream.start.assert_not_called()
+
+    def test_incoming_audio_plays_only_to_headphones_and_does_not_enter_voice_model(self):
+        voice = bridge.TranslatedVoiceStream(self.pipeline, bridge.PitchProcessor(), 1, 2, self.failures.append, {'incoming': True, 'incomingDevice': 3, 'headphonesDevice': 4})
+        voice.receive_translation({'direction': 'incoming', 'data': self.encoded(.5)})
+        output = self.block(0)
+        voice._incoming_callback(self.block(.8), output, 2560, None, False)
+        self.assertGreater(float(np.mean(output)), .4)
+        self.assertEqual(voice.capture_queue.get_nowait()[0], 'incoming')
+        self.assertEqual(voice.input_queue.qsize(), 0)
+        self.assertEqual(self.pipeline.calls, [])
+
+    def test_playback_clear_removes_queued_translation(self):
+        buffer = bridge.TranslationBuffer()
+        buffer.push(self.encoded(.5))
+        buffer.clear()
+        self.assertEqual(np.count_nonzero(buffer.take(2560)), 0)
+
 if __name__=='__main__': unittest.main()

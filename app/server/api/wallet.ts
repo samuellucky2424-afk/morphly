@@ -3,6 +3,7 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { realtimeWalletBalance } from '../realtime-billing.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -61,7 +62,7 @@ export default async function handler(req, res) {
     
     res.json({
       balance: wallet?.balance || 0,
-      credits: wallet?.credits || 0,
+      credits: await realtimeWalletBalance(supabaseAdmin, userId, wallet?.credits),
       transactions: mappedTxs
     });
   } catch (error) {

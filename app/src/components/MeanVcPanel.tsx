@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { TranslationControls, type TranslationSettings } from './TranslationControls';
+import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
+import { useApp } from '@/context/AppContext';
+import { supabase } from '@/lib/supabase';
 import {
   AudioWaveform,
   Check,
@@ -100,6 +104,7 @@ type MeanVcStatus = {
       pitch: number;
       inputDevice: number | null;
       outputDevice: number | null;
+      translation?: { enabled: boolean } | null;
     } | null;
     startedAt: string | null;
     logs: Array<{
@@ -181,7 +186,7 @@ async function requestMorphlyVc<T>(action: MorphlyVcAction, payload?: Record<str
 }
 
 function isVirtualMicrophonePlaybackDevice(name: string) {
-  return /\bCABLE Input\b/i.test(name) || /VB-Audio.+Cable Input/i.test(name);
+  return /\bCABLE(?:-[A-D])? Input\b/i.test(name) || /VB-Audio.+Cable Input/i.test(name);
 }
 
 function isMultiChannelVirtualCableDevice(name: string) {
@@ -189,7 +194,7 @@ function isMultiChannelVirtualCableDevice(name: string) {
 }
 
 function isVirtualMicrophoneRecordingDevice(name: string) {
-  return /\bCABLE Output\b/i.test(name) || /VB-Audio.+Cable Output/i.test(name);
+  return /\bCABLE(?:-[A-D])? Output\b/i.test(name) || /VB-Audio.+Cable Output/i.test(name);
 }
 
 function getSelectableMicrophoneInputs(devices: NonNullable<MeanVcStatus['standalone']>['40ms']['audioDevices']) {
@@ -237,6 +242,7 @@ const INITIAL_VOICE_ENGINE_STATE: VoiceEngineInstallState = {
 };
 
 export function MeanVcPanel() {
+  const { setTranslationActive, setCredits } = useApp();
   const [status, setStatus] = useState<MeanVcStatus | null>(null);
   const [voiceEngine, setVoiceEngine] = useState<VoiceEngineInstallState>(INITIAL_VOICE_ENGINE_STATE);
   const model: MeanVcModel = '40ms';
@@ -247,6 +253,7 @@ export function MeanVcPanel() {
   const [pitchSemitones, setPitchSemitones] = useState(0);
   const [routing, setRouting] = useState<{ input: number | null; output: number | null }>({ input: null, output: null });
   const { input: inputDevice, output: outputDevice } = routing;
+  const [translation, setTranslation] = useState<TranslationSettings>({ enabled: false, targetLanguage: 'es', incoming: true, incomingDevice: null, headphonesDevice: null });
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -285,6 +292,26 @@ export function MeanVcPanel() {
   const installing40ms = Boolean(status?.standalone?.['40ms']?.installing);
   const installing120ms = Boolean(status?.standalone?.['120ms']?.installing);
   const runtimeState = status?.runtime.state;
+  const translatorRunning = runtimeState === 'running' && Boolean(status?.runtime.configuration?.translation?.enabled);
+  useEffect(() => {
+    setTranslationActive(translatorRunning);
+    return () => setTranslationActive(false);
+  }, [translatorRunning, setTranslationActive]);
+  useEffect(() => {
+    if (!translatorRunning) return;
+    let cancelled = false;
+    const refreshCredits = async () => {
+      try {
+        const response = await apiFetchWithAuth('/wallet');
+        if (!response.ok) return;
+        const wallet = await response.json();
+        if (!cancelled && Number.isFinite(wallet.credits)) setCredits(wallet.credits);
+      } catch { /* The relay independently enforces credit authorization. */ }
+    };
+    void refreshCredits();
+    const timer = window.setInterval(refreshCredits, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [translatorRunning, setCredits]);
   const engineState = status?.preload?.engineState;
   const voiceState = status?.preload?.voiceState;
   const engineWarming = !status || engineState === 'loading';
@@ -538,11 +565,20 @@ export function MeanVcPanel() {
       const nextReferenceId = referenceId;
       if (!nextReferenceId) return;
 
+      let translationRequest;
+      if (translation.enabled) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) throw new Error('Sign in to use real-time translation.');
+        const configuration = await readApiResponse<{ translationGatewayUrl?: string }>(await apiFetch('/public-config'));
+        if (!configuration.translationGatewayUrl) throw new Error('Real-time translation is not configured on the server yet.');
+        translationRequest = { ...translation, sourceLanguage: 'en', gatewayUrl: configuration.translationGatewayUrl, accessToken: session.access_token };
+      }
       setStatus(await requestMorphlyVc<MeanVcStatus>('start', {
         model,
         device,
         referenceId: nextReferenceId,
         pitch: pitchSemitones,
+        translation: translationRequest,
         inputDevice,
         outputDevice,
       }));
@@ -932,6 +968,8 @@ export function MeanVcPanel() {
               {runtimeActive ? 'Pitch changes are applied when you release the control.' : 'This setting is applied when conversion starts.'}
             </p>
           </section>
+
+          <TranslationControls value={translation} onChange={setTranslation} disabled={runtimeActive || isBusy} devices={audioDevices} />
 
           {voiceEngine.available && !voiceEngine.installed ? (
             <section className="border-b border-border px-4 py-3">
