@@ -134,6 +134,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.100.1",
+    "@vercel/functions": "^3.9.9",
     "@xmaxai/sdk-global": "^1.1.7",
     "aliyun-rtc-sdk": "7.1.9",
     "class-variance-authority": "^0.7.1",
@@ -162,8 +163,8 @@
     "tailwind-merge": "^3.4.0",
     "uuid": "^9.0.0",
     "vaul": "^1.1.2",
-    "zod": "^4.3.5",
-    "ws": "8.20.0"
+    "ws": "8.20.0",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

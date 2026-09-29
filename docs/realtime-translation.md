@@ -5,12 +5,14 @@ English microphone audio passes through Gemini Live Translation, then the local 
 ## Deploy and activate
 
 1. Apply `supabase/migrations/20260929120000_add_combined_realtime_billing.sql` after the existing billing migrations. Deploy the updated API and desktop together. Restart existing face sessions before enabling translation.
-2. On a persistent Node host, set `GEMINI_API_KEY`, the existing Supabase server credentials, and optionally `GEMINI_TRANSLATION_MODEL` (default `gemini-3.5-live-translate-preview`). Keep the key server-side; never use a `VITE_` secret.
-3. From `app`, run `npm run translation:server`. The service exposes `/api/translation/live` and `/health` on `PORT` (default 3001). Put it behind TLS with WebSocket upgrades enabled. The development API server also exposes the relay on port 3000.
-4. On the API host, set `TRANSLATION_GATEWAY_URL=wss://your-node-host/api/translation/live`. `/api/public-config` publishes only this URL. Local development permits `ws://127.0.0.1:3000/api/translation/live`.
-5. Build the updated desktop app. The bundled voice archive needs no additional Python dependency. Run a live two-way audio test before enabling the feature for customers.
+2. In the existing Vercel project's Production environment, set `GEMINI_API_KEY`, the existing Supabase server credentials (`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_SERVICE_KEY`), and optionally `GEMINI_TRANSLATION_MODEL` (default `gemini-3.5-live-translate-preview`). Keep secrets server-side; never use a `VITE_` secret.
+3. Enable Fluid Compute in Vercel's Functions settings and deploy this revision after saving the variables. The Node HTTP server export at `api/translation/live.ts` serves the WebSocket relay. Both repository-root and `app`-root Vercel projects are supported.
+4. Leave `TRANSLATION_GATEWAY_URL` unset for the built-in Vercel relay. `/api/public-config` discovers its URL from Vercel's deployment environment, never from request headers. Production uses `VERCEL_PROJECT_PRODUCTION_URL`; previews use `VERCEL_URL`. If system environment variables are disabled, enable them or explicitly set `TRANSLATION_GATEWAY_URL=wss://your-vercel-domain/api/translation/live`.
+5. Check `/api/translation/live` over HTTPS: a configured server returns `{"configured":true,"transport":"websocket"}`; missing credentials return 503. This checks credential presence, not key validity or the billing migration. Check that `/api/public-config` publishes the expected secure relay URL. Restart Morphly Desktop (v2.5.16 or later) and test translation. No desktop rebuild is needed for this server update.
 
-Vercel's request/response API can publish the relay URL; the relay itself requires a host supporting persistent WebSocket servers. Translation refuses to start without relay configuration and valid credit authorization. Repository changes do not provision or configure that host.
+[Vercel WebSockets](https://vercel.com/docs/functions/websockets) require Fluid Compute and are subject to the function duration limit. The route is configured for 300 seconds; the relay stops at 270 seconds and settles unused reservations with `waitUntil`. Restart voice conversion to reconnect. Automatic reconnection is not yet implemented. The key alone does not activate an older deployment that lacks this route.
+
+For a separate persistent Node host, run `npm run translation:server` from `app` with the same server credentials. It exposes `/api/translation/live` and `/health` on `PORT` (default 3001); put it behind TLS with WebSocket upgrades enabled and set `TRANSLATION_GATEWAY_URL=wss://your-node-host/api/translation/live` on the API host. This is optional. Local development permits `ws://127.0.0.1:3000/api/translation/live`.
 
 ## Audio setup
 

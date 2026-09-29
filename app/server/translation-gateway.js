@@ -7,12 +7,18 @@ const GEMINI_URL = 'wss://generativelanguage.googleapis.com/ws/google.ai.generat
 export function attachTranslationGateway(server, {
   supabase,
   apiKey = process.env.GEMINI_API_KEY,
+  maxSessionMs = 0,
+  waitUntil = () => {},
   model = process.env.GEMINI_TRANSLATION_MODEL || 'gemini-3.5-live-translate-preview',
   createUpstream = () => new WebSocket(GEMINI_URL, { headers: { 'x-goog-api-key': apiKey }, maxPayload: 2 * 1024 * 1024, handshakeTimeout: 10000 }),
 } = {}) {
   const wss = new WebSocketServer({ server, path: '/api/translation/live', maxPayload: 32 * 1024, perMessageDeflate: false });
   const users = new Set();
   wss.on('connection', (client) => {
+    let resolveLifetime;
+    // Register while the upgrade request context is active. This keeps cleanup
+    // alive on serverless hosts even if the client disconnects immediately.
+    waitUntil(new Promise(resolve => { resolveLifetime = resolve; }));
     const sessionId = randomUUID();
     const upstreams = new Map();
     let userId, ownsUser = false, authenticated = false, ready = false, closed = false;
@@ -20,6 +26,9 @@ export function attachTranslationGateway(server, {
     let renewTimer, expiryTimer, billing = Promise.resolve();
     let rateStart = Date.now(), frames = 0;
     const startupTimer = setTimeout(() => finish('Translation connection timed out.'), 20000);
+    const sessionTimer = maxSessionMs > 0
+      ? setTimeout(() => finish('Translation reached the server session limit. Start voice conversion again to reconnect.'), maxSessionMs)
+      : undefined;
     const elapsed = () => startedAt === null ? 0 : Math.ceil((Date.now() - startedAt) / 1000);
     const send = (socket, message) => {
       if (socket.readyState !== WebSocket.OPEN) return;
@@ -48,6 +57,7 @@ export function attachTranslationGateway(server, {
       closed = true;
       const finalSeconds = Math.min(authorizedSeconds, elapsed());
       clearTimeout(startupTimer); clearTimeout(expiryTimer); clearInterval(renewTimer); clearInterval(watchdog);
+      clearTimeout(sessionTimer);
       if (ownsUser) users.delete(userId);
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({ type: message ? 'error' : 'stopped', message }));
@@ -55,7 +65,7 @@ export function attachTranslationGateway(server, {
       }
       for (const socket of upstreams.values()) { socket.on('error', () => {}); socket.terminate(); }
       // Serialize settlement after any pending reservation; retry idempotently.
-      if (startedAt !== null) void billing.then(async () => {
+      const settlement = startedAt !== null ? billing.then(async () => {
         for (let attempt = 0; attempt < 3; attempt++) {
           const result = await supabase.rpc('authorize_translation_usage', {
             p_user: userId, p_session: sessionId, p_seconds: finalSeconds, p_close: true,
@@ -64,7 +74,8 @@ export function attachTranslationGateway(server, {
           await new Promise(resolve => setTimeout(resolve, 1000));
         }
         console.error('Translation settlement needs retry:', sessionId);
-      });
+      }) : Promise.resolve();
+      void settlement.catch(() => console.error('Translation settlement failed:', sessionId)).finally(resolveLifetime);
     }
     const watchdog = setInterval(() => {
       // CPU calibration/reference preparation happens before capture opens.

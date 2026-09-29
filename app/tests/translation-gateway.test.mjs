@@ -11,7 +11,7 @@ const waitFor = async (predicate) => {
   const deadline = Date.now() + 3000;
   while (!predicate()) { if (Date.now() > deadline) assert.fail('Timed out'); await new Promise(resolve => setTimeout(resolve, 10)); }
 };
-async function fixture(t, overrides = {}) {
+async function fixture(t, overrides = {}, gatewayOptions = {}) {
   const upstreams = [], billing = [], received = [], errors = [];
   const server = createServer(); server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const supabase = {
@@ -29,7 +29,7 @@ async function fixture(t, overrides = {}) {
     };
     upstream.terminate = () => { upstream.readyState = WebSocket.CLOSED; upstream.emit('close'); };
     upstreams.push(upstream); queueMicrotask(() => upstream.emit('open')); return upstream;
-  } });
+  }, ...gatewayOptions });
   const client = connectTranslation({ gatewayUrl: `ws://127.0.0.1:${server.address().port}/api/translation/live`, accessToken: 'valid-test-token', targetLanguage: 'es', incoming: true, onAudio: message => received.push(message), onError: message => errors.push(message) });
   t.after(async () => { client.close(); for (const socket of gateway.clients) socket.terminate(); gateway.close(); await new Promise(resolve => server.close(resolve)); });
   return { client, upstreams, billing, received, errors };
@@ -56,6 +56,24 @@ test('billing failure closes both directions without forwarding microphone audio
   await waitFor(() => f.errors.length > 0);
   assert.ok(f.upstreams.every(socket => !socket.messages.some(message => message.realtimeInput)));
   assert.match(f.errors[0], /credits/);
+});
+
+test('host session deadline stops both directions and keeps settlement alive after disconnect', async t => {
+  let lifetime, settled = false;
+  const f = await fixture(t, {}, {
+    maxSessionMs: 250,
+    waitUntil: promise => { lifetime = promise; promise.then(() => { settled = true; }); },
+  });
+  await f.client.ready;
+  assert.equal(settled, false);
+  f.client.send({ type: 'audio', direction: 'outgoing', data: 'AAAAAA==' });
+  await waitFor(() => f.received.length === 1);
+  await lifetime;
+  await waitFor(() => f.errors.length > 0);
+  assert.match(f.errors[0], /server session limit/);
+  assert.ok(f.upstreams.every(socket => socket.readyState === WebSocket.CLOSED));
+  assert.ok(f.billing.at(-1).p_close);
+  assert.ok(f.billing.at(-1).p_seconds <= 1);
 });
 
 test('rejected authentication does not open Gemini sessions', async t => {
