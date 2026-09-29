@@ -30,7 +30,7 @@ export function TranslationControls({ value, onChange, disabled, devices }: {
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <Languages aria-hidden="true" className="size-4 text-primary" />
-          <label id="translation-title" htmlFor="translation-enabled" className="text-sm font-semibold">Real-time translator</label>
+          <label id="translation-title" htmlFor="translation-enabled" className="text-sm font-semibold">Morphly Translator</label>
         </div>
         <Switch id="translation-enabled" checked={value.enabled} disabled={disabled}
           onCheckedChange={checked => checked ? setConfirmOpen(true) : update({ enabled: false })} />
@@ -79,9 +79,9 @@ export function TranslationControls({ value, onChange, disabled, devices }: {
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Turn on real-time translation?</AlertDialogTitle>
+            <AlertDialogTitle>Turn on Morphly Translator?</AlertDialogTitle>
             <AlertDialogDescription>
-              Voice translation alone costs 2.5 credits per second. When face streaming and voice translation run together, the total is 4 credits per second, including both services. Translation latency depends on your internet speed. Your audio will be sent to Google Gemini for translation.
+              Voice translation alone costs 2.5 credits per second. When face streaming and voice translation run together, the total is 4 credits per second, including both services. Translation latency depends on your internet speed. Your audio is processed online by Morphly Translator.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

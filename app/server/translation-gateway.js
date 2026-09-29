@@ -137,15 +137,15 @@ export function attachTranslationGateway(server, {
       upstreams.set(direction, socket);
       return new Promise((resolve, reject) => {
         socket.on('open', () => send(socket, buildTranslationSetup(language, model)));
-        socket.on('error', () => { reject(new Error('Gemini connection failed.')); finish('Gemini connection failed. Reconnecting.', true); });
-        socket.on('close', () => { reject(new Error('Gemini disconnected.')); finish('Gemini disconnected. Reconnecting.', true); });
+        socket.on('error', () => { reject(new Error('Morphly Translator connection failed.')); finish('Morphly Translator connection failed. Reconnecting.', true); });
+        socket.on('close', () => { reject(new Error('Morphly Translator disconnected.')); finish('Morphly Translator disconnected. Reconnecting.', true); });
         socket.on('message', (raw) => {
           try {
             const message = JSON.parse(raw.toString());
             if (message.setupComplete) resolve();
-            if (message.error) { finish('Gemini rejected the translation session. Check the server model and API configuration.'); return; }
+            if (message.error) { finish('Morphly Translator could not start this session. Please try again or contact support.'); return; }
             if (message.goAway) {
-              if (!requestHandoff() && !rotationSent) finish('Gemini is renewing the translation session. Reconnecting.', true);
+              if (!requestHandoff() && !rotationSent) finish('Morphly Translator is renewing the translation session. Reconnecting.', true);
               return;
             }
             if (startedAt === null || closed) return;
