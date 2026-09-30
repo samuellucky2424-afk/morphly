@@ -21,13 +21,13 @@ const startSessionApi = fs.readFileSync(path.join(appDirectory, 'server/api/star
 
 test('legacy resolver fallback remains compatible and both realtime providers are available', () => {
   assert.equal(DEFAULT_REALTIME_PROVIDER, 'vidu');
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['xmax', 'vidu']);
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['vidu', 'decart']);
   assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ label }) => label), ['Plus', 'Pro']);
-  assert.equal(getRealtimeProviderLabel('xmax'), 'Plus');
-  assert.equal(getRealtimeProviderLabel('vidu'), 'Pro');
+  assert.equal(getRealtimeProviderLabel('vidu'), 'Plus');
+  assert.equal(getRealtimeProviderLabel('decart'), 'Pro');
   assert.equal(resolveRealtimeProvider(undefined), 'vidu');
   assert.equal(resolveRealtimeProvider('vidu'), 'vidu');
-  assert.equal(resolveRealtimeProvider('decart'), 'vidu');
+  assert.equal(resolveRealtimeProvider('decart'), 'decart');
 });
 
 test('Vidu uses the native S2-Editing character model', () => {
@@ -37,9 +37,9 @@ test('Vidu uses the native S2-Editing character model', () => {
 });
 
 test('Vidu realtime errors provide actionable user messages', () => {
-  assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Pro did not accept/i);
+  assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Plus did not accept/i);
   assert.match(getViduRealtimeUserMessage({ message: 'Insufficient credits' }), /provider capacity is exhausted/i);
-  assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Pro connection was interrupted/i);
+  assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Plus connection was interrupted/i);
   assert.match(dashboard, /getViduRealtimeUserMessage\(error, fallback\)/);
 });
 
@@ -63,8 +63,8 @@ test('Vidu token creation retries transient failures and preserves the HTTP stat
 });
 
 test('startup avoids stacked retries and reports each connection phase', () => {
-  assert.match(dashboard, /xmax: 3,[\s\S]*vidu: 1/);
-  assert.match(dashboard, /xmax: 45000,[\s\S]*vidu: 45000/);
+  assert.match(dashboard, /decart: 3,[\s\S]*vidu: 1/);
+  assert.match(dashboard, /decart: 45000,[\s\S]*vidu: 45000/);
   assert.match(dashboard, /Checking stream setup/);
   assert.match(dashboard, /Opening camera/);
   assert.match(dashboard, /Authorizing \$\{requestedProviderLabel\}/);

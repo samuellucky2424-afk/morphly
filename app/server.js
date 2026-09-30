@@ -15,9 +15,9 @@ import { createMeanVcRuntimeController } from './server/meanvc-runtime.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const xmaxConfigError = process.env.XMAX_API_KEY?.trim()
+const decartConfigError = process.env.DECART_API_KEY?.trim()
   ? null
-  : 'Missing XMAX_API_KEY';
+  : 'Missing DECART_API_KEY';
 const viduConfigError = process.env.VIDU_API_KEY?.trim()
   ? null
   : 'Missing VIDU_API_KEY';
@@ -150,8 +150,8 @@ const httpServer = app.listen(PORT, () => {
   if (supabaseAdminConfigError) {
     console.warn(`[config] ${supabaseAdminConfigError}`);
   }
-  if (xmaxConfigError) {
-    console.warn(`[config] ${xmaxConfigError}`);
+  if (decartConfigError) {
+    console.warn(`[config] ${decartConfigError}`);
   }
   if (viduConfigError) {
     console.warn(`[config] ${viduConfigError}`);

@@ -13,7 +13,7 @@ async function database(t) {
     CREATE SCHEMA auth;
     CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql AS $$ SELECT current_setting('request.jwt.claim.role', true) $$;
     CREATE TABLE public.users(id UUID PRIMARY KEY);
-    CREATE TABLE public.sessions(id UUID PRIMARY KEY, user_id UUID, status TEXT DEFAULT 'active', start_time TIMESTAMPTZ DEFAULT clock_timestamp()-interval '60 seconds', end_time TIMESTAMPTZ, seconds_used INTEGER DEFAULT 0, provider_max_seconds INTEGER, last_usage_at TIMESTAMPTZ);
+    CREATE TABLE public.sessions(id UUID PRIMARY KEY, user_id UUID, status TEXT DEFAULT 'active', start_time TIMESTAMPTZ DEFAULT clock_timestamp()-interval '60 seconds', end_time TIMESTAMPTZ, seconds_used INTEGER DEFAULT 0, provider TEXT DEFAULT 'xmax', provider_model TEXT, provider_max_seconds INTEGER, last_usage_at TIMESTAMPTZ);
     CREATE FUNCTION public.finalize_ai_session(UUID,UUID,INTEGER,TEXT) RETURNS JSONB LANGUAGE sql AS $$ SELECT '{}'::jsonb $$;
     CREATE FUNCTION public.record_ai_session_usage(UUID,UUID,INTEGER) RETURNS JSONB LANGUAGE sql AS $$ SELECT '{}'::jsonb $$;
     CREATE TABLE public.wallets(user_id UUID PRIMARY KEY, credits INTEGER NOT NULL);
@@ -23,6 +23,7 @@ async function database(t) {
     SELECT set_config('request.jwt.claim.role', 'service_role', false);
   `);
   await db.exec(await readFile(new URL('../../supabase/migrations/20260929120000_add_combined_realtime_billing.sql', import.meta.url), 'utf8'));
+  await db.exec(await readFile(new URL('../../supabase/migrations/20260930143532_restore_decart_lucy_25_pro.sql', import.meta.url), 'utf8'));
   return db;
 }
 async function authorize(db, seconds, close = false, owner = user) {
@@ -78,7 +79,7 @@ test('one second costs exactly 2.5; the half credit remains spendable across ses
 
 for (const videoFirst of [false,true]) test(`ten seconds of simultaneous video and translation cost 40 total, video first=${videoFirst}`, async t => {
   const db=await database(t), video='11111111-1111-4111-8111-111111111111';
-  await db.query('INSERT INTO sessions(id,user_id) VALUES($1,$2)',[video,user]);
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'xmax')",[video,user]);
   await db.query('SELECT configure_realtime_video($1,$2,5)',[user,video]);
   const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec)-15;
   await db.query('INSERT INTO translation_sessions(id,user_id,started_epoch) VALUES($1,$2,$3)',[session,user,epoch]);
@@ -95,7 +96,7 @@ for (const videoFirst of [false,true]) test(`ten seconds of simultaneous video a
 
 test('unused translation reservations refund only translation while retaining video charges', async t => {
   const db=await database(t),video='11111111-1111-4111-8111-111111111111';
-  await db.query('INSERT INTO sessions(id,user_id) VALUES($1,$2)',[video,user]);
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'xmax')",[video,user]);
   await db.query('SELECT configure_realtime_video($1,$2,5)',[user,video]);
   const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec);
   await authorize(db,5);
@@ -105,7 +106,7 @@ test('unused translation reservations refund only translation while retaining vi
 
 test('insufficient combined credit cannot make balance negative; cross-account and future ticks are rejected', async t => {
   const db=await database(t),video='11111111-1111-4111-8111-111111111111';
-  await db.query('INSERT INTO sessions(id,user_id) VALUES($1,$2)',[video,user]);
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'xmax')",[video,user]);
   await db.query('SELECT configure_realtime_video($1,$2,5)',[user,video]);
   const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec);
   await db.query('UPDATE wallets SET credits=3 WHERE user_id=$1',[user]);
@@ -119,7 +120,7 @@ test('insufficient combined credit cannot make balance negative; cross-account a
 
 test('translation starts and stops during Plus video with per-second blended rates', async t => {
   const db=await database(t), video='11111111-1111-4111-8111-111111111111';
-  await db.query('INSERT INTO sessions(id,user_id) VALUES($1,$2)',[video,user]);
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'xmax')",[video,user]);
   await db.query('SELECT configure_realtime_video($1,$2,4)',[user,video]);
   const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec)-20;
   const seconds=Array.from({length:10},(_,i)=>epoch+i);
@@ -140,4 +141,43 @@ test('an expired relay lease cannot block translation restart indefinitely', asy
   const result=await db.query('SELECT authorize_translation_usage($1,$2,1) AS result',[user,next]);
   assert.equal(result.rows[0].result.authorizedSeconds,1);
   assert.equal((await db.query('SELECT closed_at IS NOT NULL AS closed FROM translation_sessions WHERE id=$1',[session])).rows[0].closed,true);
+});
+
+for (const [provider, rateHalf, credits] of [['decart', 6, 3], ['vidu', 4, 2]]) {
+  test(`${provider} bills its new fixed rate; retries and legacy finalization never double-charge`, async t => {
+    const db = await database(t), video = '11111111-1111-4111-8111-111111111111';
+    await db.query('INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,$3)', [video,user,provider]);
+    await db.query('SELECT configure_realtime_video($1,$2,$3)', [user,video,rateHalf]);
+    const epoch = Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec)-10;
+    const seconds = Array.from({length:10},(_,i)=>epoch+i);
+    const record = () => db.query('SELECT record_realtime_video_usage($1,$2,$3,false,true) AS result', [user,video,seconds]);
+    assert.equal((await record()).rows[0].result.remainingCredits, 100-10*credits);
+    assert.equal((await record()).rows[0].result.remainingCredits, 100-10*credits);
+    assert.equal((await db.query("SELECT finalize_ai_session($1,$2,10,'test') AS result",[user,video])).rows[0].result.remainingCredits,100-10*credits);
+  });
+}
+for (const videoFirst of [false,true]) test(`Pro and translation cost 4 total, video first=${videoFirst}`, async t => {
+  const db = await database(t), video = '11111111-1111-4111-8111-111111111111';
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'decart')",[video,user]);
+  await db.query('SELECT configure_realtime_video($1,$2,6)',[user,video]);
+  const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec)-15;
+  await db.query('INSERT INTO translation_sessions(id,user_id,started_epoch) VALUES($1,$2,$3)',[session,user,epoch]);
+  const seconds=Array.from({length:10},(_,i)=>epoch+i);
+  const record=()=>db.query('SELECT record_realtime_video_usage($1,$2,$3,false) AS result',[user,video,seconds]);
+  if(videoFirst) await record();
+  await authorize(db,10);
+  await record();
+  assert.equal((await authorize(db,10)).remainingCredits,60);
+  assert.equal((await authorize(db,0,true)).remainingCredits,70);
+});
+test('Pro exhausts only affordable seconds and never debits below zero', async t => {
+  const db=await database(t), video='11111111-1111-4111-8111-111111111111';
+  await db.query("INSERT INTO sessions(id,user_id,provider) VALUES($1,$2,'decart')",[video,user]);
+  await db.query('SELECT configure_realtime_video($1,$2,6)',[user,video]);
+  await db.query('UPDATE wallets SET credits=8 WHERE user_id=$1',[user]);
+  const epoch=Number((await db.query('SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp())) AS sec')).rows[0].sec)-3;
+  const r=await db.query('SELECT record_realtime_video_usage($1,$2,$3,false) AS result',[user,video,[epoch,epoch+1,epoch+2]]);
+  assert.equal(r.rows[0].result.remainingCredits,2);
+  assert.equal(r.rows[0].result.totalBillableSeconds,2);
+  assert.equal(r.rows[0].result.shouldStop,true);
 });

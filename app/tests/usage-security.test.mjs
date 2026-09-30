@@ -56,16 +56,16 @@ test('AI billing RPCs are restricted to the service role', () => {
   assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.sessions FROM anon, authenticated/);
 });
 
-test('Xmax temporary keys are credit-capped, short-lived, rate-limited and attributable', () => {
-  assert.match(startSession, /\/temporary-api-key/);
-  assert.match(startSession, /expireSeconds/);
-  assert.match(startSession, /pointsLimit/);
-  assert.match(startSession, /'X-Api-Key': apiKey/);
+test('Decart temporary keys are credit-capped, short-lived, rate-limited and attributable', () => {
+  assert.match(startSession, /\/v1\/client\/tokens/);
+  assert.match(startSession, /expiresIn: 60/);
+  assert.match(startSession, /maxSessionDuration: sessionLimit/);
+  assert.match(startSession, /'X-API-KEY': apiKey/);
   assert.match(startSession, /AbortSignal\.timeout\(15000\)/);
   assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);
-  assert.match(startSession, /vidu_token/);
+  assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
   assert.match(startSession, /provider === 'vidu'/);
 });
 
@@ -74,17 +74,17 @@ test('Vidu receives only scoped real-time session credentials', () => {
   assert.match(startSession, /\/live\/s_editing\/realtime/);
   assert.match(startSession, /VIDU_TOKEN_MAX_ATTEMPTS = 2/);
   assert.match(startSession, /sessionLimit/);
-  assert.match(startSession, /vidu_token/);
+  assert.match(startSession, /allowedModels: \[DECART_REALTIME_MODEL\]/);
 });
 
-test('Xmax remains the default realtime provider', () => {
-  assert.equal(normalizeRealtimeProvider(undefined), 'xmax');
-  assert.equal(normalizeRealtimeProvider('unknown'), 'xmax');
+test('Vidu is the default realtime provider', () => {
+  assert.equal(normalizeRealtimeProvider(undefined), 'vidu');
+  assert.equal(normalizeRealtimeProvider('unknown'), 'vidu');
   assert.equal(normalizeRealtimeProvider('vidu'), 'vidu');
-  assert.equal(normalizeRealtimeProvider('decart'), 'vidu');
+  assert.equal(normalizeRealtimeProvider('decart'), 'decart');
 });
 
-test('Xmax web session issuance requires a canonical HTTP origin', () => {
+test('Decart web session issuance requires a canonical HTTP origin', () => {
   assert.deepEqual(
     getBrowserTokenOrigins({ headers: { origin: 'https://morphly.example' } }, 'web'),
     ['https://morphly.example'],
@@ -103,7 +103,7 @@ test('Xmax web session issuance requires a canonical HTTP origin', () => {
   );
 });
 
-test('Xmax generation time is metered only from visible running sessions', () => {
+test('Realtime generation time is metered only from visible running sessions', () => {
   assert.match(dashboard, /connectionState !== 'generating'/);
   assert.match(dashboard, /recordBillableGenerationTime/);
   assert.match(dashboard, /!isStreaming \|\| !hasRemoteFrame/);

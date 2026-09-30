@@ -87,11 +87,11 @@ test('camera constraints always use the exact selected deviceId', () => {
   assert.equal(constraints.audio, false);
 });
 
-test('default Plus input publishes the 1472x832 desktop camera profile', () => {
+test('default Plus input publishes the 1280x720 desktop camera profile', () => {
   assert.deepEqual(QUALITY_MODE_PROFILES.hd, {
-    label: 'Plus HD',
-    width: 1472,
-    height: 832,
+    label: 'HD',
+    width: 1280,
+    height: 720,
     targetFps: 24,
     maxFps: 24,
     maxKbps: 1200,

@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.21",
+  "version": "2.5.22",
   "description": "Morphly Desktop with virtual camera support and automatic, resumable MorphlyVC voice engine setup.",
   "author": "Morphly",
   "repository": {
@@ -106,6 +106,7 @@
     ]
   },
   "dependencies": {
+    "@decartai/sdk": "^0.2.3",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -135,7 +136,6 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.100.1",
     "@vercel/functions": "^3.9.9",
-    "@xmaxai/sdk-global": "^1.1.7",
     "aliyun-rtc-sdk": "7.1.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
