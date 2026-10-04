@@ -8,9 +8,14 @@ const name=`Morphly-Setup-${version}.exe`,binary=fs.readFileSync(path.join(relea
 const sha256=createHash('sha256').update(binary).digest('hex'),sha512=createHash('sha512').update(binary).digest('base64');
 if(!yaml.includes(`version: ${version}`)||!yaml.includes(`sha512: ${sha512}`))throw new Error('Installer checksum metadata mismatch');
 const archive=path.join(release,'win-unpacked/resources/app.asar');
+const packaged=listPackage(archive).map(f=>f.replaceAll('\\','/'));
+if(packaged.some(f=>/(?:^|\/)\.env(?:\.|$)|firebase-service-account\.json$/i.test(f)))throw new Error('Private environment file found in desktop package');
 if(JSON.parse(extractFile(archive,'package.json').toString()).version!==version)throw new Error('Packaged application version mismatch');
 const assets=listPackage(archive).filter(f=>/^\/dist\/assets\/.*\.js$/.test(f.replaceAll('\\','/')));
 if(!assets.some(f=>extractFile(archive,f.slice(1)).toString().includes('luckyweb-f546e')))throw new Error('Firebase project missing from packaged client');
+for(const file of ['unity-capture/morphly_unity_capture_sender.exe','media-foundation-camera/MorphlyVirtualCameraMF.dll','media-foundation-camera/morphly_cam_registrar.exe']){
+  if(!fs.existsSync(path.join(release,'win-unpacked/resources',file)))throw new Error('Missing native camera resource: '+file);
+}
 const token=JSON.parse(fs.readFileSync('C:/morphly-private/github-release-access.json','utf8')).token;
 const api='https://api.github.com/repos/samuellucky2424-afk/morphly',headers={Authorization:`Bearer ${token}`,Accept:'application/vnd.github+json','Content-Type':'application/json'};
 const existing=await fetch(api+'/releases?per_page=100',{headers});if(!existing.ok)throw new Error(`Release inspection failed (${existing.status})`);
