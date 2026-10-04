@@ -46,7 +46,7 @@ export function createFirebaseRealtimeBilling(db){
         if(seconds.some(s=>s>time||s<time-120||s<Math.floor(utc(row.start_time)/1000)))throw new Error('Invalid usage timestamp');
       }else{
         if(!close&&videoSessions.docs.some(d=>d.data().status==='active'&&d.data().billing_version!==2))throw new Error('Restart face streaming in the updated app before translating');
-        for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw new Error('Another translation session is active');}
+        for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw Object.assign(new Error('Another translation session is active'),{code:'23505'});}
         row||={id:sessionId,user_id:uid,started_epoch:String(time),authorized_seconds:0,closed_at:null};
         target=Number(row.authorized_seconds);
         if(close){target=Math.min(p.p_seconds,target);seconds=associated.docs.map(d=>Number(d.data().epoch_second)).filter(s=>s>=Number(row.started_epoch)+target).sort((a,b)=>a-b);}
