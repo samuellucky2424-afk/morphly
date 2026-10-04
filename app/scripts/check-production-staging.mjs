@@ -42,6 +42,13 @@ try{
     const secret=fs.readFileSync('C:/morphly-private/flutterwave-live-webhook-secret.txt','utf8').trim();
     const response=await request('/api/flutterwave-webhook',{authenticated:false,body:{type:'migration.signature_check',data:{}},headers:{'verif-hash':secret}});
     assert.equal(response.status,200);assert.equal(response.data.ignored,true);report.liveWebhookSecretAccepted=true;
+    // ID zero cannot be a real charge. This checks provider authentication
+    // through the deployed secret without exposing it or creating a payment.
+    const probe=await request('/api/verify-payment',{body:{userId:user.id,reference:'migration-readonly-provider-check',transactionId:'0'}});
+    assert.equal(probe.status,400);
+    assert.match(probe.data.message,/transaction.*(?:not|invalid)|no transaction|not found/i);
+    assert.doesNotMatch(probe.data.message,/unauthor|authorization|secret.?key|invalid.*key/i);
+    report.flutterwaveReadonlyVerificationPassed=true;
   }
 }catch(error){report.passed=false;report.error=error.message;process.exitCode=1;}
 report.checkedAt=new Date().toISOString();fs.writeFileSync('C:/morphly-private/production-staging-check.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));
