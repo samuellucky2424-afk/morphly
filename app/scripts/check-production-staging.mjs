@@ -38,5 +38,10 @@ try{
   const denied=await request('/api/admin-me');assert.equal(denied.status,200);assert.equal(denied.data.isAdmin,false);report.nonAdminRestricted=true;
   for(const route of ['/api/flutterwave-webhook','/api/ivorypay-webhook']){const response=await request(route,{authenticated:false,body:{event:'charge.completed',data:{id:'invalid-test'}},headers:{'verif-hash':'invalid-signature','flutterwave-signature':'invalid-signature','x-ivorypay-signature':'invalid-signature'}});assert.equal(response.status,401);}
   report.invalidWebhooksRejected=true;report.passed=true;
+  if(process.env.CHECK_LIVE_WEBHOOK_SECRET==='true'){
+    const secret=fs.readFileSync('C:/morphly-private/flutterwave-live-webhook-secret.txt','utf8').trim();
+    const response=await request('/api/flutterwave-webhook',{authenticated:false,body:{type:'migration.signature_check',data:{}},headers:{'verif-hash':secret}});
+    assert.equal(response.status,200);assert.equal(response.data.ignored,true);report.liveWebhookSecretAccepted=true;
+  }
 }catch(error){report.passed=false;report.error=error.message;process.exitCode=1;}
 report.checkedAt=new Date().toISOString();fs.writeFileSync('C:/morphly-private/production-staging-check.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report));
