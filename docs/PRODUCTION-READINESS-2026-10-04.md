@@ -10,7 +10,9 @@ The engine choices are Plus (Vidu) at 2 credits/sec and Pro (Decart) at 2.5 cred
 
 Validation on October 5: 304 application tests and 12 Firestore emulator tests passed. The emulator exercises concurrent retry deduplication, owner checks, fractional Pro charges, translation refunds and combined video/translation pricing.
 
-The Windows 2.5.23 installer is being rebuilt and must pass package verification. It includes the native camera bridge and camera registration tools and uses `https://live.morphly.fun/api`. Voice models are pinned independently to the existing verified v2.5.22 archive. The installer is not Authenticode signed. It must not be published to automatic updates until the live backend has switched successfully.
+The Windows 2.5.23 installer was built (125,179,234 bytes) and verified against its SHA-512 updater metadata. Its archive contains the Firebase client configuration and no environment/service-account files. Native camera bridge and registration resources are present. It uses `https://live.morphly.fun/api`. Voice models are pinned independently to the existing verified v2.5.22 archive. The installer is not Authenticode signed. It must not be published to automatic updates until the live backend has switched successfully.
+
+The final staged production deployment is `https://morphly-hyui7tldh-lus-projects-b2662b64.vercel.app`. API verification passed for Firebase production configuration, migrated wallet access, non-admin restrictions and rejection of invalid signatures for both payment gateways. No financial writes were made by those checks. Live domains remain unchanged.
 
 ## Remaining cutover steps
 
