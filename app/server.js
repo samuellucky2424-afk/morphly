@@ -1,5 +1,6 @@
 import './shared/load-server-environment.js';
 import express from 'express';
+import { attachTranslationGateway } from './server/translation-gateway.js';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,16 +8,16 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { supabaseAdminConfigError } from './server/supabase-admin.js';
+import { supabaseAdmin, supabaseAdminConfigError } from './server/supabase-admin.js';
 import { logRequestEvent } from '../shared/backend-logger.js';
 import { handleApiRoute } from './server/api-router.js';
 import { createMeanVcRuntimeController } from './server/meanvc-runtime.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const xmaxConfigError = process.env.XMAX_API_KEY?.trim()
+const decartConfigError = process.env.DECART_API_KEY?.trim()
   ? null
-  : 'Missing XMAX_API_KEY';
+  : 'Missing DECART_API_KEY';
 const viduConfigError = process.env.VIDU_API_KEY?.trim()
   ? null
   : 'Missing VIDU_API_KEY';
@@ -88,6 +89,13 @@ app.use('/api/local/meanvc', requireLocalMeanVcRequest);
 app.get('/api/local/meanvc/status', (_req, res) => {
   res.json(meanVcRuntime.getStatus());
 });
+app.post('/api/local/meanvc/refresh-devices', (_req, res) => {
+  try {
+    res.json(meanVcRuntime.refreshDevices());
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to refresh audio devices.' });
+  }
+});
 app.post(
   '/api/local/meanvc/reference',
   express.raw({ type: ['audio/wav', 'audio/x-wav', 'application/octet-stream'], limit: '25mb' }),
@@ -108,9 +116,9 @@ app.post('/api/local/meanvc/prepare', (req, res) => {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to prepare the MorphlyVC voice.' });
   }
 });
-app.post('/api/local/meanvc/start', (req, res) => {
+app.post('/api/local/meanvc/start', async (req, res) => {
   try {
-    res.json(meanVcRuntime.start(req.body ?? {}));
+    res.json(await meanVcRuntime.start(req.body ?? {}));
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : 'Unable to start MorphlyVC.' });
   }
@@ -137,18 +145,20 @@ if (process.env.NODE_ENV === 'production') {
   });
 }
 
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   if (supabaseAdminConfigError) {
     console.warn(`[config] ${supabaseAdminConfigError}`);
   }
-  if (xmaxConfigError) {
-    console.warn(`[config] ${xmaxConfigError}`);
+  if (decartConfigError) {
+    console.warn(`[config] ${decartConfigError}`);
   }
   if (viduConfigError) {
     console.warn(`[config] ${viduConfigError}`);
   }
 });
+
+attachTranslationGateway(httpServer, { supabase: supabaseAdmin });
 
 process.once('exit', () => {
   meanVcRuntime.shutdown();

@@ -56,12 +56,13 @@ test('AI billing RPCs are restricted to the service role', () => {
   assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.sessions FROM anon, authenticated/);
 });
 
-test('Xmax temporary keys are credit-capped, short-lived, rate-limited and attributable', () => {
-  assert.match(startSession, /\/temporary-api-key/);
-  assert.match(startSession, /expireSeconds/);
-  assert.match(startSession, /pointsLimit/);
-  assert.match(startSession, /'X-Api-Key': apiKey/);
-  assert.match(startSession, /AbortSignal\.timeout\(15000\)/);
+test('Decart temporary keys use the scoped SDK adapter and issuance stays rate limited', () => {
+  const token = fs.readFileSync(new URL('../server/decart-token.js', import.meta.url), 'utf8');
+  assert.match(startSession, /createScopedDecartKey/);
+  assert.match(token, /allowedModels:\['lucy-2.5'\]/);
+  assert.match(token, /maxSessionDuration:sessionLimit/);
+  assert.match(token, /expiresIn:Math.min\(3600,sessionLimit\+120\)/);
+  assert.match(token, /morphlySessionId:sessionId,morphlyUserId:userId/);
   assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);

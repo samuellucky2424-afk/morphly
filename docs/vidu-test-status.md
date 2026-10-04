@@ -38,3 +38,7 @@ Production logs on September 16 showed wallet requests reaching the 30-second fu
 Pro uses 2.5 credits/second. Plus retains 2 credits/second for a single transformation and 4 credits/second for avatar plus background. The engine dialog shows the applicable rate and a short quality description before confirming. The clear-image action is removed; Change Image remains available.
 
 The existing server bills whole usage units worth two credits each. The client retains fractional units between heartbeats, so 60 seconds of Pro bills 150 credits. Any final remainder smaller than one usage unit is waived when the session ends; it is never rounded up. No wallet schema migration is required.
+
+## v2.5.13: subject replacement only
+
+Pro now fixes `editing_type` to `subject_replacement` during session creation and every WebSocket image update. Client overrides cannot select background replacement, style transfer, or virtual try-on. The existing Vidu signaling and AliRTC transport remain in place. Regression tests cover a background-replacement override at both API and WebSocket boundaries.

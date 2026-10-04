@@ -8,6 +8,8 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import os from 'node:os';
 import { createDesktopUpdater } from './updater.js';
+import { createVoiceEngineSetup } from './voice-engine-setup.js';
+import { createVirtualMicrophoneService } from './virtual-microphone.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
@@ -92,7 +94,7 @@ configureChromiumCachePaths();
 let mainWindow = null;
 let desktopUpdater = null;
 let morphlyVcRuntime = null;
-let voiceEngineInstallPromise = null;
+let voiceEngineSetup = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
@@ -1337,6 +1339,10 @@ function registerMorphlyVcHandlers() {
     requireMainRenderer(event);
     return runtime().getStatus();
   });
+  ipcMain.handle('morphlyvc:refresh-devices', (event) => {
+    requireMainRenderer(event);
+    return runtime().refreshDevices();
+  });
   ipcMain.handle('morphlyvc:reference', (event, payload) => {
     requireMainRenderer(event);
     const bytes = payload?.data;
@@ -1362,125 +1368,50 @@ function registerMorphlyVcHandlers() {
     requireMainRenderer(event);
     return runtime().stop();
   });
-  ipcMain.handle('morphlyvc:engine-status', (event) => {
-    requireMainRenderer(event);
-    const dataRoot = getVoiceEngineDataRoot();
-    return {
-      installed: isVoiceEngineInstalled(dataRoot),
-      installPath: getVoiceEnginePath(dataRoot),
-      available: isPackagedRuntime,
-    };
-  });
-  ipcMain.handle('morphlyvc:install-engine', (event) => {
-    requireMainRenderer(event);
-    if (voiceEngineInstallPromise) {
-      return voiceEngineInstallPromise;
-    }
-
-    const dataRoot = getVoiceEngineDataRoot();
-    voiceEngineInstallPromise = (async () => {
-      try {
-        const confirmation = await dialog.showMessageBox(mainWindow, {
-          type: 'question',
-          title: 'Install voice engine',
-          message: 'Do you want to install the Morphly voice changer engine?',
-          detail: 'This optional download is several gigabytes and may take a while. You only need it for voice changing. Morphly will download and install it automatically.',
-          buttons: ['Install voice engine', 'Not now'],
-          defaultId: 0,
-          cancelId: 1,
-          noLink: true,
-        });
-        if (confirmation.response !== 0) return { success: false, cancelled: true };
-        const result = await installVoiceEngine({
-          installRoot: dataRoot,
-          tempRoot: path.join(app.getPath('temp'), 'morphly-voice-engine'),
-          version: app.getVersion(),
-          onProgress: (progress) => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('morphlyvc:install-progress', progress);
-            }
-          },
-        });
-
-        // Recreate the controller so it serves the freshly installed runtime.
-        if (isPackagedRuntime) {
-          morphlyVcRuntime?.shutdown?.();
-          morphlyVcRuntime = createMorphlyVcController();
-        }
-
-        return { success: true, ...result };
-      } catch (error) {
-        return {
-          success: false,
-          error: error instanceof Error
-            ? error.message
-            : 'Morphly could not install the voice engine.',
-        };
-      } finally {
-        voiceEngineInstallPromise = null;
+  const dataRoot = getVoiceEngineDataRoot();
+  voiceEngineSetup = createVoiceEngineSetup({
+    isInstalled: () => isVoiceEngineInstalled(dataRoot) || (isPackagedRuntime && isVoiceEngineInstalled(path.join(process.resourcesPath, 'morphlyvc'))),
+    install: onProgress => installVoiceEngine({
+      installRoot: dataRoot,
+      tempRoot: path.join(dataRoot, 'downloads'),
+      // Voice models have an independent release lifecycle from the desktop.
+      // Reuse the verified model archive instead of requesting missing assets
+      // on every application-only release.
+      version: '2.5.22',
+      onProgress,
+    }),
+    onInstalled: () => {
+      if (isPackagedRuntime) {
+        morphlyVcRuntime?.shutdown?.();
+        morphlyVcRuntime = createMorphlyVcController();
       }
-    })();
-
-    return voiceEngineInstallPromise;
+    },
+    onState: state => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('morphlyvc:install-progress', state);
+    },
+  });
+  ipcMain.handle('morphlyvc:engine-status', event => {
+    requireMainRenderer(event);
+    return { ...voiceEngineSetup.getState(), installPath: getVoiceEnginePath(dataRoot), available: isPackagedRuntime };
+  });
+  ipcMain.handle('morphlyvc:install-engine', event => {
+    requireMainRenderer(event);
+    return voiceEngineSetup.start();
+  });
+  const cableResourcesPath = isPackagedRuntime
+    ? path.join(process.resourcesPath, 'vbcable')
+    : path.join(__dirname, '..', 'build');
+  const virtualMicrophone = createVirtualMicrophoneService({
+    probePath: path.join(cableResourcesPath, 'detect-vbcable.ps1'),
+    installerPath: path.join(cableResourcesPath, 'VBCABLE_Setup_x64.exe'),
   });
   ipcMain.handle('virtual-microphone:detect', async (event) => {
     requireMainRenderer(event);
-    try {
-      // Check for VB-CABLE by looking for its audio endpoint in the registry.
-      // VB-Audio registers under this well-known driver description.
-      const { execSync } = await import('child_process');
-      const output = execSync(
-        'powershell -NoProfile -Command "Get-ItemProperty \'HKLM:\\SOFTWARE\\VB-Audio\\Cable\' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstallDir"',
-        { timeout: 5000, encoding: 'utf8', windowsHide: true },
-      ).trim();
-      return { installed: output.length > 0, path: output || null };
-    } catch {
-      // Registry key not found means VB-CABLE is not installed
-      return { installed: false, path: null };
-    }
+    return virtualMicrophone.detect();
   });
   ipcMain.handle('virtual-microphone:install', async (event) => {
     requireMainRenderer(event);
-    const resourcesPath = isPackagedRuntime
-      ? path.join(process.resourcesPath, 'vbcable')
-      : path.join(__dirname, '..', 'build');
-    const installerPath = path.join(resourcesPath, 'VBCABLE_Setup_x64.exe');
-
-    if (!fs.existsSync(installerPath)) {
-      return {
-        success: false,
-        error: 'VB-CABLE installer not found. Please reinstall Morphly Desktop.',
-      };
-    }
-
-    try {
-      // Run the VB-CABLE installer with admin elevation using silent install flags (-i -h).
-      const { exec } = await import('child_process');
-      await new Promise((resolve, reject) => {
-        const child = exec(
-          `powershell -NoProfile -Command "Start-Process -FilePath '${installerPath.replace(/'/g, "''")}' -ArgumentList '-i -h' -Verb RunAs -Wait"`,
-          { timeout: 120000, windowsHide: true },
-          (error) => {
-            if (error) reject(error);
-            else resolve();
-          },
-        );
-        child.on('error', reject);
-      });
-
-      return { success: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown installation error';
-      console.error('VB-CABLE installation failed:', message);
-      // User may have cancelled the UAC prompt
-      const cancelled = /canceled|cancelled|elevation|1223/i.test(message);
-      return {
-        success: false,
-        error: cancelled
-          ? 'Installation was cancelled. VB-CABLE requires administrator permission to install.'
-          : `VB-CABLE installation failed: ${message}`,
-      };
-    }
+    return virtualMicrophone.install();
   });
   ipcMain.handle('virtual-microphone:open-setup', async (event) => {
     requireMainRenderer(event);
@@ -1520,6 +1451,8 @@ app.whenReady().then(async () => {
   registerUpdaterHandlers();
   createWindow();
   desktopUpdater.startBackgroundChecks();
+  // Start immediately on launch, independently of sign-in and dashboard mounts.
+  if (isPackagedRuntime) void voiceEngineSetup.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

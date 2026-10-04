@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import gc
 from collections import deque
 import json
 import queue
@@ -12,9 +14,71 @@ import threading
 import time
 from pathlib import Path
 
+import sounddevice as sd
+
+
+def device_summary() -> dict[str, object]:
+    devices = sd.query_devices()
+    default_input, default_output = sd.default.device
+    input_devices: list[dict[str, object]] = []
+    output_devices: list[dict[str, object]] = []
+    hostapis = sd.query_hostapis()
+    # Prefer full-name WASAPI endpoints. Do not collapse different microphones
+    # sharing a 20-character prefix or assume host API indices are fixed.
+    priority = {'Windows WASAPI': 0, 'Core Audio': 0, 'ALSA': 0, 'Windows DirectSound': 1, 'MME': 2}
+    ordered = sorted(enumerate(devices), key=lambda entry: priority.get(hostapis[int(entry[1]['hostapi'])]['name'], 3))
+    for index, device in ordered:
+        hostapi_index = int(device["hostapi"])
+        hostapi_name = hostapis[hostapi_index]["name"]
+        if hostapi_name == 'Windows WDM-KS':
+            # Raw kernel pins often include disconnected/exclusive endpoints.
+            # Shared-mode WASAPI exposes the corresponding usable devices.
+            continue
+        name = str(device["name"])
+        if name in {'Microsoft Sound Mapper - Input', 'Microsoft Sound Mapper - Output', 'Primary Sound Capture Driver', 'Primary Sound Driver'}:
+            continue
+        if device["max_input_channels"] > 0:
+            input_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
+        if device["max_output_channels"] > 0:
+            output_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
+
+    common = next((item['hostapi'] for item in input_devices if any(out['hostapi'] == item['hostapi'] for out in output_devices)), None)
+    if common:
+        api = next(api for api in hostapis if api['name'] == common)
+        default_input = next((item['id'] for item in input_devices if item['id'] == api['default_input_device']), next(item['id'] for item in input_devices if item['hostapi'] == common))
+        default_output = next((item['id'] for item in output_devices if item['id'] == api['default_output_device']), next(item['id'] for item in output_devices if item['hostapi'] == common))
+    else:
+        default_input = input_devices[0]['id'] if input_devices else -1
+        default_output = output_devices[0]['id'] if output_devices else -1
+
+    return {
+        "defaultInput": int(default_input),
+        "defaultOutput": int(default_output),
+        "inputName": devices[default_input]["name"] if default_input >= 0 else '',
+        "outputName": devices[default_output]["name"] if default_output >= 0 else '',
+        "inputCount": len(input_devices),
+        "outputCount": len(output_devices),
+        "inputs": input_devices,
+        "outputs": output_devices,
+    }
+
+
+# Discover endpoints before loading Torch/models, without opening audio streams.
+# This also provides a lightweight diagnostic on machines where Torch cannot load.
+_preflight_devices = None
+if __name__ == '__main__' and ('--serve' in sys.argv or '--devices-only' in sys.argv):
+    try:
+        _preflight_devices = device_summary()
+        print(f"[Devices] Ready {json.dumps(_preflight_devices, ensure_ascii=True)}", flush=True)
+    except Exception as error:
+        print(f"[Devices] Error {error}", file=sys.stderr, flush=True)
+        if '--devices-only' in sys.argv:
+            sys.exit(1)
+    if '--devices-only' in sys.argv:
+        sys.exit(0)
+
 import numpy as np
 import soxr
-import sounddevice as sd
 import torch
 import torch.jit as torch_jit
 from audiotsm import wsola
@@ -27,6 +91,33 @@ MODEL_BLOCK_MS = 80
 MODEL_BLOCK_SAMPLES = SAMPLE_RATE * MODEL_BLOCK_MS // 1000
 AUDIO_BLOCK_MS = 160
 AUDIO_BLOCK_SAMPLES = SAMPLE_RATE * AUDIO_BLOCK_MS // 1000
+CABLE_BLOCK_SAMPLES = SAMPLE_RATE * 20 // 1000
+
+
+def device_block_size(*devices):
+    # VB-CABLE's internal buffer must accommodate several application buffers.
+    # Keep transport small even though inference works in 160 ms batches.
+    if any('cable' in str(device.get('name', '')).lower() for device in devices):
+        return CABLE_BLOCK_SAMPLES
+    return AUDIO_BLOCK_SAMPLES
+
+
+class AudioBlockAccumulator:
+    """Assemble device fragments without retaining an unbounded capture queue."""
+    def __init__(self, size):
+        self.samples = np.empty(size, dtype=np.float32)
+        self.used = 0
+
+    def feed(self, samples):
+        offset = 0
+        while offset < len(samples):
+            count = min(len(samples) - offset, len(self.samples) - self.used)
+            self.samples[self.used:self.used + count] = samples[offset:offset + count]
+            self.used += count
+            offset += count
+            if self.used == len(self.samples):
+                self.used = 0
+                yield self.samples.copy()
 
 
 class PitchProcessor:
@@ -114,6 +205,8 @@ class BufferedVoiceStream:
         self.input_queue = queue.Queue(maxsize=1)
         self.output_queue = queue.Queue(maxsize=2)
         self.stop_event = threading.Event()
+        self.worker_ready = threading.Event()
+        self.startup_error = None
         self.playback_started = False
         self.underruns = 0
         self.input_drops = 0
@@ -126,9 +219,14 @@ class BufferedVoiceStream:
         self.fade_samples = min(80, self.chunk_size)
         self.fade_in = np.linspace(0, 1, self.fade_samples, dtype=np.float32)
         self.target_output_blocks = 1
+        self.capture_blocks = AudioBlockAccumulator(self.chunk_size)
+        self.playback_block = None
+        self.playback_offset = 0
+        self.fade_offset = 0
         self.worker = threading.Thread(target=self._process, name="morphlyvc-audio-worker", daemon=True)
         input_info = sd.query_devices(input_device)
         output_info = sd.query_devices(output_device)
+        self.device_chunk_size = device_block_size(input_info, output_info)
         if input_info['hostapi'] != output_info['hostapi']:
             raise ValueError('Choose microphone and output devices using the same audio driver (for example, WASAPI).')
         self.hostapi = sd.query_hostapis(input_info['hostapi'])['name']
@@ -137,7 +235,7 @@ class BufferedVoiceStream:
         sd.check_output_settings(device=output_device, samplerate=SAMPLE_RATE, channels=1, dtype='float32', extra_settings=extra)
         self.stream = sd.Stream(
             samplerate=SAMPLE_RATE,
-            blocksize=self.chunk_size,
+            blocksize=self.device_chunk_size,
             device=(input_device, output_device),
             channels=1,
             callback=self._callback,
@@ -173,6 +271,12 @@ class BufferedVoiceStream:
         continuous_output = np.array([], dtype=np.float32)
         chunk_count = 0
         try:
+            # Torch's execution context is thread-local. Warm the actual audio
+            # worker before opening devices, including its cold model paths.
+            prepare = getattr(self.pipeline, 'prepare_realtime', None)
+            if prepare is not None:
+                prepare()
+            self.worker_ready.set()
             while not self.stop_event.is_set():
                 try:
                     entry = self.input_queue.get(timeout=0.1)
@@ -188,7 +292,7 @@ class BufferedVoiceStream:
                 if len(samples) != self.chunk_size:
                     raise RuntimeError(
                         f"MorphlyVC received {len(samples)} samples instead of a full "
-                        f"{AUDIO_BLOCK_MS} ms device buffer."
+                        f"{AUDIO_BLOCK_MS} ms processing buffer."
                     )
 
                 started = time.perf_counter()
@@ -216,7 +320,10 @@ class BufferedVoiceStream:
                 if time.monotonic() - self.last_report_at >= 2:
                     self.report_performance()
         except Exception as error:
+            self.startup_error = error
             self.on_error(error)
+        finally:
+            self.worker_ready.set()
 
     def _callback(self, indata, outdata, _frames, _time_info, status) -> None:
         # No logging, model calls or blocking I/O on the audio callback thread.
@@ -226,7 +333,8 @@ class BufferedVoiceStream:
         if status:
             self.device_warnings += 1
 
-        self._enqueue_latest_input((time.monotonic(), indata[:, 0].copy()))
+        for block in self.capture_blocks.feed(indata[:, 0]):
+            self._enqueue_latest_input((time.monotonic(), block))
 
         # Start with one block. Add one safety block only when measured processing
         # approaches the audio deadline; never allow an unbounded backlog.
@@ -235,24 +343,39 @@ class BufferedVoiceStream:
                 return
             self.playback_started = True
 
-        try:
-            captured_at, block = self.output_queue.get_nowait()
-            while time.monotonic() - captured_at > AUDIO_BLOCK_MS / 1000 * 3:
-                self.output_drops += 1
-                captured_at, block = self.output_queue.get_nowait()
-        except queue.Empty:
-            self.underruns += 1
-            outdata[:self.fade_samples, 0] = self.last_sample * (1 - self.fade_in)
-            self.last_sample = 0.0
-            self.recovering = True
-            self.playback_started = False
-            return
+        written = 0
+        while written < len(outdata):
+            if self.playback_block is None:
+                try:
+                    captured_at, block = self.output_queue.get_nowait()
+                    while time.monotonic() - captured_at > AUDIO_BLOCK_MS / 1000 * 3:
+                        self.output_drops += 1
+                        captured_at, block = self.output_queue.get_nowait()
+                    self.playback_block = block
+                    self.playback_offset = 0
+                except queue.Empty:
+                    self.underruns += 1
+                    previous = float(outdata[written - 1, 0]) if written else self.last_sample
+                    count = min(self.fade_samples, len(outdata) - written)
+                    outdata[written:written + count, 0] = previous * (1 - self.fade_in[:count])
+                    self.last_sample = 0.0
+                    self.recovering = True
+                    self.fade_offset = 0
+                    self.playback_started = False
+                    return
 
-        available = min(len(outdata), len(block))
-        outdata[:available, 0] = block[:available]
-        if self.recovering:
-            outdata[:self.fade_samples, 0] *= self.fade_in
-            self.recovering = False
+            count = min(len(outdata) - written, len(self.playback_block) - self.playback_offset)
+            outdata[written:written + count, 0] = self.playback_block[self.playback_offset:self.playback_offset + count]
+            if self.recovering:
+                fading = min(count, self.fade_samples - self.fade_offset)
+                outdata[written:written + fading, 0] *= self.fade_in[self.fade_offset:self.fade_offset + fading]
+                self.fade_offset += fading
+                self.recovering = self.fade_offset < self.fade_samples
+            written += count
+            self.playback_offset += count
+            if self.playback_offset == len(self.playback_block):
+                self.playback_block = None
+                self.playback_offset = 0
         self.last_sample = float(outdata[-1, 0])
 
     def report_performance(self) -> None:
@@ -261,6 +384,7 @@ class BufferedVoiceStream:
         latency = self.stream.latency
         print('[Performance] ' + json.dumps({
             'blockMs': AUDIO_BLOCK_MS, 'processingMs': round(float(np.mean(self.processing_ms)), 1) if self.processing_ms else 0,
+            'deviceBlockMs': self.device_chunk_size * 1000 / SAMPLE_RATE,
             'p95Ms': round(p95, 1), 'realTimeFactor': round(p95 / AUDIO_BLOCK_MS, 2),
             'inputLatencyMs': round(latency[0] * 1000, 1), 'outputLatencyMs': round(latency[1] * 1000, 1),
             'inputQueueMs': self.input_queue.qsize() * AUDIO_BLOCK_MS,
@@ -268,12 +392,18 @@ class BufferedVoiceStream:
             'underruns': self.underruns, 'inputDrops': self.input_drops, 'outputDrops': self.output_drops,
             'deviceWarnings': self.device_warnings, 'hostapi': self.hostapi,
             'threads': torch.get_num_threads(),
+            'modelSteps': getattr(self.pipeline, '_num_steps', None),
+            'cpuPrecision': getattr(self.pipeline, 'cpu_precision', 'float32'),
         }), flush=True)
         self.last_report_at = time.monotonic()
 
     def start(self) -> None:
         self.worker.start()
         try:
+            if not self.worker_ready.wait(timeout=60):
+                raise RuntimeError('CPU voice engine warmup timed out.')
+            if self.startup_error is not None:
+                raise self.startup_error
             self.stream.start()
         except Exception:
             self.stop()
@@ -295,6 +425,140 @@ class BufferedVoiceStream:
             raise RuntimeError('Audio processing did not stop safely. Restart Morphly before starting another voice session.')
 
 
+class TranslationBuffer:
+    """Bounded PCM playback buffer; network resampling stays off audio callbacks."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.samples = np.array([], dtype=np.float32)
+        self.resampler = soxr.ResampleStream(24000, SAMPLE_RATE, 1, dtype='float32', quality='HQ')
+
+    def push(self, encoded):
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > 24000 * 2 * 4 or len(raw) % 2:
+            raise ValueError('Invalid translated audio frame.')
+        samples = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768.0
+        with self.lock:
+            converted = self.resampler.resample_chunk(samples, last=False)
+            if len(self.samples) + len(converted) > SAMPLE_RATE * 4:
+                raise RuntimeError('Translation playback cannot keep up. Stop and reconnect.')
+            self.samples = np.concatenate([self.samples, converted])
+
+    def take(self, frames):
+        output = np.zeros(frames, dtype=np.float32)
+        with self.lock:
+            count = min(frames, len(self.samples))
+            output[:count] = self.samples[:count]
+            self.samples = self.samples[count:]
+        return output
+
+    def clear(self):
+        with self.lock:
+            self.samples = np.array([], dtype=np.float32)
+            self.resampler = soxr.ResampleStream(24000, SAMPLE_RATE, 1, dtype='float32', quality='HQ')
+
+
+class TranslatedVoiceStream(BufferedVoiceStream):
+    """Mic -> Gemini -> MeanVC -> cable A; cable B -> Gemini -> headphones."""
+    def __init__(self, pipeline, pitch_processor, input_device, output_device, on_error, translation):
+        self.translated = {'outgoing': TranslationBuffer(), 'incoming': TranslationBuffer()}
+        self.capture_queue = queue.Queue(maxsize=8)
+        self.incoming_stream = None
+        self.translation_stopped = False
+        self.incoming_capture_blocks = AudioBlockAccumulator(AUDIO_BLOCK_SAMPLES)
+        super().__init__(pipeline, pitch_processor, input_device, output_device, on_error)
+        self.capture_worker = threading.Thread(target=self._send_audio, name='translation-capture', daemon=True)
+        try:
+            if translation.get('incoming'):
+                incoming = int(translation['incomingDevice'])
+                headphones = int(translation['headphonesDevice'])
+                incoming_info = sd.query_devices(incoming)
+                headphones_info = sd.query_devices(headphones)
+                incoming_api = incoming_info['hostapi']
+                if incoming_api != headphones_info['hostapi']:
+                    raise ValueError('Choose incoming cable and headphones using the same audio driver.')
+                extra = sd.WasapiSettings(auto_convert=True) if sd.query_hostapis(incoming_api)['name'] == 'Windows WASAPI' else None
+                self.incoming_stream = sd.Stream(samplerate=SAMPLE_RATE, blocksize=device_block_size(incoming_info, headphones_info),
+                    device=(incoming, headphones), channels=1, dtype='float32', latency='low',
+                    extra_settings=(extra, extra), callback=self._incoming_callback)
+        except Exception:
+            self.stream.close()
+            raise
+
+    def _capture(self, direction, samples):
+        try:
+            self.capture_queue.put_nowait((direction, samples))
+        except queue.Full:
+            # Never block PortAudio or retain stale microphone audio.
+            try:
+                self.capture_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.capture_queue.put_nowait((direction, samples))
+            except queue.Full:
+                pass
+
+    def _enqueue_latest_input(self, entry):
+        self._capture('outgoing', entry[1])
+        super()._enqueue_latest_input((time.monotonic(), self.translated['outgoing'].take(self.chunk_size)))
+
+    def _incoming_callback(self, indata, outdata, frames, _time_info, _status):
+        outdata.fill(0)
+        if self.stop_event.is_set():
+            return
+        # Keep network packets at 160 ms despite the smaller cable callbacks.
+        for block in self.incoming_capture_blocks.feed(indata[:, 0]):
+            self._capture('incoming', block)
+        outdata[:, 0] = self.translated['incoming'].take(frames)
+
+    def _send_audio(self):
+        while not self.stop_event.is_set():
+            try:
+                direction, samples = self.capture_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            pcm = (np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes()
+            message = {'type': 'audio', 'direction': direction, 'data': base64.b64encode(pcm).decode('ascii')}
+            try:
+                sys.stdout.write('[TranslationAudio] ' + json.dumps(message) + '\n')
+                sys.stdout.flush()
+            except Exception as error:
+                self.on_error(error)
+                return
+
+    def receive_translation(self, command):
+        direction = command.get('direction')
+        if direction not in self.translated:
+            raise ValueError('Invalid translation direction.')
+        if command.get('clear'):
+            self.translated[direction].clear()
+        else:
+            self.translated[direction].push(command['data'])
+
+    def start(self):
+        self.capture_worker.start()
+        try:
+            super().start()
+            if self.incoming_stream:
+                self.incoming_stream.start()
+        except Exception:
+            self.stop()
+            raise
+
+    def stop(self):
+        if self.translation_stopped:
+            return
+        self.translation_stopped = True
+        self.stop_event.set()
+        if self.incoming_stream:
+            self.incoming_stream.abort()
+            self.incoming_stream.close()
+            self.incoming_stream = None
+        super().stop()
+        if self.capture_worker.ident:
+            self.capture_worker.join(timeout=2)
+
+
 def patch_torch_jit() -> None:
     """Match the compatibility patch used by the official MeanVC2 launcher."""
     original_script = torch_jit.script
@@ -307,51 +571,6 @@ def patch_torch_jit() -> None:
 
     torch_jit.script = safe_script
 
-
-def device_summary() -> dict[str, object]:
-    devices = sd.query_devices()
-    default_input, default_output = sd.default.device
-    input_devices: list[dict[str, object]] = []
-    output_devices: list[dict[str, object]] = []
-    hostapis = sd.query_hostapis()
-    # Prefer full-name WASAPI endpoints. Do not collapse different microphones
-    # sharing a 20-character prefix or assume host API indices are fixed.
-    priority = {'Windows WASAPI': 0, 'Core Audio': 0, 'ALSA': 0, 'Windows DirectSound': 1, 'MME': 2}
-    ordered = sorted(enumerate(devices), key=lambda entry: priority.get(hostapis[int(entry[1]['hostapi'])]['name'], 3))
-    for index, device in ordered:
-        hostapi_index = int(device["hostapi"])
-        hostapi_name = hostapis[hostapi_index]["name"]
-        if hostapi_name == 'Windows WDM-KS':
-            # Raw kernel pins often include disconnected/exclusive endpoints.
-            # Shared-mode WASAPI exposes the corresponding usable devices.
-            continue
-        name = str(device["name"])
-        if name in {'Microsoft Sound Mapper - Input', 'Microsoft Sound Mapper - Output', 'Primary Sound Capture Driver', 'Primary Sound Driver'}:
-            continue
-        if device["max_input_channels"] > 0:
-            input_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
-        if device["max_output_channels"] > 0:
-            output_devices.append({"id": index, "name": name, "hostapi": hostapi_name})
-
-    common = next((item['hostapi'] for item in input_devices if any(out['hostapi'] == item['hostapi'] for out in output_devices)), None)
-    if common:
-        api = next(api for api in hostapis if api['name'] == common)
-        default_input = next((item['id'] for item in input_devices if item['id'] == api['default_input_device']), next(item['id'] for item in input_devices if item['hostapi'] == common))
-        default_output = next((item['id'] for item in output_devices if item['id'] == api['default_output_device']), next(item['id'] for item in output_devices if item['hostapi'] == common))
-    else:
-        default_input = input_devices[0]['id'] if input_devices else -1
-        default_output = output_devices[0]['id'] if output_devices else -1
-
-    return {
-        "defaultInput": int(default_input),
-        "defaultOutput": int(default_output),
-        "inputName": devices[default_input]["name"] if default_input >= 0 else '',
-        "outputName": devices[default_output]["name"] if default_output >= 0 else '',
-        "inputCount": len(input_devices),
-        "outputCount": len(output_devices),
-        "inputs": input_devices,
-        "outputs": output_devices,
-    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -366,8 +585,59 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-device", type=int)
     parser.add_argument("--output-device", type=int)
     parser.add_argument("--steps", type=int, default=2, choices=range(1, 5))
+    parser.add_argument("--fixed-steps", action="store_true", help="Disable CPU calibration of the requested step count")
+    parser.add_argument("--cpu-precision", choices=('int8', 'float32'), default='int8')
     parser.add_argument("--pitch", type=float, default=0.0)
     return parser.parse_args()
+
+
+def optimize_cpu_models(pipeline, precision: str) -> None:
+    """Quantize only the supported VC linear layers; retain floating-point I/O."""
+    pipeline.cpu_precision = 'float32'
+    if precision == 'float32':
+        return
+    names = ('vc_jit_cold', 'vc_jit_t4', 'vc_jit_t8', 'vc_jit_steady')
+    try:
+        from torch.ao.quantization import quantize_dynamic_jit, default_dynamic_qconfig
+        optimized = [quantize_dynamic_jit(getattr(pipeline, name).eval(),
+                     {'': default_dynamic_qconfig}) for name in names]
+    except (RuntimeError, AttributeError, NotImplementedError) as error:
+        print(f'[CPU] INT8 unavailable; using float32: {error}', flush=True)
+        return
+    # Swap together so failures leave a consistent, usable float pipeline.
+    for name, model in zip(names, optimized):
+        setattr(pipeline, name, model)
+    pipeline.cpu_precision = 'int8'
+
+
+@torch.inference_mode()
+def prepare_cpu_stream(pipeline, requested_steps: int, fixed_steps: bool = False) -> None:
+    """Measure on the inference thread, leaving CPU headroom for audio and pitch."""
+    torch.set_num_threads(1)
+    pipeline._num_steps = requested_steps
+    samples = np.random.default_rng(7).normal(0, .03, pipeline.CHUNK).astype(np.float32)
+    while True:
+        pipeline.reset()
+        timings = []
+        for index in range(32):
+            started = time.perf_counter()
+            converted = pipeline.process_chunk(samples)
+            if converted is not None and not np.isfinite(converted).all():
+                raise RuntimeError('CPU voice model produced invalid audio during warmup.')
+            pipeline._bn_save_list.clear()
+            if index >= 8:
+                timings.append((time.perf_counter() - started) * 1000)
+        p95 = float(np.percentile(timings, 95))
+        if fixed_steps or p95 <= MODEL_BLOCK_MS * .75 or pipeline._num_steps <= 1:
+            break
+        pipeline._num_steps -= 1
+    pipeline.reset()
+    print('[CPU] ' + json.dumps({
+        'precision': pipeline.cpu_precision, 'requestedSteps': requested_steps,
+        'modelSteps': pipeline._num_steps, 'p95Ms': round(p95, 1),
+        'modelBlockMs': MODEL_BLOCK_MS, 'threads': torch.get_num_threads(),
+        'realtime': p95 < MODEL_BLOCK_MS,
+    }), flush=True)
 
 
 def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
@@ -389,11 +659,14 @@ def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
         # in-memory vector lets Morphly warm every heavy network before a user
         # supplies a voice. update_speaker() replaces it before audio starts.
         original_extract = vc_module._run_rt_jit.extract_embedding
+        original_init = vc_module._run_rt_jit.init_speaker_model
 
         def neutral_embedding(_model, _target_wav, device="cpu"):
             return torch.zeros((1, 256), dtype=torch.float32, device=device)
 
         vc_module._run_rt_jit.extract_embedding = neutral_embedding
+        # WavLM is needed only while reading a reference, not during live audio.
+        vc_module._run_rt_jit.init_speaker_model = lambda *a, **k: None
         try:
             pipeline = vc_module.VCPipelineJIT(
                 target_wav="MorphlyVC idle profile",
@@ -403,14 +676,28 @@ def load_pipeline(args: argparse.Namespace, target_wav: Path | None):
             )
         finally:
             vc_module._run_rt_jit.extract_embedding = original_extract
+            vc_module._run_rt_jit.init_speaker_model = original_init
 
-    with torch.inference_mode():
-        pipeline.reset()
-        pipeline.warmup()
-        # Warm the steady-state VC trace as well as the first three ASR chunks.
-        for _ in range(8):
-            pipeline.process_chunk(np.zeros(pipeline.CHUNK, dtype=np.float32))
-    pipeline.reset()
+    pipeline.spk_model = None
+    gc.collect()
+
+    def update_speaker(target: str) -> None:
+        runtime = vc_module._run_rt_jit
+        speaker = runtime.init_speaker_model(runtime.SPEAKER_MODEL_PATH, 'cpu',
+                                             wavlm_config=runtime.WAVLM_CONFIG_PATH)
+        try:
+            with torch.inference_mode():
+                embedding = runtime.extract_embedding(speaker, target, device='cpu')
+            pipeline.vc_spk_emb = embedding
+        finally:
+            del speaker
+            gc.collect()
+
+    pipeline.update_speaker = update_speaker
+    optimize_cpu_models(pipeline, getattr(args, 'cpu_precision', 'int8'))
+    pipeline.prepare_realtime = lambda: prepare_cpu_stream(
+        pipeline, args.steps, getattr(args, 'fixed_steps', False))
+    pipeline.prepare_realtime()
     return pipeline
 
 
@@ -465,12 +752,15 @@ def run_warm_engine(args: argparse.Namespace, devices: dict[str, object], stop_e
         pitch_processor = PitchProcessor(float(command.get("pitch", 0.0)))
         input_device = int(command.get("input_device", devices["defaultInput"]))
         output_device = int(command.get("output_device", devices["defaultOutput"]))
-        audio_stream = BufferedVoiceStream(
+        translation = command.get('translation')
+        stream_class = TranslatedVoiceStream if translation else BufferedVoiceStream
+        audio_stream = stream_class(
             pipeline,
             pitch_processor,
             input_device,
             output_device,
             lambda error: commands.put({"type": "audio-error", "message": str(error)}),
+            **({'translation': translation} if translation else {}),
         )
         audio_stream.start()
         print(
@@ -497,6 +787,13 @@ def run_warm_engine(args: argparse.Namespace, devices: dict[str, object], stop_e
             elif command_type == "pitch":
                 pitch_processor.set_semitones(float(command["semitones"]))
                 print(f"[Pitch] {pitch_processor.semitones:+.1f} semitones", flush=True)
+            elif command_type == "translation-audio":
+                if isinstance(audio_stream, TranslatedVoiceStream):
+                    try:
+                        audio_stream.receive_translation(command)
+                    except Exception:
+                        stop_audio()
+                        print('[Stream] Error Translation playback failed. Start again to reconnect.', file=sys.stderr, flush=True)
             elif command_type == "stop":
                 stop_audio()
                 print("[Stream] Stopped", flush=True)
@@ -528,13 +825,14 @@ def main() -> int:
             for index in range(max(20, min(1000, args.benchmark_blocks))):
                 started = time.perf_counter()
                 pipeline.process_chunk(samples)
+                pipeline._bn_save_list.clear()
                 if index % 50 == 49:
                     pipeline._reset_vc_kv_cache()
                 if index >= 10:
                     timings.append((time.perf_counter() - started) * 1000)
-        print('[Benchmark] ' + json.dumps({'microphoneOpen': False, 'modelBlockMs': MODEL_BLOCK_MS, 'audioBlockMs': AUDIO_BLOCK_MS, 'threads': torch.get_num_threads(), 'meanMs': round(float(np.mean(timings)), 2), 'p95Ms': round(float(np.percentile(timings, 95)), 2), 'maxMs': round(max(timings), 2)}), flush=True)
+        print('[Benchmark] ' + json.dumps({'microphoneOpen': False, 'modelBlockMs': MODEL_BLOCK_MS, 'audioBlockMs': AUDIO_BLOCK_MS, 'modelSteps': pipeline._num_steps, 'cpuPrecision': pipeline.cpu_precision, 'threads': torch.get_num_threads(), 'meanMs': round(float(np.mean(timings)), 2), 'p95Ms': round(float(np.percentile(timings, 95)), 2), 'maxMs': round(max(timings), 2)}), flush=True)
         return 0
-    devices = device_summary()
+    devices = _preflight_devices if _preflight_devices is not None else device_summary()
     if args.check:
         print(f"[Check] Ready {json.dumps(devices, ensure_ascii=True)}", flush=True)
         return 0

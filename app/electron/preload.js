@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electron', {
       'window:toggle-full-screen',
       'clipboard:write-text',
       'morphlyvc:status',
+      'morphlyvc:refresh-devices',
       'morphlyvc:reference',
       'morphlyvc:prepare',
       'morphlyvc:start',

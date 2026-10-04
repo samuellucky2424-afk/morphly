@@ -1,8 +1,8 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.12",
-  "description": "Morphly Desktop with virtual camera support and an optional on-demand MorphlyVC voice engine.",
+  "version": "2.5.23",
+  "description": "Morphly Desktop with virtual camera support and automatic, resumable MorphlyVC voice engine setup.",
   "author": "Morphly",
   "repository": {
     "type": "git",
@@ -37,7 +37,8 @@
     "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe && node scripts/media-foundation-camera-registration.cjs probe",
     "electron:build": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish never",
     "electron:build:dir": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win dir",
-    "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always"
+    "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always",
+    "translation:server": "tsx server/translation-server.js"
   },
   "build": {
     "appId": "com.morphly.app",
@@ -54,7 +55,8 @@
       "dist/**/*",
       "electron/**/*",
       "server/meanvc-runtime.js",
-      "shared/**/*"
+      "shared/**/*",
+      "server/translation-client.js"
     ],
     "extraResources": [
       {
@@ -68,6 +70,10 @@
       {
         "from": "build/VBCABLE_Setup_x64.exe",
         "to": "vbcable/VBCABLE_Setup_x64.exe"
+      },
+      {
+        "from": "build/detect-vbcable.ps1",
+        "to": "vbcable/detect-vbcable.ps1"
       }
     ],
     "afterPack": "build/afterPack.cjs",
@@ -100,7 +106,7 @@
     ]
   },
   "dependencies": {
-    "@decartai/sdk": "0.1.22",
+    "@decartai/sdk": "^0.2.3",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -129,7 +135,7 @@
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.100.1",
-    "@xmaxai/sdk-global": "^1.1.7",
+    "@vercel/functions": "^3.9.9",
     "aliyun-rtc-sdk": "7.1.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -140,8 +146,8 @@
     "electron-updater": "^6.8.3",
     "embla-carousel-react": "^8.6.0",
     "express": "^4.18.2",
-    "firebase": "12.19.0",
-    "firebase-admin": "13.6.0",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^13.6.0",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.562.0",
     "multer": "^1.4.5-lts.1",
@@ -159,6 +165,7 @@
     "tailwind-merge": "^3.4.0",
     "uuid": "^9.0.0",
     "vaul": "^1.1.2",
+    "ws": "8.20.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {

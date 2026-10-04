@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react';
 import { Briefcase, Camera, Home, Trees } from 'lucide-react';
-import { XMAX_CHARX_PROMPT } from './xmax-realtime.ts';
+export const DECART_REFERENCE_PROMPT = 'Turn the person into the reference image';
 import { type RealtimeProvider, VIDU_REALTIME_PROVIDER } from './realtime-provider.ts';
 
 export interface BackgroundPreset {
@@ -54,28 +54,7 @@ export const BACKGROUND_PRESETS: BackgroundPreset[] = [
   },
 ];
 
-export function buildXmaxTransformPrompt(
-  hasReferenceImage: boolean,
-  presetId: string,
-  customText: string = '',
-): string {
-  const customTrimmed = customText.trim();
-  if (customTrimmed) {
-    const cleanCustom = customTrimmed.replace(/^change the background to\s+/i, '');
-    const backgroundPrompt = `Change the background to ${cleanCustom}.`;
-    return hasReferenceImage ? `${XMAX_CHARX_PROMPT} ${backgroundPrompt}` : backgroundPrompt;
-  }
-
-  const preset = BACKGROUND_PRESETS.find((item) => item.id === presetId) || BACKGROUND_PRESETS[0];
-  if (preset.id === 'original' || !preset.prompt) {
-    // Plus treats the reference as a character image in every background setting.
-    return XMAX_CHARX_PROMPT;
-  }
-
-  return hasReferenceImage ? `${XMAX_CHARX_PROMPT} ${preset.prompt}` : preset.prompt;
-}
-
-export function buildDecartTransformPrompt(
+export function buildViduTransformPrompt(
   hasReferenceImage: boolean,
   presetId: string,
   customText: string = '',
@@ -108,15 +87,15 @@ export function buildDecartTransformPrompt(
   return preset.prompt;
 }
 
-export const buildViduTransformPrompt = buildDecartTransformPrompt;
-
-export function buildRealtimeTransformPrompt(
-  provider: RealtimeProvider,
-  hasReferenceImage: boolean,
-  presetId: string,
-  customText: string = '',
-): string {
-  return (provider === VIDU_REALTIME_PROVIDER || (provider as string) === 'decart')
-    ? buildDecartTransformPrompt(hasReferenceImage, presetId, customText)
-    : buildXmaxTransformPrompt(hasReferenceImage, presetId, customText);
+export function buildDecartTransformPrompt(hasReferenceImage: boolean, presetId: string, customText = ''): string {
+  const preset = BACKGROUND_PRESETS.find(item => item.id === presetId) || BACKGROUND_PRESETS[0];
+  const custom = customText.trim().replace(/^change the background to\s+/i, '');
+  const background = custom ? `Change the background to ${custom}.` : preset.prompt;
+  if (hasReferenceImage) return background ? `${DECART_REFERENCE_PROMPT}. ${background}` : DECART_REFERENCE_PROMPT;
+  return background || 'Preserve the original camera appearance.';
+}
+export function buildRealtimeTransformPrompt(provider: RealtimeProvider, hasReferenceImage: boolean, presetId: string, customText = ''): string {
+  return provider === VIDU_REALTIME_PROVIDER
+    ? buildViduTransformPrompt(hasReferenceImage, presetId, customText)
+    : buildDecartTransformPrompt(hasReferenceImage, presetId, customText);
 }

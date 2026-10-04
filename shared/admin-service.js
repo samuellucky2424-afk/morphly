@@ -620,7 +620,7 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
       () => supabaseAdmin.from('analytics_events')
         .select('user_id, session_id, installation_id, event_name, metadata, created_at')
         .gte('created_at', filters.since)
-        .in('event_name', ['first_frame_received', 'xmax_key_issued', 'decart_token_issued'])
+        .in('event_name', ['first_frame_received', 'xmax_key_issued', 'vidu_token_issued', 'decart_token_issued'])
         .order('created_at', { ascending: false }),
       'analytics_events',
     ),
@@ -672,7 +672,7 @@ export async function listAdminUsage(supabaseAdmin, options = {}) {
     if (event.session_id && event.installation_id && !installationBySessionId.has(event.session_id)) {
       installationBySessionId.set(event.session_id, event.installation_id);
     }
-    if (['xmax_key_issued', 'decart_token_issued'].includes(event.event_name) && event.user_id) {
+    if (['xmax_key_issued', 'vidu_token_issued', 'decart_token_issued'].includes(event.event_name) && event.user_id) {
       tokenEventsByUserId.set(event.user_id, (tokenEventsByUserId.get(event.user_id) || 0) + 1);
     }
   }

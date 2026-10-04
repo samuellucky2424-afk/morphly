@@ -2,14 +2,15 @@
 import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
 import { sessionStartLimit } from '../session-start-limit.js';
-import { createDecartTemporaryKey } from '../decart-token.js';
+import { createDecartTemporaryKey as createScopedDecartKey } from '../decart-token.js';
+import { realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 
 const CREDITS_PER_SECOND = 2;
-const XMAX_DEFAULT_API_BASE_URL = 'https://api.xmax.cloud/open/api/v1';
-const XMAX_REALTIME_MODEL = 'x2.0';
+const DECART_DEFAULT_API_BASE_URL = 'https://api.decart.ai';
+const DECART_REALTIME_MODEL = 'lucy-2.5';
 const VIDU_REALTIME_MODEL = 's2-editing';
 const VIDU_DEFAULT_API_BASE_URL = 'https://api.vidu.com';
 const DEFAULT_REALTIME_PROVIDER = 'vidu';
@@ -21,8 +22,8 @@ const TOKEN_MINT_LIMIT_PER_WINDOW = 30;
 const VIDU_TOKEN_MAX_ATTEMPTS = 2;
 const VIDU_TOKEN_RETRY_DELAY_MS = 600;
 
-function getXmaxApiKey() {
-  return process.env.XMAX_API_KEY?.trim() || null;
+function getDecartApiKey() {
+  return process.env.DECART_API_KEY?.trim() || null;
 }
 
 function getViduApiKey() {
@@ -34,38 +35,25 @@ function getViduApiBaseUrl() {
 }
 
 export function normalizeRealtimeProvider(value) {
-  return (value === 'vidu' || value === 'decart') ? value : DEFAULT_REALTIME_PROVIDER;
+  return value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
 }
 
 function getProviderModel(provider) {
-  if (provider === 'decart') return 'lucy-2.5';
-  return (provider === 'vidu' || provider === 'decart') ? VIDU_REALTIME_MODEL : XMAX_REALTIME_MODEL;
+  return provider === 'decart' ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
 }
 
 function getProviderApiKey(provider) {
-  if (provider === 'decart') return process.env.DECART_API_KEY?.trim() || null;
-  return (provider === 'vidu' || provider === 'decart') ? getViduApiKey() : getXmaxApiKey();
+  return provider === 'decart' ? getDecartApiKey() : getViduApiKey();
 }
 
 function getProviderPublicLabel(provider) {
-  if (provider === 'decart') return 'Plus';
-  if (provider === 'vidu') return 'Pro';
-  return (provider === 'vidu' || provider === 'decart') ? 'Pro' : 'Plus';
-}
-
-function getXmaxApiBaseUrl() {
-  return (process.env.XMAX_API_BASE_URL?.trim() || XMAX_DEFAULT_API_BASE_URL).replace(/\/$/, '');
+  return provider === 'decart' ? 'Pro' : 'Plus';
 }
 
 function getProviderSessionLimitSeconds(provider) {
-  if (provider === 'decart') return Math.min(3600,Math.max(60,Number(process.env.DECART_MAX_SESSION_SECONDS)||1800));
-  const configured = Number(
-    (provider === 'vidu' || provider === 'decart')
-      ? (process.env.VIDU_MAX_SESSION_SECONDS || process.env.DECART_MAX_SESSION_SECONDS)
-      : process.env.XMAX_MAX_SESSION_SECONDS,
-  );
-  if (!Number.isFinite(configured)) return DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS;
-  return Math.min(7200, Math.max(60, Math.floor(configured)));
+  const configured = Number(provider === 'decart' ? process.env.DECART_MAX_SESSION_SECONDS : process.env.VIDU_MAX_SESSION_SECONDS);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS;
+  return Math.min(7200, Math.max(10, Math.floor(configured)));
 }
 
 function getUnverifiedWalletLimit() {
@@ -101,61 +89,32 @@ export function getBrowserTokenOrigins(req, platform) {
   }
 }
 
-async function createXmaxTemporaryKey(
-  apiKey,
-  maxSeconds,
-) {
-  const pointsLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 7200));
-  const expireSeconds = Math.max(60, pointsLimit + TEMPORARY_KEY_GRACE_SECONDS);
-  const keyPayload = {
-    expireSeconds,
-    pointsLimit,
-  };
-
-  let providerResponse;
+export async function createDecartTemporaryKey({ apiKey, maxSeconds, allowedOrigins = [], userId, sessionId, installationId }) {
+  const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 7200));
+  // Decart enforces a minimum ten-second duration. Never mint a token whose
+  // minimum provider allowance exceeds the account's affordable duration.
+  if (sessionLimit < 10) return { error: { error: 'INSUFFICIENT_CREDITS', details: 'Pro requires at least 25 credits to start a session.' } };
   try {
-    providerResponse = await fetch(`${getXmaxApiBaseUrl()}/temporary-api-key`, {
+    const response = await fetch(`${DECART_DEFAULT_API_BASE_URL}/v1/client/tokens`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
-      body: JSON.stringify(keyPayload),
+      headers: { 'Content-Type': 'application/json', 'X-API-KEY': apiKey },
+      body: JSON.stringify({
+        expiresIn: 60,
+        allowedModels: [DECART_REALTIME_MODEL],
+        ...(allowedOrigins.length ? { allowedOrigins } : {}),
+        constraints: { realtime: { maxSessionDuration: sessionLimit } },
+        metadata: { userId, sessionId, installationId },
+      }),
       signal: AbortSignal.timeout(15000),
     });
-  } catch (error) {
-    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
-    return { error: {
-      error: 'AI_SESSION_CREATION_FAILED',
-      providerStatus: null,
-      details: timedOut
-        ? 'Plus did not respond in time. Please try again.'
-        : 'Plus could not be reached. Check the connection and try again.',
-    } };
+    const data = await response.json().catch(() => null);
+    if (!response.ok || typeof data?.apiKey !== 'string' || !data.apiKey || data.apiKey === apiKey) {
+      return { error: { error: 'AI_SESSION_CREATION_FAILED', providerStatus: response.status, details: 'Pro could not create a secure session. Check Decart access or try again.' } };
+    }
+    return { token: data.apiKey, expiresAt: data.expiresAt, sessionLimit };
+  } catch {
+    return { error: { error: 'AI_SESSION_CREATION_FAILED', details: 'Pro could not be reached. Please try again.' } };
   }
-  const providerData = await providerResponse.json().catch(() => ({}));
-
-  console.log('[AI_SESSION]', {
-    providerStatus: providerResponse.status,
-    hasTemporaryKey: Boolean(providerData?.data?.temporaryApiKey),
-    expiresAt: providerData?.data?.expireTimestamp ?? null,
-    providerError: providerData?.message ?? null,
-  });
-
-  if (!providerResponse.ok || !providerData?.data?.temporaryApiKey) {
-    const errorDetails = typeof providerData?.error === 'string'
-      ? providerData.error
-      : providerData?.message || providerData?.error?.message || 'Unknown provider error';
-    return { error: {
-      error: 'AI_SESSION_CREATION_FAILED',
-      providerStatus: providerResponse.status,
-      details: errorDetails,
-    } };
-  }
-
-  return {
-    token: providerData.data.temporaryApiKey,
-    expiresAt: providerData.data.expireTimestamp ?? null,
-    pointsLimit,
-    expireSeconds,
-  };
 }
 
 export async function createViduTemporaryKey({
@@ -165,7 +124,6 @@ export async function createViduTemporaryKey({
   sessionId,
   installationId,
   imageUrl,
-  editingType,
 }) {
   const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 120));
   const baseUrl = getViduApiBaseUrl();
@@ -182,10 +140,7 @@ export async function createViduTemporaryKey({
 
   const effectiveImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
   if (!/^(https?:\/\/|data:image\/(png|jpeg|webp);base64,|ssupload:)/i.test(effectiveImageUrl) || effectiveImageUrl.length > 3_000_000) {
-    return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'Choose a reference image under 2 MB for Pro.' } };
-  }
-  if (editingType && !['subject_replacement', 'style_transfer', 'background_replacement', 'virtual_tryon'].includes(editingType)) {
-    return { error: { error: 'INVALID_EDITING_TYPE', details: 'Unsupported Pro editing scenario.' } };
+    return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'Choose a reference image under 2 MB for Plus.' } };
   }
 
   for (let attempt = 1; attempt <= VIDU_TOKEN_MAX_ATTEMPTS; attempt += 1) {
@@ -198,7 +153,7 @@ export async function createViduTemporaryKey({
         },
         body: JSON.stringify({
           image_url: effectiveImageUrl,
-          editing_type: editingType || 'subject_replacement',
+          editing_type: 'subject_replacement',
         }),
         signal: AbortSignal.timeout(15000),
       });
@@ -226,12 +181,12 @@ export async function createViduTemporaryKey({
         }
 
         const details = providerStatus === 401 || providerStatus === 403
-          ? 'Pro could not authenticate this session. Check VIDU_API_KEY or contact support.'
+          ? 'Plus could not authenticate this session. Check VIDU_API_KEY or contact support.'
           : providerStatus === 429
-            ? 'Pro is limiting new sessions right now. Wait a moment, then try again.'
+            ? 'Plus is limiting new sessions right now. Wait a moment, then try again.'
             : retryable || unavailable
-              ? 'Pro is temporarily unavailable. Check your connection, then try again.'
-              : 'Pro rejected this session configuration. Try Plus or contact support.';
+              ? 'Plus is temporarily unavailable. Check your connection, then try again.'
+              : 'Plus rejected this session configuration. Try Pro or contact support.';
 
         return {
           error: {
@@ -277,7 +232,7 @@ export async function createViduTemporaryKey({
           error: 'AI_SESSION_CREATION_FAILED',
           providerStatus: isTimeout ? 408 : null,
           providerCode: isTimeout ? 'TIMEOUT' : null,
-          details: 'Pro is temporarily unavailable. Check your connection, then try again.',
+          details: 'Plus is temporarily unavailable. Check your connection, then try again.',
         },
       };
     }
@@ -288,7 +243,7 @@ export async function createViduTemporaryKey({
       error: 'AI_SESSION_CREATION_FAILED',
       providerStatus: null,
       providerCode: null,
-      details: 'Pro is temporarily unavailable. Check your connection, then try again.',
+      details: 'Plus is temporarily unavailable. Check your connection, then try again.',
     },
   };
 }
@@ -302,9 +257,8 @@ async function createProviderTemporaryCredential({
   sessionId,
   installationId,
   imageUrl,
-  editingType,
 }) {
-  if (provider === 'decart') return createDecartTemporaryKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
+  if (provider === 'decart') return createScopedDecartKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
   if (provider === 'vidu' || provider === 'decart') {
     return createViduTemporaryKey({
       apiKey,
@@ -313,11 +267,10 @@ async function createProviderTemporaryCredential({
       sessionId,
       installationId,
       imageUrl,
-      editingType,
     });
   }
 
-  return createXmaxTemporaryKey(apiKey, maxSeconds);
+  return createDecartTemporaryKey({ apiKey, maxSeconds, allowedOrigins, userId, sessionId, installationId });
 }
 
 function isMissingFunctionError(error, functionName) {
@@ -344,7 +297,9 @@ async function recordProviderTokenAudit({
     installation_id: installationId,
     session_id: sessionId,
     platform,
-    event_name: `${provider === 'decart' ? 'decart_token' : 'vidu_token'}_${status === 'issued' ? 'issued' : 'failed'}`,
+    event_name: status === 'issued'
+      ? `${provider}_token_issued`
+      : `${provider}_token_failed`,
     metadata: {
       provider,
       model,
@@ -529,7 +484,7 @@ export default async function handler(req, res) {
     }
 
     const provider = normalizeRealtimeProvider(req.body?.provider);
-    const minimumCreditRate = provider === 'vidu' ? 2.5 : CREDITS_PER_SECOND;
+    const minimumCreditRate = provider === 'decart' ? 2.5 : CREDITS_PER_SECOND;
     const providerModel = getProviderModel(provider);
     const providerApiKey = getProviderApiKey(provider);
 
@@ -540,12 +495,11 @@ export default async function handler(req, res) {
         provider,
         apiKey: effectiveApiKey,
         maxSeconds: 1800,
-        allowedOrigins: ['*'],
+        allowedOrigins: getBrowserTokenOrigins(req, req.body?.platform),
         userId: req.body?.userId || '00000000-0000-0000-0000-000000000001',
         sessionId,
         installationId: 'local_preview',
         imageUrl: req.body?.imageUrl || req.body?.image_url || req.body?.referenceImage,
-        editingType: req.body?.editingType,
       });
 
       if (providerSession.error) {
@@ -661,12 +615,13 @@ export default async function handler(req, res) {
       userCredits = normalizeCredits(refreshedWallet.data?.credits);
     }
 
-    if (userCredits < minimumCreditRate) {
+    userCredits = await realtimeWalletBalance(supabaseAdmin, userId, userCredits);
+    if (userCredits < (provider === 'decart' ? 25 : minimumCreditRate)) {
       await logRequestEvent('start-session.insufficient_credits', {
         userId,
         credits: userCredits,
       });
-      return res.json({ allowed: false, error: 'Insufficient credits' });
+      return res.json({ allowed: false, error: provider === 'decart' ? 'Pro requires at least 25 credits to start (2.5 cr/sec).' : 'Insufficient credits' });
     }
 
     const unverifiedWalletLimit = getUnverifiedWalletLimit();
@@ -718,6 +673,23 @@ export default async function handler(req, res) {
       return res.status(500).json({ allowed: false, error: 'Failed to create session' });
     }
 
+    // New clients require timestamp billing; never silently use a legacy rate.
+    const billingSetup = await supabaseAdmin.rpc('configure_realtime_video', {
+      p_user: userId, p_session: newSession.id, p_rate_half: provider === 'decart' ? 5 : 4,
+    });
+    if (billingSetup.error) {
+      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      console.error('Realtime billing setup failed; check database migrations:', billingSetup.error.code);
+      return res.status(503).json({ allowed: false, error: 'Realtime billing is temporarily unavailable. Please try again later.' });
+    }
+    const billingVersion = 2;
+    const { error: providerAuditError } = await supabaseAdmin.from('sessions').update({
+      provider, provider_model: providerModel, provider_max_seconds: maxSeconds,
+    }).eq('id', newSession.id);
+    if (providerAuditError) {
+      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      throw providerAuditError;
+    }
     const providerCredentialStartedAt = Date.now();
     const providerSession = await createProviderTemporaryCredential({
       provider,
@@ -728,7 +700,6 @@ export default async function handler(req, res) {
       sessionId: newSession.id,
       installationId,
       imageUrl: req.body?.imageUrl || req.body?.image_url || req.body?.referenceImage,
-      editingType: req.body?.editingType,
     });
     const providerCredentialMs = Date.now() - providerCredentialStartedAt;
     if (providerSession.error) {
@@ -801,6 +772,8 @@ export default async function handler(req, res) {
       allowed: true,
       sessionId: newSession.id,
       credits: userCredits,
+      billingVersion,
+      serverNow: Date.now(),
       maxSeconds: providerSession.sessionLimit || maxSeconds,
       baseUrl: providerSession.baseUrl,
       token: providerSession.token,

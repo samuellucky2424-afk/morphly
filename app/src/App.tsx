@@ -12,6 +12,7 @@ import { ROUTES } from '@/lib/routes';
 import { useAuth } from '@/context/AuthContext';
 
 const Login = lazy(() => import('@/pages/Login'));
+const ResetPassword = lazy(() => import('@/pages/ResetPassword'));
 const AdminDashboard = lazy(() => import('@/pages/AdminDashboard'));
 const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Wallet = lazy(() => import('@/pages/Wallet'));
@@ -43,6 +44,7 @@ function App() {
             <AppProvider>
               <Suspense fallback={<LoadingScreen />}>
                 <Routes>
+                  <Route path={ROUTES.PUBLIC.RESET_PASSWORD} element={<ResetPassword />} />
                   <Route
                     path={ROUTES.PUBLIC.LOGIN}
                     element={

@@ -130,10 +130,10 @@ test('the voice engine is an optional download instead of a bundled 2.8 GB resou
 });
 
 test('virtual microphone routing detects VB-CABLE and provides compliant setup guidance', () => {
-  assert.match(panel, /CABLE Input/);
+  assert.match(panel, /isVirtualMicrophonePlaybackDevice/);
   assert.match(panel, /CABLE Output/);
-  assert.match(panel, /isMultiChannelVirtualCableDevice/);
-  assert.match(panel, /Install VB-CABLE, then refresh the device list/);
+  assert.match(panel, /selectableVoiceOutputs/);
+  assert.match(panel, /Install VB-CABLE, then fully quit and reopen Morphly/);
   assert.match(panel, /virtualMicrophoneOutput\?\.id/);
   assert.match(electronMain, /https:\/\/vb-audio\.com\/Cable\//);
   assert.match(electronPreload, /virtual-microphone:open-setup/);

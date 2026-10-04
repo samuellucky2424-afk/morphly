@@ -3,6 +3,7 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { recordRealtimeVideo } from '../realtime-billing.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,
@@ -97,7 +98,7 @@ async function updateEndedSession(sessionId, secondsUsed, creditsUsed) {
     .eq('status', 'active');
 }
 
-// Bills only generation seconds already recorded while Xmax X2 was running.
+// Bills only generation seconds already recorded while realtime generation was running.
 async function billAndCloseSession(session, userId, finalSecondsDelta = 0) {
   const { data: walletData, error: walletError } = await supabaseAdmin
     .from('wallets').select('credits').eq('user_id', userId).maybeSingle();
@@ -169,6 +170,10 @@ export default async function handler(req, res) {
     const { sessionId, secondsDelta } = req.body || {};
     if (req.body?.userId && req.body.userId !== userId) {
       return res.status(403).json({ success: false, message: 'User mismatch' });
+    }
+    if (req.body?.billingVersion === 2) {
+      const result = await recordRealtimeVideo(supabaseAdmin, userId, req.body, true);
+      return res.json({ success: true, ...result });
     }
 
     await logRequestEvent('end-session.request', {

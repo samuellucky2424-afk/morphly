@@ -68,6 +68,8 @@ jobs:
       shell: pwsh
       run: |
         & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-buffer.test.py
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-cpu.test.py
         if ($LASTEXITCODE -ne 0) { throw "MorphlyVC audio regression tests failed." }
 
     - name: Build Electron app without publishing
@@ -161,7 +163,7 @@ jobs:
         if (!(Test-Path $asarCli)) { throw "Missing ASAR inspection CLI: $asarCli" }
         $asarEntries = @(& $asarCli list $appAsar)
         if ($LASTEXITCODE -ne 0) { throw "Unable to inspect packaged app archive: $appAsar" }
-        foreach ($requiredEntry in @('\shared\load-environment.js')) {
+        foreach ($requiredEntry in @('\shared\load-environment.js', '\electron\virtual-microphone.js', '\electron\voice-engine-setup.js', '\shared\download-retry.js', '\shared\voice-audio-devices.js', '\server\translation-client.js', '\shared\translation.js', '\shared\translation-audio-queue.js', '\node_modules\ws\index.js')) {
           if ($asarEntries -notcontains $requiredEntry) {
             throw "Packaged app archive is missing required runtime module: $requiredEntry"
           }
@@ -194,6 +196,12 @@ jobs:
         # Python bridge ships inside the installer.
         $bundledVoiceBridge = Join-Path $dir "win-unpacked/resources/morphlyvc/meanvc-realtime.py"
         if (!(Test-Path $bundledVoiceBridge)) { throw "Missing bundled MorphlyVC bridge: $bundledVoiceBridge" }
+        $cableProbe = Join-Path $dir "win-unpacked/resources/vbcable/detect-vbcable.ps1"
+        if (!(Test-Path $cableProbe)) { throw "Missing bundled VB-CABLE driver probe." }
+        $probeResult = & powershell.exe -NoProfile -NonInteractive -File $cableProbe | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $probeResult.installed -isnot [bool] -or $probeResult.error) {
+          throw "Packaged VB-CABLE probe failed validation."
+        }
 
         if (Test-Path (Join-Path $dir "win-unpacked/resources/morphlyvc/runtime-40ms")) {
           throw "The optional voice engine must not be bundled in the desktop installer."

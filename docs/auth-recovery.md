@@ -1,4 +1,39 @@
-# Signup and password recovery
+# OTP password recovery (browser and desktop)
+
+## Current implementation
+
+- Select **Forgot password?** on the sign-in screen to open `/#/reset-password` in the browser or the same hash route inside Electron. The clean browser URL `/reset-password` forwards to this screen.
+- Request a code, verify it, then enter and confirm a new password. Codes can be pasted/autofilled; numeric codes from 6 to 10 digits are accepted to match project configuration. Resending has a 60-second UI cooldown; Supabase enforces its server-side limits and expiration.
+- Requests use `resetPasswordForEmail`; verification uses `verifyOtp({ email, token, type: 'recovery' })`. No magic-link sign-in or account creation is used.
+- A dedicated memory-only Supabase client keeps recovery separate from the main app session. An existing login cannot unlock password updates. The verified server user must match the recovery email and session before the password form is enabled.
+- Errors stay inline. A successful reset clears password fields and signs out the temporary recovery session. Previously issued browser recovery links remain supported during rollout.
+- The private admin sign-in also opens the code recovery page.
+
+## Supabase configuration
+
+Release 2.5.12 introduces this flow. The owner confirmed the code-only recovery email template was saved before release. The application code does **not** change hosted Supabase email templates. The local `.env` has public client credentials, not Management API access. The available database connector cannot update Auth email settings.
+
+1. In the project's Supabase dashboard, open **Authentication ? Email templates ? Reset password**.
+2. Set the subject to `Your Morphly password reset code`.
+3. Replace the body with [`supabase/templates/recovery.html`](../supabase/templates/recovery.html). This uses `{{ .Token }}` and contains no recovery link. Do not change the magic-link or signup template.
+4. Save the template. Review the existing email OTP expiry and SMTP delivery settings. No new environment variables or database migrations are needed.
+5. Deploy the web build and rebuild/release the Electron app together. Older installed apps expect recovery links, so coordinate this template switch with the desktop release.
+6. With a designated test account, request a real email from both clients, verify the code, change the password, and sign in with the new password. Also check expired codes and resends. Local tests do not verify SMTP delivery.
+
+Provider documentation: [email templates](https://supabase.com/docs/guides/auth/auth-email-templates), [verifyOtp](https://supabase.com/docs/reference/javascript/auth-verifyotp).
+
+## Current verification
+
+- TypeScript and the production Vite build pass (existing large-chunk warnings remain).
+- All 11 focused authentication/recovery tests pass, including five new OTP tests.
+- Release 2.5.12 was prepared from the latest main branch with pinned submodules and exact lockfile dependencies. All 230 Node tests pass. Earlier failures in the older working copy are absent in this complete release checkout.
+- An isolated browser using the actual Supabase client with mocked Auth HTTP responses verified request, resend cooldown, invalid-code rejection, valid-code verification, password mismatch and successful update. Desktop-width and 375 px screenshots were inspected; no page errors were reported. The mobile check included OS dark preference and reduced motion (the application's existing light theme remains in effect).
+- No live emails or account password updates were performed during automated verification. The owner applied the hosted email template. GitHub Actions builds and verifies the native Windows installer before publishing it; Vercel deploys the same release commit for the browser.
+
+---
+
+## Previous link-based recovery implementation (historical)
+
 
 Included in version 2.5.2. Web deployment and a successful desktop release build are required to deliver these changes; local testing does not verify production email delivery.
 

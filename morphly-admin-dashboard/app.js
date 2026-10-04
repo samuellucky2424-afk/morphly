@@ -1306,19 +1306,8 @@ async function init() {
       $("#adminLoginForm").setAttribute("aria-busy", "false");
     }
   });
-  $("#adminForgotPassword").addEventListener("click", async () => {
-    const button = $("#adminForgotPassword");
-    if (button.disabled) return;
-    const email = $("#adminEmail").value.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { $("#loginError").textContent = "Enter a valid email address first."; return; }
-    button.disabled = true;
-    $("#loginError").textContent = "Sending reset email…";
-    try {
-      const { error } = await window.morphlySupabase.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/reset-password` });
-      if (error) throw error;
-      $("#loginError").textContent = "If an account exists for this email, you will receive a reset link. Check your inbox and spam folder.";
-    } catch (error) { $("#loginError").textContent = error.message || "Unable to send the reset request. Please try again."; }
-    finally { button.disabled = false; }
+  $("#adminForgotPassword").addEventListener("click", () => {
+    window.location.assign('/#/reset-password');
   });
 }
 

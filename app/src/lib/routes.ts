@@ -2,6 +2,7 @@ export const ROUTES = {
   PUBLIC: {
     LOGIN: '/login',
     SIGNUP: '/signup',
+    RESET_PASSWORD: '/reset-password',
   },
   PROTECTED: {
     ADMIN: '/admin',

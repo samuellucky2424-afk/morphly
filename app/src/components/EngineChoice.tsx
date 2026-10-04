@@ -12,11 +12,11 @@ type Props = {
   blended: boolean;
 };
 
-export function EngineChoice({ value, onSelect, open, onOpenChange, disabled, blended }: Props) {
-  const [choice, setChoice] = useState<RealtimeProvider | ''>('');
+export function EngineChoice({ value, onSelect, open, onOpenChange, disabled }: Props) {
+  const [choice, setChoice] = useState<RealtimeProvider | ''>(value);
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (open) setChoice(value); }, [open, value]);
-  const rate = (provider: RealtimeProvider) => getCreditRatePerSecond(blended, blended, provider);
+  const rate = (provider: RealtimeProvider) => getCreditRatePerSecond(false, false, provider);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -34,13 +34,13 @@ export function EngineChoice({ value, onSelect, open, onOpenChange, disabled, bl
       <DialogContent showCloseButton={false} onOpenAutoFocus={event => { event.preventDefault(); headingRef.current?.focus(); }} className="max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-xl p-5 motion-reduce:animate-none sm:max-w-[520px] sm:p-6">
         <DialogHeader className="text-left">
           <DialogTitle ref={headingRef} tabIndex={-1} className="text-xl leading-7 outline-none">Choose your engine</DialogTitle>
-          <DialogDescription className="text-sm leading-6">Choose one before streaming. Compare the quality and credit rate below.</DialogDescription>
+          <DialogDescription className="text-sm leading-6">Plus is selected by default. Compare the engines and credit rates below.</DialogDescription>
         </DialogHeader>
         <fieldset className="space-y-3">
           <legend className="sr-only">Engine (required)</legend>
           {([
-            { value: 'vidu', label: 'Pro', title: 'Premium realtime engine', description: 'Transform your camera using a reference image.' },
-            { value: 'decart', label: 'Plus', title: 'Realtime engine', description: 'Transform your camera using a prompt or reference image.' },
+            { value: 'vidu', label: 'Plus', title: 'Realtime engine', description: 'Replace the person using your reference image.' },
+            { value: 'decart', label: 'Pro', title: 'Premium realtime engine', description: 'Transform the person and background with a reference image and prompt.' },
           ] as const).map(engine => (
             <label key={engine.value} className={`flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors focus-within:ring-2 focus-within:ring-ring ${choice === engine.value ? 'border-primary bg-accent' : 'border-border bg-background hover:bg-muted'}`}>
               <input type="radio" name="stream-engine" value={engine.value} checked={choice === engine.value} onChange={() => setChoice(engine.value)} required className="mt-1 h-4 w-4 shrink-0 accent-primary" />
@@ -55,7 +55,7 @@ export function EngineChoice({ value, onSelect, open, onOpenChange, disabled, bl
             </label>
           ))}
         </fieldset>
-        <p className="text-xs leading-5 text-muted-foreground">Results vary with your image, lighting and connection.</p>
+        <p className="text-xs leading-5 text-muted-foreground">Results vary with your image, lighting and connection. Video with live translation uses 4 cr/sec total.</p>
         <div className="flex justify-end gap-3 border-t border-border pt-4">
           <button type="button" onClick={() => onOpenChange(false)} className="min-h-11 rounded-md border border-border px-4 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Cancel</button>
           <button type="button" disabled={!choice || disabled} onClick={() => { if (choice) { onSelect(choice); onOpenChange(false); } }} className="min-h-11 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40">{choice ? `Use ${getRealtimeProviderLabel(choice)}` : 'Select an engine'}</button>

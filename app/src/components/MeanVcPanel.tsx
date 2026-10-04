@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import { TranslationControls, type TranslationSettings } from './TranslationControls';
+import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
+import { useApp } from '@/context/AppContext';
+import { supabase } from '@/lib/supabase';
+import { selectableVoiceOutputs } from '../../shared/voice-audio-devices.js';
 import {
   AudioWaveform,
   Check,
@@ -73,6 +78,7 @@ type MeanVcStatus = {
     engineInstalled?: boolean;
     engineError?: string | null;
     pythonVersion?: string | null;
+    audioDeviceError?: string | null;
     audioDevices?: {
       defaultInput: number;
       defaultOutput: number;
@@ -100,6 +106,7 @@ type MeanVcStatus = {
       pitch: number;
       inputDevice: number | null;
       outputDevice: number | null;
+      translation?: { enabled: boolean } | null;
     } | null;
     startedAt: string | null;
     logs: Array<{
@@ -130,6 +137,7 @@ async function readApiResponse<T>(response: Response): Promise<T> {
 
 const MORPHLY_VC_ROUTES = {
   status: { path: '/api/local/meanvc/status', method: 'GET' },
+  'refresh-devices': { path: '/api/local/meanvc/refresh-devices', method: 'POST' },
   reference: { path: '/api/local/meanvc/reference', method: 'POST' },
   prepare: { path: '/api/local/meanvc/prepare', method: 'POST' },
   start: { path: '/api/local/meanvc/start', method: 'POST' },
@@ -181,15 +189,11 @@ async function requestMorphlyVc<T>(action: MorphlyVcAction, payload?: Record<str
 }
 
 function isVirtualMicrophonePlaybackDevice(name: string) {
-  return /\bCABLE Input\b/i.test(name) || /VB-Audio.+Cable Input/i.test(name);
-}
-
-function isMultiChannelVirtualCableDevice(name: string) {
-  return /\bCABLE In\s+\d+ch\b/i.test(name);
+  return /\bCABLE(?:-[A-D])? Input\b/i.test(name) || /VB-Audio.+Cable Input/i.test(name);
 }
 
 function isVirtualMicrophoneRecordingDevice(name: string) {
-  return /\bCABLE Output\b/i.test(name) || /VB-Audio.+Cable Output/i.test(name);
+  return /\bCABLE(?:-[A-D])? Output\b/i.test(name) || /VB-Audio.+Cable Output/i.test(name);
 }
 
 function getSelectableMicrophoneInputs(devices: NonNullable<MeanVcStatus['standalone']>['40ms']['audioDevices']) {
@@ -226,6 +230,9 @@ type VoiceEngineInstallState = {
   phase: 'idle' | 'downloading' | 'verifying' | 'extracting' | 'done';
   percent: number;
   error: string | null;
+  retrying?: boolean;
+  retryAttempt?: number;
+  retryDelayMs?: number;
 };
 
 const INITIAL_VOICE_ENGINE_STATE: VoiceEngineInstallState = {
@@ -237,6 +244,7 @@ const INITIAL_VOICE_ENGINE_STATE: VoiceEngineInstallState = {
 };
 
 export function MeanVcPanel() {
+  const { setTranslationActive, setCredits } = useApp();
   const [status, setStatus] = useState<MeanVcStatus | null>(null);
   const [voiceEngine, setVoiceEngine] = useState<VoiceEngineInstallState>(INITIAL_VOICE_ENGINE_STATE);
   const model: MeanVcModel = '40ms';
@@ -247,6 +255,7 @@ export function MeanVcPanel() {
   const [pitchSemitones, setPitchSemitones] = useState(0);
   const [routing, setRouting] = useState<{ input: number | null; output: number | null }>({ input: null, output: null });
   const { input: inputDevice, output: outputDevice } = routing;
+  const [translation, setTranslation] = useState<TranslationSettings>({ enabled: false, targetLanguage: 'es', incoming: true, incomingDevice: null, headphonesDevice: null });
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -260,8 +269,7 @@ export function MeanVcPanel() {
         ?? null;
       setRouting((current) => {
         const input = selectableInputs.some(({ id }) => id === current.input) ? current.input : preferredInput;
-        const driver = selectableInputs.find(({ id }) => id === input)?.hostapi;
-        const outputs = devices?.outputs.filter(({ name, hostapi }) => hostapi === driver && !isMultiChannelVirtualCableDevice(name)) || [];
+        const outputs = selectableVoiceOutputs(devices, input);
         const virtualMicrophoneOutput = outputs.find(({ name }) => isVirtualMicrophonePlaybackDevice(name));
         const output = outputs.some(({ id }) => id === current.output) ? current.output
           : virtualMicrophoneOutput?.id
@@ -285,6 +293,26 @@ export function MeanVcPanel() {
   const installing40ms = Boolean(status?.standalone?.['40ms']?.installing);
   const installing120ms = Boolean(status?.standalone?.['120ms']?.installing);
   const runtimeState = status?.runtime.state;
+  const translatorRunning = runtimeState === 'running' && Boolean(status?.runtime.configuration?.translation?.enabled);
+  useEffect(() => {
+    setTranslationActive(translatorRunning);
+    return () => setTranslationActive(false);
+  }, [translatorRunning, setTranslationActive]);
+  useEffect(() => {
+    if (!translatorRunning) return;
+    let cancelled = false;
+    const refreshCredits = async () => {
+      try {
+        const response = await apiFetchWithAuth('/wallet');
+        if (!response.ok) return;
+        const wallet = await response.json();
+        if (!cancelled && Number.isFinite(wallet.credits)) setCredits(wallet.credits);
+      } catch { /* The relay independently enforces credit authorization. */ }
+    };
+    void refreshCredits();
+    const timer = window.setInterval(refreshCredits, 5000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [translatorRunning, setCredits]);
   const engineState = status?.preload?.engineState;
   const voiceState = status?.preload?.voiceState;
   const engineWarming = !status || engineState === 'loading';
@@ -323,13 +351,11 @@ export function MeanVcPanel() {
 
     const loadEngineStatus = async () => {
       try {
-        const result = await bridge.invoke('morphlyvc:engine-status') as {
-          installed?: boolean;
-          available?: boolean;
-        };
+        const result = await bridge.invoke('morphlyvc:engine-status') as Partial<VoiceEngineInstallState>;
         if (!active) return;
         setVoiceEngine((current) => ({
           ...current,
+          ...result,
           installed: Boolean(result?.installed),
           available: Boolean(result?.available),
         }));
@@ -344,16 +370,22 @@ export function MeanVcPanel() {
     const unsubscribe = bridge.on('morphlyvc:install-progress', (progress) => {
       setVoiceEngine((current) => ({
         ...current,
+        installed: typeof progress?.installed === 'boolean' ? progress.installed : current.installed,
         phase: progress?.phase ?? current.phase,
         percent: typeof progress?.percent === 'number' ? progress.percent : current.percent,
+        retrying: Boolean(progress?.retrying),
+        retryAttempt: progress?.retryAttempt,
+        retryDelayMs: progress?.retryDelayMs,
+        error: progress?.error ?? null,
       }));
+      if (progress?.phase === 'done') void refreshStatus();
     });
 
     return () => {
       active = false;
       unsubscribe?.();
     };
-  }, []);
+  }, [refreshStatus]);
 
   const voiceEngineBusy = voiceEngine.phase === 'downloading'
     || voiceEngine.phase === 'verifying'
@@ -406,6 +438,19 @@ export function MeanVcPanel() {
     ),
   );
   const runtimeActive = status?.runtime.state === 'starting' || status?.runtime.state === 'running';
+  const refreshAudioDevices = async () => {
+    setIsBusy(true);
+    setError(null);
+    try {
+      const next = await requestMorphlyVc<MeanVcStatus>('refresh-devices');
+      // PortAudio IDs can change after reconnecting a USB/Bluetooth device.
+      setRouting({ input: null, output: null });
+      setTranslation(current => ({ ...current, incomingDevice: null, headphonesDevice: null }));
+      setStatus(next);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to refresh audio devices.');
+    } finally { setIsBusy(false); }
+  };
   const voiceReady = Boolean(
     referenceId
     && status?.preload?.voiceState === 'ready'
@@ -538,11 +583,20 @@ export function MeanVcPanel() {
       const nextReferenceId = referenceId;
       if (!nextReferenceId) return;
 
+      let translationRequest;
+      if (translation.enabled) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) throw new Error('Sign in to use real-time translation.');
+        const configuration = await readApiResponse<{ translationGatewayUrl?: string }>(await apiFetch('/public-config'));
+        if (!configuration.translationGatewayUrl) throw new Error('Real-time translation is not configured on the server yet.');
+        translationRequest = { ...translation, sourceLanguage: 'en', gatewayUrl: configuration.translationGatewayUrl, accessToken: session.access_token };
+      }
       setStatus(await requestMorphlyVc<MeanVcStatus>('start', {
         model,
         device,
         referenceId: nextReferenceId,
         pitch: pitchSemitones,
+        translation: translationRequest,
         inputDevice,
         outputDevice,
       }));
@@ -595,6 +649,7 @@ export function MeanVcPanel() {
   const virtualMicrophoneReady = Boolean(virtualMicrophoneOutput && virtualMicrophoneInput);
 
   const [isInstallingVbCable, setIsInstallingVbCable] = useState(false);
+  const [cableFeedback, setCableFeedback] = useState<{ message: string; failed: boolean } | null>(null);
 
   const installVirtualMicrophone = async () => {
     setError(null);
@@ -604,23 +659,26 @@ export function MeanVcPanel() {
     }
 
     setIsInstallingVbCable(true);
+    setCableFeedback(null);
     try {
       const result = await window.electron.invoke('virtual-microphone:install') as {
         success: boolean;
         error?: string;
+        restartRequired?: boolean;
       };
 
       if (!result.success) {
-        setError(result.error || 'VB-CABLE installation failed.');
+        setCableFeedback({ message: result.error || 'VB-CABLE installation failed.', failed: true });
         return;
       }
 
-      // Refresh audio devices after successful install so the new
-      // VB-CABLE virtual device appears in the dropdowns immediately.
-      const refreshedStatus = await requestMorphlyVc<MeanVcStatus>('status');
-      setStatus(refreshedStatus);
+      // The resident audio engine enumerates devices at startup. A status poll
+      // cannot refresh PortAudio's cached endpoints after a driver install.
+      setCableFeedback({ failed: false, message: result.restartRequired
+        ? 'VB-CABLE was verified. Restart Windows to finish setup, then reopen Morphly.'
+        : 'VB-CABLE was verified. Fully quit Morphly, including its tray icon, then reopen it to load the cable devices.' });
     } catch (installError) {
-      setError(installError instanceof Error ? installError.message : 'Unable to install VB-CABLE.');
+      setCableFeedback({ failed: true, message: installError instanceof Error ? installError.message : 'Unable to install VB-CABLE.' });
     } finally {
       setIsInstallingVbCable(false);
     }
@@ -745,10 +803,27 @@ export function MeanVcPanel() {
           </section>
 
           <section aria-labelledby="audio-routing-heading" className="border-b border-border px-4 py-4">
-            <div className="mb-3">
-              <h3 id="audio-routing-heading" className="text-xs font-semibold text-foreground">Audio routing</h3>
-              <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Microphone remains closed until Start.</p>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 id="audio-routing-heading" className="text-xs font-semibold text-foreground">Audio routing</h3>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Microphone remains closed until Start.</p>
+              </div>
+              <Button type="button" variant="outline" size="sm" onClick={() => void refreshAudioDevices()}
+                disabled={runtimeActive || isBusy || voiceState === 'loading' || !voiceEngine.installed}>
+                <RefreshCw aria-hidden="true" className="mr-1.5 size-3.5" />Refresh devices
+              </Button>
             </div>
+
+            <p role="status" className="mb-3 text-xs leading-5 text-muted-foreground">
+              {!voiceEngine.installed ? 'The voice engine downloads automatically. Microphones and speakers will appear when setup finishes.'
+                : standaloneStatus?.audioDeviceError ? `Audio detection failed: ${standaloneStatus.audioDeviceError}. Check Windows sound settings, then refresh devices.`
+                : !audioDevices ? (engineState === 'failed'
+                  ? `Audio detection is unavailable. ${standaloneStatus?.engineError || 'Refresh devices to retry.'}`
+                  : 'Detecting microphones and speakers...')
+                : !audioDevices.inputs.length || !audioDevices.outputs.length
+                  ? `${!audioDevices.inputs.length ? 'No microphone detected. ' : ''}${!audioDevices.outputs.length ? 'No speaker detected. ' : ''}Connect or enable the device in Windows Sound settings. For microphone access, allow desktop apps in Windows Privacy settings, then refresh devices.`
+                  : `${audioDevices.inputs.length} microphone endpoints and ${audioDevices.outputs.length} output endpoints detected. Refresh after connecting a device or installing VB-CABLE; the voice engine will reload.`}
+            </p>
 
             <div className="space-y-2.5">
               <div className="min-w-0 space-y-1.5">
@@ -760,8 +835,7 @@ export function MeanVcPanel() {
                   value={inputDevice === null ? undefined : String(inputDevice)}
                   onValueChange={(value) => {
                     const next = Number(value);
-                    const driver = selectableMicrophoneInputs.find(item => item.id === next)?.hostapi;
-                    const outputs = standaloneStatus?.audioDevices?.outputs.filter(item => item.hostapi === driver && !isMultiChannelVirtualCableDevice(item.name)) || [];
+                    const outputs = selectableVoiceOutputs(audioDevices, next);
                     setRouting(current => ({ input: next, output: outputs.some(item => item.id === current.output) ? current.output
                       : outputs.find(item => isVirtualMicrophonePlaybackDevice(item.name))?.id ?? outputs[0]?.id ?? null }));
                   }}
@@ -794,9 +868,7 @@ export function MeanVcPanel() {
                     <SelectValue placeholder="Select converted output" className="block min-w-0 flex-1 truncate text-left" />
                   </SelectTrigger>
                   <SelectContent position="popper" align="start" className="morphly-voice-device-menu w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)] max-h-[var(--radix-select-content-available-height)] border-border bg-background text-foreground">
-                    {standaloneStatus?.audioDevices?.outputs
-                      .filter(({ name, hostapi }) => !isMultiChannelVirtualCableDevice(name)
-                        && hostapi === selectableMicrophoneInputs.find(item => item.id === inputDevice)?.hostapi)
+                    {selectableVoiceOutputs(audioDevices, inputDevice)
                       .map((audioDevice) => (
                       <SelectItem key={audioDevice.id} value={String(audioDevice.id)} className="whitespace-normal break-words [&>span:last-child]:min-w-0">
                         {audioDevice.name} · {audioDevice.hostapi}
@@ -822,7 +894,7 @@ export function MeanVcPanel() {
                     <p className="mt-1 text-[10px] leading-4 text-muted-foreground">
                       {virtualMicrophoneReady
                         ? 'Use CABLE Output as the microphone in WhatsApp and calling apps.'
-                        : 'Install VB-CABLE, then refresh the device list.'}
+                        : 'Install VB-CABLE, then fully quit and reopen Morphly.'}
                     </p>
                   </div>
                   {!virtualMicrophoneReady ? (
@@ -830,14 +902,14 @@ export function MeanVcPanel() {
                       type="button"
                       variant="outline"
                       size="sm"
-                      disabled={isInstallingVbCable}
+                      disabled={isInstallingVbCable || runtimeActive}
                       onClick={() => void installVirtualMicrophone()}
                       className="h-8 shrink-0 gap-1.5 rounded border-border bg-background text-[11px] text-foreground hover:bg-background disabled:opacity-50"
                     >
                       {isInstallingVbCable ? (
                         <>
                           <LoaderCircle aria-hidden="true" className="size-3 animate-spin" />
-                          <span>Installing...</span>
+                          <span>Checking / installing...</span>
                         </>
                       ) : (
                         <>
@@ -852,6 +924,15 @@ export function MeanVcPanel() {
                     </Button>
                   ) : null}
                 </div>
+                {isInstallingVbCable ? (
+                  <p role="status" className="mt-2 text-xs leading-5 text-muted-foreground">
+                    Checking Windows for VB-CABLE. If Windows asks for administrator permission, choose Yes. Setup and verification can take a few minutes.
+                  </p>
+                ) : cableFeedback ? (
+                  <p role={cableFeedback.failed ? 'alert' : 'status'} className={`mt-2 text-xs leading-5 ${cableFeedback.failed ? 'text-destructive' : 'text-success'}`}>
+                    {cableFeedback.message}
+                  </p>
+                ) : null}
               </div>
             </div>
             {runtimeActive ? (
@@ -920,26 +1001,29 @@ export function MeanVcPanel() {
             </p>
           </section>
 
+          <TranslationControls value={translation} onChange={setTranslation} disabled={runtimeActive || isBusy} devices={audioDevices} />
+
           {voiceEngine.available && !voiceEngine.installed ? (
             <section className="border-b border-border px-4 py-3">
               <div className="flex items-start gap-2.5">
                 <Download aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary" />
                 <div className="min-w-0 flex-1">
-                  <p className="text-[11px] font-semibold text-foreground">Voice changer engine is not installed</p>
+                  <p className="text-[11px] font-semibold text-foreground">Setting up the voice engine</p>
                   <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">
-                    Morphly ships without the local voice engine to keep the download small.
-                    Install it once to enable voice changing.
+                    Download starts automatically when Morphly opens. Network interruptions retry automatically, and saved progress resumes when you reopen the app.
                   </p>
                   {voiceEngineBusy ? (
                     <p className="mt-2 text-[10px] font-medium tabular-nums text-primary" role="status">
-                      {voiceEngine.phase === 'downloading'
+                      {voiceEngine.retrying
+                        ? `Connection interrupted. Retrying in ${Math.ceil((voiceEngine.retryDelayMs || 0) / 1000)} seconds — ${voiceEngine.percent}% saved`
+                        : voiceEngine.phase === 'downloading'
                         ? `Downloading the voice engine — ${voiceEngine.percent}%`
                         : voiceEngine.phase === 'verifying'
-                          ? 'Checking the download...'
-                          : 'Installing the voice engine...'}
+                          ? `Checking the saved download — ${voiceEngine.percent}%`
+                          : `Installing the voice engine — ${voiceEngine.percent}%. Completed files are saved if you close Morphly.`}
                     </p>
                   ) : null}
-                  {voiceEngine.error ? (
+                  {voiceEngine.error && !voiceEngine.retrying ? (
                     <p className="mt-2 text-[10px] leading-4 text-destructive" role="alert">
                       {voiceEngine.error}
                     </p>
@@ -955,7 +1039,7 @@ export function MeanVcPanel() {
                     {voiceEngineBusy
                       ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />
                       : <Download aria-hidden="true" className="size-3.5" />}
-                    Install voice engine
+                    {voiceEngine.error ? 'Retry setup' : 'Install voice engine'}
                   </Button>
                 </div>
               </div>

@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { resolveTranslationGatewayUrl } from '../translation-config.js';
 
 function resolveIvoryPayPublicKey() {
   const candidateKeys = [
@@ -33,6 +34,7 @@ export default async function handler(req, res) {
     // Updated clients create server-side Standard payments. Hiding the legacy
     // Inline key always prevents older clients from creating unsplit checkouts,
     // including when the required split subaccount configuration is missing.
+    translationGatewayUrl: resolveTranslationGatewayUrl(),
     flutterwavePublicKey: '',
     ivorypayPublicKey,
     isCryptoPaymentEnabled: process.env.MORPHLY_PAYMENT_MODE === 'sandbox' ? false : isCryptoPaymentEnabled,

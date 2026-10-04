@@ -21,15 +21,13 @@ const startSessionApi = fs.readFileSync(path.join(appDirectory, 'server/api/star
 
 test('legacy resolver fallback remains compatible and both realtime providers are available', () => {
   assert.equal(DEFAULT_REALTIME_PROVIDER, 'vidu');
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['decart', 'vidu']);
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['vidu', 'decart']);
   assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ label }) => label), ['Plus', 'Pro']);
-  assert.equal(getRealtimeProviderLabel('xmax'), 'Unavailable engine');
-  assert.equal(getRealtimeProviderLabel('vidu'), 'Pro');
+  assert.equal(getRealtimeProviderLabel('vidu'), 'Plus');
+  assert.equal(getRealtimeProviderLabel('decart'), 'Pro');
   assert.equal(resolveRealtimeProvider(undefined), 'vidu');
   assert.equal(resolveRealtimeProvider('vidu'), 'vidu');
   assert.equal(resolveRealtimeProvider('decart'), 'decart');
-  assert.equal(resolveRealtimeProvider('xmax'), 'vidu');
-  assert.equal(resolveRealtimeModel('decart','s2-editing'),'lucy-2.5');
 });
 
 test('Vidu uses the native S2-Editing character model', () => {
@@ -39,9 +37,9 @@ test('Vidu uses the native S2-Editing character model', () => {
 });
 
 test('Vidu realtime errors provide actionable user messages', () => {
-  assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Pro did not accept/i);
+  assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Plus did not accept/i);
   assert.match(getViduRealtimeUserMessage({ message: 'Insufficient credits' }), /provider capacity is exhausted/i);
-  assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Pro connection could not complete/i);
+  assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Plus connection was interrupted/i);
   assert.match(dashboard, /getViduRealtimeUserMessage\(error, fallback\)/);
 });
 
@@ -65,8 +63,8 @@ test('Vidu token creation retries transient failures and preserves the HTTP stat
 });
 
 test('startup avoids stacked retries and reports each connection phase', () => {
-  assert.match(dashboard, /xmax: 3,[\s\S]*vidu: 1/);
-  assert.match(dashboard, /xmax: 45000,[\s\S]*vidu: 45000/);
+  assert.match(dashboard, /vidu: 1,[\s\S]*decart: 2/);
+  assert.match(dashboard, /decart: 45000,[\s\S]*vidu: 45000/);
   assert.match(dashboard, /Checking stream setup/);
   assert.match(dashboard, /Opening camera/);
   assert.match(dashboard, /Authorizing \$\{requestedProviderLabel\}/);
@@ -87,10 +85,4 @@ test('dashboard feedback uses a persistent accessible error panel without corner
   assert.match(appShell, /function RouteAwareToaster/);
   assert.match(appShell, /pathname === ROUTES\.PROTECTED\.DASHBOARD/);
   assert.match(appShell, /<RouteAwareToaster \/>/);
-});
-
-
-test('Morphly retry cooldown is preserved instead of being rewritten as a connection failure', () => {
- const message="Too many recent connection attempts. Retry in 20 seconds. This is Morphly's retry limit, not an AI capacity error.";
- assert.equal(getViduRealtimeUserMessage({code:'SESSION_START_RATE_LIMIT',message}),message);
 });

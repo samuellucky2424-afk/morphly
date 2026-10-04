@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from 'child_process';
+import { connectTranslation } from './translation-client.js';
+import { validateTranslationOptions, validateTranslationRouting } from '../shared/translation.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -127,11 +129,20 @@ export function createMeanVcRuntimeController({
   bundledBridge = path.resolve(dataRoot, '..', 'server', 'meanvc-realtime.py'),
   spawnProcess = spawn,
   findPythonImpl = findPython,
+  connectTranslationImpl = connectTranslation,
 }) {
+  let translationClient = null;
+  let translationConnecting = false;
+  let translationFailure = null;
+  let translationGeneration = 0;
+  const closeTranslation = () => { translationGeneration++; translationClient?.close(); translationClient = null; translationConnecting = false; };
   let runtimeProcess = null;
   let warmProcess = null;
   let warmStopRequested = false;
+  let warmRefreshRequested = false;
   let warmRestartTimer = null;
+  let warmRestartAttempts = 0;
+  let startupFailure = null;
   let engineState = 'loading';
   let engineMessage = 'Preloading MorphlyVC models...';
   let voiceState = 'empty';
@@ -144,6 +155,7 @@ export function createMeanVcRuntimeController({
   let environmentCache = null;
   let bundledRuntimeCache = null;
   let bundledAudioDevices = null;
+  let audioDeviceError = null;
   let performance = null;
   const logs = [];
 
@@ -252,16 +264,32 @@ export function createMeanVcRuntimeController({
   };
 
   const handleWarmEngineLine = (source, line) => {
+    if (line.startsWith('[TranslationAudio] ')) {
+      try { translationClient?.send(JSON.parse(line.slice('[TranslationAudio] '.length))); }
+      catch { /* Do not log microphone audio. */ }
+      return;
+    }
+    if (line.startsWith('[Stream] Error') || (source === 'stderr' && line.startsWith('[Control]'))) closeTranslation();
+
     if (line.startsWith('[Performance] ')) {
       try { performance = { ...JSON.parse(line.slice('[Performance] '.length)), measuredAt: new Date().toISOString() }; }
       catch { /* A malformed diagnostic must not interrupt live conversion. */ }
       return;
     }
     appendLog(source, line);
+    if (source === 'stderr' && engineState === 'loading' && /Error:|DLL load|not found/i.test(line)) {
+      startupFailure = line.slice(0, 400);
+    }
+
+    if (line.startsWith('[Devices] Error ')) {
+      audioDeviceError = line.slice('[Devices] Error '.length);
+      return;
+    }
 
     if (line.startsWith('[Devices] Ready ')) {
       try {
         bundledAudioDevices = JSON.parse(line.slice('[Devices] Ready '.length));
+        audioDeviceError = null;
         if (bundledRuntimeCache?.result.ready) {
           bundledRuntimeCache.result = {
             ...bundledRuntimeCache.result,
@@ -275,6 +303,7 @@ export function createMeanVcRuntimeController({
     }
 
     if (line.startsWith('[Engine] Ready')) {
+      warmRestartAttempts = 0;
       engineState = 'ready';
       engineMessage = 'Models loaded. Microphone is closed.';
       if (runtimeState === 'stopped') {
@@ -303,8 +332,9 @@ export function createMeanVcRuntimeController({
 
     if (line.startsWith('[Stream] Stopped')) {
       performance = null;
-      runtimeState = 'stopped';
-      runtimeMessage = 'MorphlyVC is ready. Microphone is off.';
+      closeTranslation();
+      runtimeState = translationFailure ? 'failed' : 'stopped';
+      runtimeMessage = translationFailure || 'MorphlyVC is ready. Microphone is off.';
       runtimeConfiguration = null;
       startedAt = null;
       return;
@@ -363,6 +393,7 @@ export function createMeanVcRuntimeController({
     warmStopRequested = false;
     engineState = 'loading';
     engineMessage = 'Preloading MorphlyVC models...';
+    startupFailure = null;
     performance = null;
     runtimeMessage = 'MorphlyVC is warming up with the microphone closed.';
     logs.length = 0;
@@ -381,6 +412,7 @@ export function createMeanVcRuntimeController({
     attachLineReader(warmProcess.stdout, 'stdout');
     attachLineReader(warmProcess.stderr, 'stderr');
     warmProcess.once('error', (error) => {
+      closeTranslation();
       appendLog('stderr', error.message);
       warmProcess = null;
       engineState = 'failed';
@@ -389,6 +421,7 @@ export function createMeanVcRuntimeController({
       runtimeMessage = error.message;
     });
     warmProcess.once('exit', (code, signal) => {
+      closeTranslation();
       appendLog('system', `MorphlyVC warm engine exited with code ${code ?? 'null'} and signal ${signal ?? 'none'}.`);
       warmProcess = null;
       preparedReferenceId = null;
@@ -400,15 +433,25 @@ export function createMeanVcRuntimeController({
         return;
       }
 
+      if (warmRefreshRequested) {
+        warmRefreshRequested = false;
+        bundledRuntimeCache = null;
+        ensureWarmEngine();
+        return;
+      }
+
       engineState = 'failed';
-      engineMessage = `MorphlyVC warm engine stopped unexpectedly (exit ${code ?? 'unknown'}).`;
+      engineMessage = startupFailure || `MorphlyVC warm engine stopped unexpectedly (exit ${code ?? 'unknown'}). Refresh devices to retry.`;
       runtimeState = 'failed';
       runtimeMessage = engineMessage;
-      if (!warmRestartTimer) {
+      if (!warmRestartTimer && warmRestartAttempts < 3) {
+        const restartDelay = 1500 * 2 ** warmRestartAttempts++;
+        engineState = 'loading';
+        engineMessage += ` Retrying startup (${warmRestartAttempts}/3)...`;
         warmRestartTimer = setTimeout(() => {
           warmRestartTimer = null;
           ensureWarmEngine();
-        }, 1500);
+        }, restartDelay);
       }
     });
   };
@@ -445,6 +488,7 @@ export function createMeanVcRuntimeController({
       engineError: engineState === 'failed' ? engineMessage : bundledRuntime.error,
       pythonVersion: bundledRuntime.pythonVersion,
       audioDevices: bundledRuntime.audioDevices,
+      audioDeviceError,
     };
 
     return {
@@ -537,10 +581,12 @@ export function createMeanVcRuntimeController({
     pitch = 0,
     inputDevice = null,
     outputDevice = null,
+    translation = null,
   }) => {
-    if (runtimeState === 'starting' || runtimeState === 'running' || runtimeProcess) {
+    if (translationConnecting || runtimeState === 'starting' || runtimeState === 'running' || runtimeProcess) {
       throw new Error('MorphlyVC is already running.');
     }
+    translationFailure = null;
     if (!Object.hasOwn(MODEL_FILES, model)) {
       throw new Error('Choose either the 40ms or 120ms MorphlyVC model.');
     }
@@ -606,6 +652,7 @@ export function createMeanVcRuntimeController({
         pitch: pitchSemitones,
         inputDevice: requestedInput ?? null,
         outputDevice: requestedOutput ?? null,
+        translation,
       };
       startedAt = new Date().toISOString();
       sendWarmCommand({
@@ -615,6 +662,7 @@ export function createMeanVcRuntimeController({
         pitch: pitchSemitones,
         input_device: requestedInput,
         output_device: requestedOutput,
+        translation,
       });
       return getStatus();
     }
@@ -719,6 +767,7 @@ export function createMeanVcRuntimeController({
   };
 
   const stop = () => {
+    closeTranslation();
     if (warmProcess && (runtimeState === 'starting' || runtimeState === 'running')) {
       runtimeMessage = 'Disconnecting the microphone...';
       sendWarmCommand({ type: 'stop' });
@@ -740,6 +789,7 @@ export function createMeanVcRuntimeController({
   };
 
   const shutdown = () => {
+    closeTranslation();
     warmStopRequested = true;
     if (warmRestartTimer) {
       clearTimeout(warmRestartTimer);
@@ -752,13 +802,87 @@ export function createMeanVcRuntimeController({
     runtimeProcess?.kill();
   };
 
+  const refreshDevices = () => {
+    if (runtimeState === 'starting' || runtimeState === 'running' || translationConnecting || voiceState === 'loading') {
+      throw new Error('Stop voice conversion and wait for voice preparation before refreshing devices.');
+    }
+    if (warmRefreshRequested) return getStatus();
+    if (warmRestartTimer) { clearTimeout(warmRestartTimer); warmRestartTimer = null; }
+    warmRestartAttempts = 0;
+    bundledAudioDevices = null;
+    bundledRuntimeCache = null;
+    audioDeviceError = null;
+    preparedReferenceId = null;
+    voiceState = 'empty';
+    runtimeState = 'stopped';
+    if (warmProcess) {
+      // A new PortAudio process sees USB/Bluetooth changes and newly installed
+      // drivers. Never reinitialize PortAudio underneath an active stream.
+      warmRefreshRequested = true;
+      engineState = 'loading';
+      engineMessage = 'Refreshing audio devices and reloading the voice engine...';
+      if (warmProcess.kill() === false) {
+        warmRefreshRequested = false;
+        engineState = 'failed';
+        engineMessage = 'Unable to restart audio detection. Fully quit and reopen Morphly.';
+        throw new Error(engineMessage);
+      }
+    } else {
+      ensureWarmEngine();
+    }
+    return getStatus();
+  };
+
+  const startTranslated = async (options) => {
+    if (translationConnecting || runtimeState === 'starting' || runtimeState === 'running') throw new Error('Stop the current voice session first.');
+    if (options.model !== '40ms' || options.device !== 'cpu' || engineState !== 'ready') throw new Error('Wait for the bundled voice engine to be ready before translating.');
+    const config = { ...validateTranslationOptions(options.translation), incomingDevice: options.translation.incomingDevice, headphonesDevice: options.translation.headphonesDevice };
+    validateTranslationRouting(config, bundledAudioDevices, Number(options.inputDevice), Number(options.outputDevice));
+    translationConnecting = true;
+    translationFailure = null;
+    const generation = ++translationGeneration;
+    let client;
+    try { client = connectTranslationImpl({
+      ...config, gatewayUrl: options.translation.gatewayUrl, accessToken: options.translation.accessToken,
+      onState: (state) => {
+        if (generation !== translationGeneration) return;
+        if (runtimeState === 'running') runtimeMessage = state === 'reconnecting'
+          ? 'Reconnecting translation. Audio will resume automatically.'
+          : 'MorphlyVC voice conversion and translation are live.';
+      },
+      onAudio: (message) => {
+        if (generation !== translationGeneration) return;
+        if (!warmProcess?.stdin?.writable || warmProcess.stdin.writableLength > 256 * 1024) {
+          stop(); translationFailure = 'Translation playback is too slow. Start again to reconnect.';
+          runtimeState = 'failed'; runtimeMessage = translationFailure; return;
+        }
+        sendWarmCommand({ type: 'translation-audio', direction: message.direction, data: message.data, clear: message.type === 'clear' });
+      },
+      onError: (message) => {
+        if (generation !== translationGeneration) return;
+        translationFailure = message;
+        if (warmProcess?.stdin?.writable) sendWarmCommand({ type: 'stop' });
+        runtimeState = 'failed'; runtimeMessage = message;
+        translationConnecting = false;
+      },
+    }); } catch (error) { translationConnecting = false; throw error; }
+    translationClient = client;
+    try {
+      await client.ready;
+      if (translationClient !== client) throw new Error('Translation stopped.');
+      translationConnecting = false;
+      return start({ ...options, translation: config });
+    } catch (error) { if (generation === translationGeneration) closeTranslation(); throw error; }
+  };
+
   ensureWarmEngine();
 
   return {
     getStatus,
+    refreshDevices,
     saveReference,
     prepare,
-    start,
+    start: (options) => options?.translation?.enabled ? startTranslated(options) : start({ ...options, translation: null }),
     setPitch,
     stop,
     shutdown,

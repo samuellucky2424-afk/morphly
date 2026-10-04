@@ -49,6 +49,12 @@ form.addEventListener('submit', async event => {
 });
 
 async function initialize() {
+  // The clean browser URL opens the same OTP screen shipped inside Electron.
+  // Previously issued recovery links remain usable during the rollout.
+  if (!window.location.search && !window.location.hash) {
+    window.location.replace('/#/reset-password');
+    return;
+  }
   let link;
   try { link = readRecoveryLink(window.location.href); }
   finally { window.history.replaceState(null, '', window.location.pathname); }

@@ -11,6 +11,49 @@ const db=getFirestore(initializeApp({projectId:'demo-morphly-payments'}));
 const ops=createFirebaseOperations(db,{getUser:async()=>({email:'review@example.com'})});
 const get=async(table,id)=>(await db.collection(table).doc(id).get()).data();
 const list=async(table,uid)=>(await db.collection(table).where('user_id','==',uid).get()).docs.map(d=>d.data());
+test('Firebase timestamp meter retains half credits, deduplicates concurrent retries and enforces owner',async()=>{
+  const uid='timestamp-pro',second=Math.floor(Date.now()/1000)-2;
+  await db.collection('users').doc(uid).set({account_status:'active'});
+  await db.collection('wallets').doc(uid).set({user_id:uid,credits:20});
+  await db.collection('sessions').doc(uid).set({user_id:uid,status:'active',seconds_used:0,start_time:new Date((second-1)*1000).toISOString(),provider_max_seconds:120});
+  await ops.rpc('configure_realtime_video',{p_user:uid,p_session:uid,p_rate_half:5});
+  const p={p_user:uid,p_session:uid,p_epoch_seconds:[second]};
+  await Promise.all([ops.rpc('record_realtime_video_usage',p),ops.rpc('record_realtime_video_usage',p)]);
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),17.5);
+  await assert.rejects(ops.rpc('record_realtime_video_usage',{...p,p_epoch_seconds:[second+500]}),/timestamp/);
+  await db.collection('users').doc('timestamp-wrong').set({account_status:'active'});
+  await db.collection('wallets').doc('timestamp-wrong').set({user_id:'timestamp-wrong',credits:20});
+  await assert.rejects(ops.rpc('record_realtime_video_usage',{...p,p_user:'timestamp-wrong'}),/ownership/);
+  await ops.rpc('record_realtime_video_usage',{...p,p_epoch_seconds:[second+1]});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),15);
+  await ops.rpc('finalize_ai_session',{p_user:uid,p_session:uid});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),15);
+});
+test('Firebase translation reservation refunds unused seconds without losing fractional credits',async()=>{
+  const uid='timestamp-translation';
+  await db.collection('users').doc(uid).set({account_status:'active'});
+  await db.collection('wallets').doc(uid).set({user_id:uid,credits:20});
+  const p={p_user:uid,p_session:uid,p_seconds:5,p_close:false};
+  await ops.rpc('authorize_translation_usage',p);
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),7.5);
+  await ops.rpc('authorize_translation_usage',{...p,p_seconds:1,p_close:true});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),17.5);
+  await ops.rpc('authorize_translation_usage',{...p,p_seconds:1,p_close:true});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),17.5);
+});
+test('Firebase charges four total credits for overlapping video and translation and refunds only unused translation',async()=>{
+  const uid='timestamp-combined',second=Math.floor(Date.now()/1000);
+  await db.collection('users').doc(uid).set({account_status:'active'});
+  await db.collection('wallets').doc(uid).set({user_id:uid,credits:20});
+  await db.collection('sessions').doc(uid).set({user_id:uid,status:'active',seconds_used:0,start_time:new Date((second-2)*1000).toISOString(),provider_max_seconds:120});
+  await ops.rpc('configure_realtime_video',{p_user:uid,p_session:uid,p_rate_half:5});
+  await db.collection('translation_sessions').doc(uid).set({id:uid,user_id:uid,started_epoch:String(second),authorized_seconds:0,closed_at:null});
+  await ops.rpc('authorize_translation_usage',{p_user:uid,p_session:uid,p_seconds:1,p_close:false});
+  await ops.rpc('record_realtime_video_usage',{p_user:uid,p_session:uid,p_epoch_seconds:[second]});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),16);
+  await ops.rpc('authorize_translation_usage',{p_user:uid,p_session:uid,p_seconds:0,p_close:true});
+  assert.equal(await ops.rpc('realtime_wallet_balance',{p_user:uid}),17.5);
+});
 test('existing migrated profile and UUID wallet keep their balance and do not get a new signup grant',async()=>{
   await db.collection('users').doc('migrated').set({id:'migrated',account_status:'active',referral_code:'ABCDEF23'});
   await db.collection('wallets').doc('original-wallet-uuid').set({id:'original-wallet-uuid',user_id:'migrated',credits:127,balance:'101.27'});
@@ -55,7 +98,7 @@ test('server query adapter handles ownership, migrated JSON and SQL OR expressio
 test('Pro allows its full physical duration while charging 2.5 credits per elapsed second',async()=>{
   await db.collection('users').doc('pro-user').set({id:'pro-user',account_status:'active'});
   await db.collection('wallets').doc('pro-wallet').set({id:'pro-wallet',user_id:'pro-user',credits:400});
-  await db.collection('sessions').doc('pro-session').set({id:'pro-session',user_id:'pro-user',provider:'vidu',status:'active',seconds_used:0,wallet_debited_credits:0,provider_max_seconds:120});
+  await db.collection('sessions').doc('pro-session').set({id:'pro-session',user_id:'pro-user',provider:'decart',status:'active',seconds_used:0,wallet_debited_credits:0,provider_max_seconds:120});
   await ops.rpc('record_ai_session_usage',{p_user:'pro-user',p_session:'pro-session',p_seconds_delta:60});
   const second=await ops.rpc('record_ai_session_usage',{p_user:'pro-user',p_session:'pro-session',p_seconds_delta:60});
   assert.equal(second.shouldStop,false);

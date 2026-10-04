@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hash, encode } from './firebase-store.js';
 import { createPaymentRuntime } from './firebase-payment-runtime.mjs';
 import { createFirebaseEngagement } from './firebase-engagement.js';
+import { createFirebaseRealtimeBilling } from './firebase-realtime-billing.js';
 
 const now=()=>new Date().toISOString();
 const one=rows=>{if(rows.size>1)throw new Error('Ambiguous record');return rows.docs[0];};
@@ -11,6 +12,7 @@ export function createFirebaseOperations(db,auth){
   const query=(table,field,value)=>col(table).where(field,'==',value);
   const payment=createPaymentRuntime(db);
   const engagement=createFirebaseEngagement(db,auth);
+  const realtime=createFirebaseRealtimeBilling(db);
   async function provision(user,requestedCode=''){
     const uid=user.id,profileRef=col('users').doc(uid),timestamp=now();
     requestedCode=String(requestedCode||'').trim().toUpperCase();
@@ -49,7 +51,7 @@ export function createFirebaseOperations(db,auth){
       if(s.billing_version===2)throw new Error('Timestamp billing is required for this historical session');
       const seconds=Math.min(finalize?7200:60,Math.max(0,Number(finalize?p.p_final_seconds_delta:p.p_seconds_delta)||0));
       if(!finalize&&seconds<=0)throw new Error('A positive seconds delta is required');
-      const providerMultiplier=s.provider==='vidu'?1.25:1;
+      const providerMultiplier=s.provider==='decart'?1.25:1;
       // The client sends legacy 2-credit usage units; Pro uses 1.25 units per
       // elapsed second. Provider limits are expressed in elapsed seconds.
       const debited=Number(s.wallet_debited_credits||0),oldSeconds=Number(s.seconds_used||0),limit=Math.floor(Math.min(7200,Math.max(10,Number(s.provider_max_seconds||7200)))*providerMultiplier);
@@ -73,6 +75,9 @@ export function createFirebaseOperations(db,auth){
     return {id:target.id,...after};
   });}
   async function rpc(name,p){
+    if(name==='realtime_wallet_balance')return realtime.balance(p.p_user);
+    if(name==='configure_realtime_video')return realtime.configure(p);
+    if(name==='authorize_translation_usage')return realtime.translation(p);
     if(name==='apply_verified_package_payment'||name==='apply_verified_ivorypay_payment'){
       const result=await payment.applyPayment({userId:p.p_user,packageId:p.p_package,reference:p.p_reference,gateway:name==='apply_verified_package_payment'?'flutterwave':'ivorypay',gatewayId:String(p.p_gateway_id),amount:p.p_amount,fee:p.p_fee??0});
       if(result.transactionId)await engagement.enqueue(p.p_user,'purchase_feedback',`purchase:${result.transactionId}`,result.transactionId);
@@ -80,9 +85,10 @@ export function createFirebaseOperations(db,auth){
     }
     if(name==='admin_adjust_credits')return payment.adjustCredits({adminId:p.p_admin,userId:p.p_user,amount:p.p_amount,reason:p.p_reason,key:p.p_key});
     if(['admin_set_user_status','admin_disqualify_referral'].includes(name))return adminChange(name,p);
-    if(name==='record_ai_session_usage'||name==='finalize_ai_session'){
-      const result=await usage(p,name==='finalize_ai_session');
-      if(result.remainingCredits<=0 && !result.duplicate){
+    if(['record_ai_session_usage','finalize_ai_session','record_realtime_video_usage'].includes(name)){
+      const timestampSession=name==='finalize_ai_session'&&(await col('sessions').doc(p.p_session).get()).data()?.billing_version===2;
+      const result=name==='record_realtime_video_usage'?await realtime.video(p):timestampSession?await realtime.video({...p,p_epoch_seconds:[],p_close:true}):await usage(p,name==='finalize_ai_session');
+      if(result.remainingCredits<=0){
         const purchases=(await query('transactions','user_id',p.p_user).get()).docs.map(d=>d.data()).filter(r=>(r.transaction_type||r.type)==='credit_purchase'&&['success','successful','completed'].includes(String(r.status).toLowerCase())&&(!r.refund_status||r.refund_status==='none')).sort((a,b)=>Date.parse(b.created_at)-Date.parse(a.created_at)||String(b.id).localeCompare(String(a.id)));
         if(purchases[0])await engagement.enqueue(p.p_user,'credits_finished',`credits-finished:${purchases[0].id}`,purchases[0].id);
       }
