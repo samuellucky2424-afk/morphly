@@ -45,7 +45,13 @@ const customerCopy = {
   first_purchase_reminder: ['What would make Morphly better for you?', 'We noticed you have not made another purchase since your first one. Is there something about the experience, quality, pricing, or features that we could improve? We would appreciate your honest feedback.'],
 };
 
-export function renderEngagementEmail({ kind, email, review, unsubscribeToken, from, unsubscribeBase = SOFTWARE_URL }) {
+export function renderEngagementEmail({ kind, email, review, purchase, unsubscribeToken, from, unsubscribeBase = SOFTWARE_URL }) {
+  if(kind==='purchase_confirmation'){
+    if(!purchase||!Number.isSafeInteger(Number(purchase.package_credits_snapshot??purchase.credits)))throw new Error('Verified purchase details required');
+    const subject='Morphly purchase confirmed';
+    const message=`Your payment was verified and ${Number(purchase.package_credits_snapshot??purchase.credits)} credits were added to your account.\nAmount: NGN ${purchase.amount_naira??purchase.amount}\nPayment reference: ${purchase.reference}`;
+    return {from,to:[email],reply_to:REVIEW_ADMIN_EMAIL,subject,text:`${subject}\n\n${message}\n\nOpen Morphly: ${SOFTWARE_URL}/#/dashboard`,html:`<!doctype html><html><body><h1>${subject}</h1><p style="white-space:pre-wrap">${escapeHtml(message)}</p><a href="${SOFTWARE_URL}/#/dashboard">Open Morphly</a></body></html>`};
+  }
   const isAdmin = kind === 'admin_review';
   const copy = customerCopy[kind];
   if (!isAdmin && !copy) throw new Error('Unsupported email type');
@@ -118,13 +124,14 @@ export async function deliverCustomerEmails(db, { userId = null, sourceId = null
         preferences = check(await db.from('customer_email_preferences').select('enabled,unsubscribe_token').eq('user_id', job.user_id).single());
       }
       const profile = check(await db.from('users').select('account_status').eq('id', job.user_id).maybeSingle());
-      if (!user?.email || (job.kind !== 'admin_review' && (!user.email_confirmed_at || !preferences?.enabled || profile?.account_status === 'suspended')) || !await stillEligible(db, job)) {
+      if (!user?.email || (job.kind !== 'admin_review' && (!user.email_confirmed_at || (job.kind !== 'purchase_confirmation' && !preferences?.enabled) || profile?.account_status === 'suspended')) || !await stillEligible(db, job)) {
         await update({ status: 'cancelled', locked_until: null }); result.cancelled++; continue;
       }
       let payload = job.payload;
       if (!payload) {
         const review = job.kind === 'admin_review' ? check(await db.from('customer_reviews').select('email,category,rating,message').eq('id', job.source_id).single()) : null;
-        payload = renderEngagementEmail({ kind: job.kind, email: user.email, review, unsubscribeToken: preferences?.unsubscribe_token, from: env.RESEND_FROM_EMAIL, unsubscribeBase: env.EMAIL_PUBLIC_BASE_URL || SOFTWARE_URL });
+        const purchase = job.kind === 'purchase_confirmation' ? check(await db.from('transactions').select('credits,package_credits_snapshot,amount,amount_naira,reference').eq('id',job.source_id).eq('user_id',job.user_id).single()) : null;
+        payload = renderEngagementEmail({ kind: job.kind, email: user.email, review, purchase, unsubscribeToken: preferences?.unsubscribe_token, from: env.RESEND_FROM_EMAIL, unsubscribeBase: env.EMAIL_PUBLIC_BASE_URL || SOFTWARE_URL });
         // Save the exact request for identical provider retries, including after a crash.
         await update({ payload });
       }

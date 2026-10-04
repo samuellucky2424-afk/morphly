@@ -41,7 +41,10 @@ export function createFirebaseEngagement(db, auth, env = process.env) {
     for(const doc of subscriptions.docs){const row=doc.data();if(row.status==='expired'||row.status==='active'&&Date.parse(row.ends_at)<=time)await enqueue(row.user_id,'subscription_finished',`subscription-finished:${row.id}`,row.id);}
     for(const doc of outbox.docs){const row=doc.data();if(row.type!=='payment.completed')continue;
       const purchase=(byUser.get(row.user_id)||[]).find(p=>p.id===row.source_id);
-      if(purchase&&unrefunded(purchase))await enqueue(row.user_id,'purchase_feedback',`purchase:${row.source_id}`,row.source_id);
+      if(purchase&&unrefunded(purchase)){
+        await enqueue(row.user_id,'purchase_confirmation',`purchase-confirmation:${row.source_id}`,row.source_id);
+        await enqueue(row.user_id,'purchase_feedback',`purchase:${row.source_id}`,row.source_id);
+      }
       await doc.ref.update({status:'processed',processed_at:new Date().toISOString()});
     }
   }
@@ -55,7 +58,7 @@ export function createFirebaseEngagement(db, auth, env = process.env) {
         if((!p_user||row.user_id===p_user)&&(!p_job||row.source_id===p_job)&&
           (row.status==='pending'&&Date.parse(row.due_at)<=time||row.status==='processing'&&Date.parse(row.locked_until)<time))candidates.push(doc);
       }
-      candidates.sort((a,b)=>Date.parse(a.data().due_at)-Date.parse(b.data().due_at)||a.id.localeCompare(b.id));
+      candidates.sort((a,b)=>Number(b.data().kind==='purchase_confirmation')-Number(a.data().kind==='purchase_confirmation')||Date.parse(a.data().due_at)-Date.parse(b.data().due_at)||a.id.localeCompare(b.id));
       for(const doc of expired.slice(0,400))tx.update(doc.ref,{status:'failed',last_error:'Delivery needs review; retry window expired',locked_until:null});
       if(!candidates.length)return [];
       const doc=candidates[0], row=doc.data(), claimed={...row,status:'processing',attempts:Number(row.attempts||0)+1,first_attempt_at:row.first_attempt_at||new Date(time).toISOString(),locked_until:new Date(time+600000).toISOString(),lease_id:randomUUID()};

@@ -5,12 +5,31 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { createFirebaseOperations } from '../server/firebase-operations.js';
 import { FirebaseQuery } from '../server/firebase-store.js';
 import { createFirebaseEngagement } from '../server/firebase-engagement.js';
+import { deliverCustomerEmails } from '../server/customer-engagement.js';
 
 if(!process.env.FIRESTORE_EMULATOR_HOST)throw new Error('These tests require the Firestore emulator');
 const db=getFirestore(initializeApp({projectId:'demo-morphly-payments'}));
 const ops=createFirebaseOperations(db,{getUser:async()=>({email:'review@example.com'})});
 const get=async(table,id)=>(await db.collection(table).doc(id).get()).data();
 const list=async(table,uid)=>(await db.collection(table).where('user_id','==',uid).get()).docs.map(d=>d.data());
+test('verified payment delivers one purchase alert despite webhook retries and marketing opt-out',async()=>{
+  const uid='purchase-alert-user';
+  const liveOps=createFirebaseOperations(db,{}, {MORPHLY_PAYMENT_MODE:'live'});
+  await db.collection('users').doc(uid).set({id:uid,account_status:'active'});
+  await db.collection('wallets').doc(uid).set({user_id:uid,credits:0});
+  await db.collection('credit_packages').doc('alert-package').set({id:'alert-package',name:'Test package',credits:100,price_ngn:'500.00',status:'active',is_active:true});
+  await db.collection('customer_email_preferences').doc(uid).set({user_id:uid,enabled:false,unsubscribe_token:'test-token'});
+  const p={p_user:uid,p_package:'alert-package',p_reference:'purchase-alert-reference',p_gateway_id:'alert-charge',p_amount:'500.00'};
+  const first=await liveOps.rpc('apply_verified_package_payment',p);
+  await liveOps.rpc('apply_verified_package_payment',p);
+  const adapter={from:name=>new FirebaseQuery(db,name),rpc:async(name,p)=>({data:await liveOps.rpc(name,p),error:null}),auth:{admin:{getUserById:async()=>({data:{user:{email:'buyer@example.com',email_confirmed_at:new Date().toISOString()}},error:null})}}};
+  const sent=[];
+  const result=await deliverCustomerEmails(adapter,{userId:uid,sourceId:first.transactionId,env:{RESEND_API_KEY:'mock-key',RESEND_FROM_EMAIL:'support@example.com'},fetchImpl:async(_url,request)=>{sent.push(JSON.parse(request.body));return {ok:true,json:async()=>({id:'resend-mock-id'})};}});
+  assert.equal(result.sent,1);assert.match(sent[0].text,/100 credits were added/);
+  await deliverCustomerEmails(adapter,{userId:uid,sourceId:first.transactionId,env:{RESEND_API_KEY:'mock-key',RESEND_FROM_EMAIL:'support@example.com'},fetchImpl:async()=>{throw Error('Purchase alert must not send twice');}});
+  assert.equal((await list('customer_email_jobs',uid)).filter(j=>j.kind==='purchase_confirmation').length,1);
+  assert.equal((await list('wallets',uid))[0].credits,100);
+});
 test('Firebase timestamp meter retains half credits, deduplicates concurrent retries and enforces owner',async()=>{
   const uid='timestamp-pro',second=Math.floor(Date.now()/1000)-2;
   await db.collection('users').doc(uid).set({account_status:'active'});

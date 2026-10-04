@@ -7,11 +7,11 @@ import { createFirebaseRealtimeBilling } from './firebase-realtime-billing.js';
 const now=()=>new Date().toISOString();
 const one=rows=>{if(rows.size>1)throw new Error('Ambiguous record');return rows.docs[0];};
 const code=()=>{const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';return [...Buffer.from(randomUUID().replaceAll('-',''),'hex').subarray(0,8)].map(x=>alphabet[x%alphabet.length]).join('');};
-export function createFirebaseOperations(db,auth){
+export function createFirebaseOperations(db,auth,env=process.env){
   const col=name=>db.collection(name);
   const query=(table,field,value)=>col(table).where(field,'==',value);
   const payment=createPaymentRuntime(db);
-  const engagement=createFirebaseEngagement(db,auth);
+  const engagement=createFirebaseEngagement(db,auth,env);
   const realtime=createFirebaseRealtimeBilling(db);
   async function provision(user,requestedCode=''){
     const uid=user.id,profileRef=col('users').doc(uid),timestamp=now();
@@ -80,7 +80,14 @@ export function createFirebaseOperations(db,auth){
     if(name==='authorize_translation_usage')return realtime.translation(p);
     if(name==='apply_verified_package_payment'||name==='apply_verified_ivorypay_payment'){
       const result=await payment.applyPayment({userId:p.p_user,packageId:p.p_package,reference:p.p_reference,gateway:name==='apply_verified_package_payment'?'flutterwave':'ivorypay',gatewayId:String(p.p_gateway_id),amount:p.p_amount,fee:p.p_fee??0});
-      if(result.transactionId)await engagement.enqueue(p.p_user,'purchase_feedback',`purchase:${result.transactionId}`,result.transactionId);
+      if(result.transactionId){
+        // The payment transaction already wrote a durable outbox. Its worker
+        // recovers email jobs if a queue write fails after credits are granted.
+        try{
+          await engagement.enqueue(p.p_user,'purchase_confirmation',`purchase-confirmation:${result.transactionId}`,result.transactionId);
+          await engagement.enqueue(p.p_user,'purchase_feedback',`purchase:${result.transactionId}`,result.transactionId);
+        }catch{}
+      }
       return result;
     }
     if(name==='admin_adjust_credits')return payment.adjustCredits({adminId:p.p_admin,userId:p.p_user,amount:p.p_amount,reason:p.p_reason,key:p.p_key});
