@@ -1,5 +1,6 @@
 // @ts-nocheck
 import crypto from 'crypto';
+import { sandboxPayments, createSandboxPayment } from '../firebase-sandbox-payment.js';
 
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
@@ -160,6 +161,8 @@ export default async function handler(req, res) {
     if (!packageId) {
       return res.status(400).json({ status: 'failed', message: 'A credit package is required' });
     }
+
+    if (sandboxPayments()) return res.json(await createSandboxPayment(user, packageId, resolveRequestOrigin(req)));
 
     const savingsSubaccountId = String(process.env.FLUTTERWAVE_SAVINGS_SUBACCOUNT_ID || '')
       .trim()

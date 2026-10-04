@@ -31,8 +31,8 @@ test('hosted web builds use their own API even when an older production URL is c
 
 test('packaged desktop builds retain configured and fallback remote API support', async () => {
   assert.equal(await requestUrl('file:', { VITE_API_URL: 'https://desktop.example' }), 'https://desktop.example/api/start-session');
-  assert.equal(await requestUrl('file:', { VITE_API_URL: '/api' }), 'https://morphly-alpha.vercel.app/api/start-session');
-  assert.equal(await requestUrl('file:'), 'https://morphly-alpha.vercel.app/api/start-session');
+  assert.equal(await requestUrl('file:', { VITE_API_URL: '/api' }), 'https://live.morphly.fun/api/start-session');
+  assert.equal(await requestUrl('file:'), 'https://live.morphly.fun/api/start-session');
 });
 
 const panel = await readFile(new URL('../src/components/MeanVcPanel.tsx', import.meta.url), 'utf8');

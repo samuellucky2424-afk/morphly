@@ -12,10 +12,12 @@ vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.Modul
 const billing = context.exports;
 
 test('Pro costs 2.5 cr/sec and Plus retains its standard and combined rates', () => {
-  for (const engine of ['vidu', 'decart']) {
+  for (const engine of ['vidu']) {
     assert.equal(billing.getCreditRatePerSecond(true, false, engine), 2.5);
     assert.equal(billing.getCreditRatePerSecond(true, true, engine), 2.5);
   }
+  for (const avatar of [true,false]) for (const background of [true,false]) assert.equal(billing.getCreditRatePerSecond(avatar, background, 'decart'), 2);
+  assert.equal(billing.getBillableUsageUnits(60,true,'decart')*2,120);
   assert.equal(billing.getCreditRatePerSecond(true, false, 'xmax'), 2);
   assert.equal(billing.getCreditRatePerSecond(false, true, 'xmax'), 2);
   assert.equal(billing.getCreditRatePerSecond(true, true, 'xmax'), 4);
@@ -38,7 +40,7 @@ test('fractional Pro usage carries across heartbeat flushes without overcharging
 });
 
 test('session API refuses missing or invalid engine choices before any provider call', async () => {
-  for (const choice of [undefined, '', 'unknown']) {
+  for (const choice of [undefined, '', 'unknown', 'xmax']) {
     let status;
     let body;
     const res = { setHeader() {}, status(value) { status = value; return this; }, json(value) { body = value; } };

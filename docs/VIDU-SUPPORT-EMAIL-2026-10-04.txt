@@ -1,0 +1,51 @@
+To: platform@vidu.com
+Subject: Morphly S2-Editing: intermittent browser WebSocket failures before initialization
+
+Hello Vidu Platform Support,
+
+We integrate Vidu S2-Editing into Morphly for real-time camera transformation. Several users report intermittent startup failures. Please investigate the sessions below and advise on a supported, reliable configuration.
+
+Our flow:
+- Server creates a session using POST https://api.vidu.com/live/s_editing/realtime, with a server-only API key and a reference image.
+- The browser uses the returned client_secret at wss://api.vidu.com/live/ws/live/connect with live_id and a UUID conn_id.
+- On opening the socket we send conn_init (type 1, version 1), then join AliRTC and publish the selected camera after successful initialization.
+- Failed signaling handshakes now retry up to three times, reusing the same live_id and conn_id.
+
+Observed failure:
+The browser reports a WebSocket connection failure with no visible HTTP status or response headers. In the earlier captured failure, initialized=false, published=false and receivedVideo=false. No conn_init acknowledgement was observed. Browser: Microsoft Edge 154 / Chromium 154, Windows 10. Tracking-prevention warnings were also present, but we have not established whether they caused the failure.
+
+Failed session A:
+live_id: 1004433103600492544
+trace_id: 838701ae67a6b1ea4008ee99fe53573f
+conn_id: 25a76e4e-341d-4346-b16e-b78f2917f4bd
+Credential issue time: 4 October 2026, 21:50:29 WAT (20:50:29 UTC), inferred from its issued-at field.
+Origin: https://morphly-gcw3n0bay-lus-projects-b2662b64.vercel.app
+
+Failed session B:
+live_id: 1004438046562594816
+conn_id: fa5feb3e-565a-4a9a-b562-b12c41270cbc
+Credential issue time: 4 October 2026, 22:10:07 WAT (21:10:07 UTC), inferred from its issued-at field.
+Origin: https://morphly-lv6w6o2o0-lus-projects-b2662b64.vercel.app
+The trace_id for this session is not included in the captured request headers.
+
+Additional browser comparison:
+The same user subsequently tested the preview in Chrome and reported that it worked, with HTTP 101 visible for Vidu and AliRTC WebSockets. Edge repeatedly failed. Please help identify any known Edge-specific connection requirements. This comparison suggests a browser-specific factor but does not identify the exact cause.
+
+Application retry limit:
+We also identified a separate Morphly limit of six credential issuances over ten minutes. Browser failures after issuance could exhaust that limit. We corrected this in our review build with separate burst/sustained limits and accurate cooldown messages. This application-side limit should not be interpreted as a Vidu provider-capacity response.
+
+Comparison tests:
+A separate fresh session created through our preview returned HTTP 200. A Node.js WebSocket client using its temporary credential and the preview Origin successfully upgraded on api.vidu.com (HTTP 101). The same credential was rejected on api.vidu.cn (HTTP 403). These checks tested the handshake only, not initialization or camera playback. We have kept the overseas endpoint.
+
+Please confirm:
+1. Do your edge/server logs show the failed upgrade requests above, and their rejection or connection-close reasons?
+2. Is S2-Editing enabled for our account on the overseas endpoint, and is it supported for users in Nigeria and the other countries served by our account?
+3. Are browser Origin/domain allowlists, WAF rules, browser-version restrictions or WebSocket compression requirements relevant?
+4. What is our actual S2-Editing live concurrency limit? Does it differ from ordinary video-task concurrency or require a dedicated S2 resource package?
+5. What regional endpoints, deployment location and retry/grace-period settings do you recommend? Can you provide an official working browser example and recommended AliRTC SDK version?
+6. What is the exact authentication format for GET /live/v1/lives/{live_id} for Editing sessions, and how can we retrieve final close_reason, billed_seconds and trace_id for these failures?
+
+We can provide further redacted diagnostics through your preferred support channel. This report intentionally omits API keys, client_secret values, RTC tokens, Firebase tokens and user images.
+
+Thank you,
+Morphly team

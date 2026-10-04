@@ -73,6 +73,7 @@ import {
 import {
   VIDU_REALTIME_PROVIDER,
   VIDU_REALTIME_MODEL,
+  DECART_REALTIME_MODEL,
   DEFAULT_REALTIME_PROVIDER,
   getViduRealtimeUserMessage,
   getRealtimeProviderLabel,
@@ -171,11 +172,13 @@ const MAX_RETRY_DELAY_MS = 10000;
 const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
   xmax: 45000,
   vidu: 45000,
+  decart: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
   xmax: 3,
   vidu: 1,
+  decart: 2,
 };
 // After this many consecutive failed restarts, surface a retryable error
 // instead of looping "Reconnecting..." forever.
@@ -411,14 +414,14 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.details || errorData.error || errorData.message || `API Error: ${response.statusText}`);
+    throw Object.assign(new Error(errorData.details || errorData.error || errorData.message || `API Error: ${response.statusText}`), { code: errorData.code, retryAfterSeconds: errorData.retryAfterSeconds });
   }
 
   return response.json();
 }
 
 // Preload both SDK modules so selecting an engine never starts with a bundle download.
-const xmaxSdkReadyPromise = import('@xmaxai/sdk-global');
+const decartSdkReadyPromise = import('@/lib/decart-client');
 const viduSdkReadyPromise = import('@/lib/vidu-realtime');
 
 function Dashboard() {
@@ -441,10 +444,12 @@ function Dashboard() {
   const [engineReadiness, setEngineReadiness] = useState<Record<RealtimeProvider, boolean>>({
     xmax: true,
     vidu: true,
+    decart: true,
   });
   const [engineLoadErrors, setEngineLoadErrors] = useState<Record<RealtimeProvider, string | null>>({
     xmax: null,
     vidu: null,
+    decart: null,
   });
   const [isUpdaterBlocking, setIsUpdaterBlocking] = useState(false);
   const [isEngineChoiceOpen, setIsEngineChoiceOpen] = useState(false);
@@ -659,7 +664,7 @@ function Dashboard() {
       });
 
     void Promise.allSettled([
-      preloadProvider('xmax', xmaxSdkReadyPromise),
+      preloadProvider('decart', decartSdkReadyPromise),
       preloadProvider('vidu', viduSdkReadyPromise),
     ]);
 
@@ -1882,6 +1887,7 @@ function Dashboard() {
     apiToken: string,
     initialTransform: TransformState,
     options?: {
+      provider?: RealtimeProvider;
       isRecovery?: boolean;
       modelName?: string;
       baseUrl?: string;
@@ -1942,7 +1948,9 @@ function Dashboard() {
         updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
       }
 
-      const { createViduClient, models } = await import('@/lib/vidu-realtime');
+      const { createViduClient, models } = options?.provider === 'decart'
+        ? await import('@/lib/decart-client')
+        : await import('@/lib/vidu-realtime');
       const client = createViduClient({ apiKey: apiToken, baseUrl: options?.baseUrl });
       const model = models.realtime(options?.modelName || VIDU_REALTIME_MODEL);
       // The reference image is already part of the server creation request.
@@ -2043,6 +2051,7 @@ function Dashboard() {
         },
       });
       activeRealtimeSession = realtimeSession;
+      if (options?.provider === 'decart') await realtimeSession.set(initialTransform);
 
       const handleError = (error: unknown) => {
         const hadFirstFrame = firstFrameDelivered;
@@ -2145,8 +2154,9 @@ function Dashboard() {
   ) => {
     if (provider === VIDU_REALTIME_PROVIDER || (provider as string) === 'decart') {
       return connectToVidu(stream, apiToken, initialTransform, {
+        provider,
         isRecovery: options?.isRecovery,
-        modelName: VIDU_REALTIME_MODEL,
+        modelName: provider === 'decart' ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL,
         baseUrl: options?.baseUrl,
         maxSeconds: options?.maxSeconds,
         liveId: options?.liveId,
@@ -3043,7 +3053,7 @@ function Dashboard() {
   const handleProviderChange = (provider: string) => {
     if (isLoading || isStreaming) return;
     setDashboardError(null);
-    if (provider !== 'xmax' && provider !== 'vidu') return;
+    if (provider !== 'decart' && provider !== 'vidu') return;
     const nextProvider = provider;
     setSelectedProvider(nextProvider);
     setRuntimeModeCap('hd');
@@ -3312,6 +3322,7 @@ function Dashboard() {
               disabled={isLoading || isStreaming}
               blended={isBlendedMode}
             />
+            <span className="px-2 text-xs text-muted-foreground">Firebase review · Vidu / Decart</span>
 
             <select
               value={(selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart') ? 'hd' : preferredMode}

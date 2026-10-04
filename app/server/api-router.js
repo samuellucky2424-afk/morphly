@@ -21,8 +21,10 @@ import ivorypayWebhookHandler from './api/ivorypay-webhook.js';
 import versionHandler from './api/version.js';
 import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
+import firebaseRegisterHandler from './api/firebase-register.js';
 
 const routeHandlers = {
+  'firebase-register': firebaseRegisterHandler,
   feedback: createEngagementHandler('feedback'),
   announcements: createEngagementHandler('announcements'),
   'admin-engagement': createEngagementHandler('admin-engagement'),

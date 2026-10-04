@@ -77,11 +77,11 @@ test('Vidu receives only scoped real-time session credentials', () => {
   assert.match(startSession, /vidu_token/);
 });
 
-test('Xmax remains the default realtime provider', () => {
-  assert.equal(normalizeRealtimeProvider(undefined), 'xmax');
-  assert.equal(normalizeRealtimeProvider('unknown'), 'xmax');
+test('Vidu is the default and Decart keeps its own provider', () => {
+  assert.equal(normalizeRealtimeProvider(undefined), 'vidu');
+  assert.equal(normalizeRealtimeProvider('unknown'), 'vidu');
   assert.equal(normalizeRealtimeProvider('vidu'), 'vidu');
-  assert.equal(normalizeRealtimeProvider('decart'), 'vidu');
+  assert.equal(normalizeRealtimeProvider('decart'), 'decart');
 });
 
 test('Xmax web session issuance requires a canonical HTTP origin', () => {

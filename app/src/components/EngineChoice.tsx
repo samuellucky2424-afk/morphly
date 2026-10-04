@@ -39,8 +39,8 @@ export function EngineChoice({ value, onSelect, open, onOpenChange, disabled, bl
         <fieldset className="space-y-3">
           <legend className="sr-only">Engine (required)</legend>
           {([
-            { value: 'xmax', label: 'Plus', title: 'Standard quality', description: 'A lower-cost option. Fine details and textures may look softer.' },
-            { value: 'vidu', label: 'Pro', title: 'Natural-looking textures', description: 'For a more natural look with finer texture detail.' },
+            { value: 'vidu', label: 'Pro', title: 'Premium realtime engine', description: 'Transform your camera using a reference image.' },
+            { value: 'decart', label: 'Plus', title: 'Realtime engine', description: 'Transform your camera using a prompt or reference image.' },
           ] as const).map(engine => (
             <label key={engine.value} className={`flex cursor-pointer gap-3 rounded-lg border p-4 transition-colors focus-within:ring-2 focus-within:ring-ring ${choice === engine.value ? 'border-primary bg-accent' : 'border-border bg-background hover:bg-muted'}`}>
               <input type="radio" name="stream-engine" value={engine.value} checked={choice === engine.value} onChange={() => setChoice(engine.value)} required className="mt-1 h-4 w-4 shrink-0 accent-primary" />
@@ -55,7 +55,7 @@ export function EngineChoice({ value, onSelect, open, onOpenChange, disabled, bl
             </label>
           ))}
         </fieldset>
-        <p className="text-xs leading-5 text-muted-foreground">Results vary with your image, lighting and connection. {blended ? 'Plus includes the avatar + background rate.' : 'Plus avatar + background mode uses 4 cr/sec.'}</p>
+        <p className="text-xs leading-5 text-muted-foreground">Results vary with your image, lighting and connection.</p>
         <div className="flex justify-end gap-3 border-t border-border pt-4">
           <button type="button" onClick={() => onOpenChange(false)} className="min-h-11 rounded-md border border-border px-4 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Cancel</button>
           <button type="button" disabled={!choice || disabled} onClick={() => { if (choice) { onSelect(choice); onOpenChange(false); } }} className="min-h-11 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40">{choice ? `Use ${getRealtimeProviderLabel(choice)}` : 'Select an engine'}</button>

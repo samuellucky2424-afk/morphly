@@ -8,7 +8,7 @@ const source = readFileSync(new URL('../src/lib/vidu-realtime.ts', import.meta.u
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function harness() {
+function harness(userAgent = '') {
   const events = new Map();
   const timers = new Map();
   const sent = [];
@@ -43,7 +43,7 @@ function harness() {
   }
   const exports = {};
   const context = vm.createContext({
-    exports, URL, URLSearchParams, crypto: { randomUUID: () => 'connection-id' }, WebSocket: Socket,
+    navigator: { userAgent }, exports, URL, URLSearchParams, crypto: { randomUUID: () => 'connection-id' }, WebSocket: Socket,
     console: { warn: (_label, message) => diagnostics.push(JSON.parse(message)) },
     window: { addEventListener() {}, removeEventListener() {} },
     MediaStream: class { constructor(tracks) { this.tracks = tracks; } getVideoTracks() { return this.tracks; } },
@@ -167,4 +167,36 @@ test('cancelling Vidu startup tears down signaling and RTC before a renderer arr
   assert.equal(h.destroyed, 1);
   assert.equal(h.clone.stopped, true);
   assert.equal(h.original.stopped, false);
+});
+
+test('Vidu retries handshake failures on the same session and connection, then succeeds', async () => {
+  const h=harness(); const connected=h.client.connect(h.input,h.options);await tick();
+  const first=h.socket;const originalUrl=first.url;first.onerror();
+  [...h.timers.values()].find(timer=>timer.ms===1000).fn();
+  assert.notEqual(h.socket,first);assert.equal(h.socket.url,originalUrl);
+  h.socket.open();h.socket.message({type:2,payload:{conn_init_ack:{success:true}}});await tick();
+  h.events.get('videoSubscribeStateChanged')('renderer',2,3);
+  const session=await connected;assert.equal(h.errors.length,0);await session.disconnect();assert.equal(h.destroyed,1);
+});
+
+test('Vidu bounds failed handshakes and tears down all retry timers', async () => {
+  const h=harness();const connected=h.client.connect(h.input,h.options);const rejection=assert.rejects(connected,/signaling could not connect/);await tick();
+  h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===1000).fn();
+  h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===2000).fn();
+  h.socket.onerror();await rejection;assert.equal(h.destroyed,1);assert.equal(h.timers.size,0);assert.equal(h.sent.length,0);
+});
+
+test('cancelling during a Vidu handshake retry cannot open another socket', async () => {
+  const h=harness();const controller=new AbortController();const connected=h.client.connect(h.input,{...h.options,signal:controller.signal});const rejection=assert.rejects(connected,/cancelled/);await tick();
+  const first=h.socket;first.onerror();const retry=[...h.timers.values()].find(timer=>timer.ms===1000).fn;
+  controller.abort();await rejection;retry();assert.equal(h.socket,first);assert.equal(h.timers.size,0);
+});
+
+
+test('Edge signaling failures remain browser errors instead of provider-capacity errors', async () => {
+  const h=harness('Mozilla/5.0 Chrome/154 Safari/537.36 Edg/154.0.0.0');
+  const connected=h.client.connect(h.input,h.options);const rejection=assert.rejects(connected,/could not connect in Edge/);await tick();
+  h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===1000).fn();
+  h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===2000).fn();h.socket.onerror();
+  await rejection;assert.equal(h.errors[0].code,'VIDU_SIGNALING_UNREACHABLE');assert.match(h.errors[0].message,/Chrome or choose Plus/);
 });

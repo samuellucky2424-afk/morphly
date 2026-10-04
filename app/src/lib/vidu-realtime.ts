@@ -91,6 +91,9 @@ export class ViduRealtimeClient {
     let published = false;
     let receivedVideo = false;
     let initRetry: ReturnType<typeof setTimeout> | undefined;
+    let socketRetry: ReturnType<typeof setTimeout> | undefined;
+    let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
+    let socketAttempts = 0;
     let sessionTimer: ReturnType<typeof setTimeout> | undefined;
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     const listeners = new Set<(error: unknown) => void>();
@@ -113,6 +116,8 @@ export class ViduRealtimeClient {
       if (cleanupPromise) return cleanupPromise;
       stopped = true;
       clearTimeout(initRetry);
+      clearTimeout(socketRetry);
+      clearTimeout(handshakeTimer);
       clearTimeout(sessionTimer);
       clearTimeout(startupTimer);
       window.removeEventListener('pagehide', onPageHide);
@@ -137,7 +142,7 @@ export class ViduRealtimeClient {
     };
     const fail = (message: string, reason?: string) => {
       if (stopped) return;
-      const error = new Error(message);
+      const error = Object.assign(new Error(message), { code: reason === 'ws_handshake_failed' ? 'VIDU_SIGNALING_UNREACHABLE' : undefined });
       console.warn('[Vidu] session diagnostics', JSON.stringify({
         liveId, traceId: options.traceId, reason, initialized: ready,
         published, receivedVideo,
@@ -182,12 +187,42 @@ export class ViduRealtimeClient {
       const preparedTrack = await Promise.race([engine.getVideoTrack({ streamType: 0 }), failurePromise]);
       assertActive();
       if (!preparedTrack) throw new Error('Pro could not prepare the selected camera track.');
-      socket = new WebSocket(buildViduSocketUrl(options.baseUrl || this.baseUrl, liveId, connId, this.apiKey));
-      socket.onopen = () => { if (!stopped) send(1, { conn_init: { version: 1 } }); };
-      socket.onerror = () => fail('Pro signaling could not connect. Check the Vidu region and session credentials.');
-      socket.onclose = () => fail('Pro signaling disconnected. Start a new session.');
-      socket.onmessage = event => {
-        if (stopped) return;
+      const connectSignaling = () => {
+      clearTimeout(socketRetry);
+      if (stopped) return;
+      socketAttempts++;
+      const currentSocket = new WebSocket(buildViduSocketUrl(options.baseUrl || this.baseUrl, liveId, connId, this.apiKey));
+      socket = currentSocket;
+      let retryScheduled = false;
+      const retryHandshake = (closeCode?: number) => {
+        if (stopped || retryScheduled || socket !== currentSocket) return;
+        clearTimeout(handshakeTimer);
+        clearTimeout(initRetry);
+        // Retry only before initialization: reuse the live ID and connection ID,
+        // never create another paid stream or replay initialization after success.
+        if (ready) { fail('Vidu signaling disconnected. Start a new session.', 'ws_disconnected'); return; }
+        retryScheduled = true;
+        currentSocket.onopen = null; currentSocket.onmessage = null;
+        currentSocket.onerror = null; currentSocket.onclose = null;
+        currentSocket.close();
+        if (socketAttempts >= 3 || (closeCode !== undefined && [1008, 4001, 4003].includes(closeCode))) {
+          fail(typeof navigator !== 'undefined' && /Edg\//.test(navigator.userAgent)
+            ? 'Pro signaling could not connect in Edge. Try this session in Chrome or choose Plus. Browser or network filtering may be blocking the connection.'
+            : 'Pro signaling could not connect. Retry, or choose Plus. Browser or network filtering may be blocking the connection.', 'ws_handshake_failed');
+          return;
+        }
+        changeState('reconnecting');
+        socketRetry = setTimeout(connectSignaling, socketAttempts * 1000);
+      };
+      handshakeTimer = setTimeout(() => retryHandshake(), 7000);
+      currentSocket.onopen = () => {
+        clearTimeout(handshakeTimer);
+        if (!stopped) { changeState('connecting'); send(1, { conn_init: { version: 1 } }); }
+      };
+      currentSocket.onerror = () => retryHandshake();
+      currentSocket.onclose = event => retryHandshake(event.code);
+      currentSocket.onmessage = event => {
+        if (stopped || retryScheduled || socket !== currentSocket) return;
         let message;
         try { message = JSON.parse(String(event.data)); } catch { return; }
         if (message.type === 2) {
@@ -218,6 +253,8 @@ export class ViduRealtimeClient {
           fail(`Pro could not change the image (${message.payload.switch_prompt_ack.error_code || 'unknown'}).`);
         }
       };
+      };
+      connectSignaling();
       await Promise.race([initPromise, failurePromise]);
       assertActive();
       await Promise.race([engine.joinChannel(rtc.token, rtc.user_id), failurePromise]);

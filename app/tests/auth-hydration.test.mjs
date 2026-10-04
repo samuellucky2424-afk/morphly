@@ -30,7 +30,7 @@ function harness() {
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }) },
     'react-router-dom': { useNavigate: () => (...args) => navigations.push(args) },
     '@/lib/routes': { getDefaultRoute: isAdmin => isAdmin ? '/admin' : '/dashboard', ROUTES: { PUBLIC: { LOGIN: '/login' } } },
-    '@/lib/supabase': { supabase: { auth } },
+    '@/lib/firebase-auth': { firebaseSessionClient: { auth } },
     '@/lib/api-client': { apiFetch: path => { calls.push(path); return path === '/admin-me' ? admin.promise : wallet.promise; } },
     '@/lib/telemetry-client': { trackLogin() {} },
     '@/lib/auth-flow': { normalizeEmail: value => value.trim().toLowerCase() },

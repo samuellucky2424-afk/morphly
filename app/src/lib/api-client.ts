@@ -1,6 +1,6 @@
-import { supabase } from './supabase';
+import { firebaseSessionClient } from './firebase-auth';
 
-const DEPLOYED_APP_ORIGIN = 'https://morphly-alpha.vercel.app';
+const DEPLOYED_APP_ORIGIN = 'https://live.morphly.fun';
 const LOCAL_API_BASE = '/api';
 
 function normalizeApiBase(value?: string | null): string | null {
@@ -45,9 +45,9 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 }
 
 export async function apiFetchWithAuth(path: string, init?: RequestInit): Promise<Response> {
-  let { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await firebaseSessionClient.auth.getSession();
   if (!session?.access_token) {
-    const refreshResult = await supabase.auth.refreshSession();
+    const refreshResult = await firebaseSessionClient.auth.refreshSession();
     session = refreshResult.data.session;
   }
 

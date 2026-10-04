@@ -14,6 +14,11 @@ export function validatePublicBuildEnvironment(
   environment: PublicBuildEnvironment,
   { requireHttps = true }: { requireHttps?: boolean } = {},
 ): void {
+  if (environment.VITE_FIREBASE_CONFIG) {
+    const config = JSON.parse(environment.VITE_FIREBASE_CONFIG);
+    if (!config.apiKey || !config.authDomain || !config.projectId || !config.appId) throw new Error('Firebase web configuration is incomplete');
+    return;
+  }
   if (!requireHttps && (environment.VITE_LOCAL_PREVIEW === 'true' || environment.LOCAL_PREVIEW === 'true')) {
     return;
   }

@@ -1270,10 +1270,8 @@ async function startAuthenticatedApp() {
 async function init() {
   const response = await fetch(`${CONFIG.apiBase}${CONFIG.endpoints.config}`, { signal: AbortSignal.timeout(15000) });
   const config = await response.json();
-  if (!config.supabaseUrl || !config.supabaseAnonKey) throw new Error("Supabase public configuration is missing.");
-  window.morphlySupabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-  });
+  if (!config.firebaseConfig?.apiKey) throw new Error("Firebase public configuration is missing.");
+  window.morphlySupabase = window.morphlyFirebase.createClient(config.firebaseConfig);
   const session = (await window.morphlySupabase.auth.getSession()).data.session;
   window.morphlyAccessToken = session?.access_token || null;
   window.morphlySupabase.auth.onAuthStateChange((_event, nextSession) => {

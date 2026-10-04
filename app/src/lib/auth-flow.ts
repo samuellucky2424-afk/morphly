@@ -1,4 +1,4 @@
-import type { Session, User } from '@supabase/supabase-js';
+import type { AuthSession as Session, AuthUser as User } from './auth-types';
 
 export type RegistrationOutcome = 'signed_in' | 'confirmation_required';
 export const EXISTING_ACCOUNT_MESSAGE = 'An account already exists for this email. Sign in or use Forgot password.';

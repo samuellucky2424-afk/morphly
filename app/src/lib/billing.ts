@@ -8,13 +8,13 @@ export const CREDITS_PER_SECOND = CREDITS_PER_SECOND_STANDARD;
 
 /**
  * The "Pro" engine (Vidu S2-Editing) bills with the Pro multiplier.
- * The "Plus" engine (xmax / X2) bills at the standard rate.
+ * The "Plus" engine (Decart) bills at the standard rate.
  */
 export const CREDITS_PER_SECOND_PRO = 2.5;
 export const PRO_PROVIDER_CREDIT_MULTIPLIER = CREDITS_PER_SECOND_PRO / CREDITS_PER_SECOND_STANDARD;
 
 export function getProviderCreditMultiplier(provider: string | null | undefined): number {
-  return provider === VIDU_REALTIME_PROVIDER || provider === 'decart'
+  return provider === VIDU_REALTIME_PROVIDER
     ? PRO_PROVIDER_CREDIT_MULTIPLIER
     : 1;
 }
@@ -24,7 +24,8 @@ export function getCreditRatePerSecond(
   hasBackground: boolean,
   provider?: string | null | undefined,
 ): number {
-  if (provider === VIDU_REALTIME_PROVIDER || provider === 'decart') return CREDITS_PER_SECOND_PRO;
+  if (provider === VIDU_REALTIME_PROVIDER) return CREDITS_PER_SECOND_PRO;
+  if (provider === 'decart') return CREDITS_PER_SECOND_STANDARD;
   const baseRate = hasAvatar && hasBackground
     ? CREDITS_PER_SECOND_BLENDED
     : CREDITS_PER_SECOND_STANDARD;

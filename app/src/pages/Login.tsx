@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+import { firebaseSessionClient } from '@/lib/firebase-auth';
 import { CONFIRM_EMAIL_MESSAGE, getPasswordResetUrl, normalizeEmail, RESET_REQUEST_MESSAGE } from '@/lib/auth-flow';
 import { validateReferralCode } from '@/lib/account';
 import {
@@ -15,7 +15,7 @@ import {
 
 function Login() {
   const location = useLocation();
-  const { login, register, loading, error, clearError } = useAuth();
+  const { login, loginWithGoogle, register, loading, error, clearError } = useAuth();
   const [isLogin, setIsLogin] = useState(() => location.pathname !== '/signup');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -55,7 +55,7 @@ function Login() {
     requestInFlight.current = true;
     setResetLoading(true);
     try {
-      const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+      const { error: resetError } = await firebaseSessionClient.auth.resetPasswordForEmail(normalizedEmail, {
         redirectTo: getPasswordResetUrl(import.meta.env.VITE_AUTH_SITE_URL),
       });
       if (resetError) throw resetError;
@@ -134,6 +134,14 @@ function Login() {
     setReferralValid(false);
     setNotice(null); setRequestError(null); setPassword('');
     clearError();
+  };
+
+  const handleGoogle = async () => {
+    if(requestInFlight.current||loading)return;
+    requestInFlight.current=true;clearError();setRequestError(null);setNotice(null);
+    try{if(!isLogin&&!(await checkReferralCode()))return;await loginWithGoogle(isLogin?'':referralCode);}
+    catch{/* The auth context displays sign-in errors. */}
+    finally{requestInFlight.current=false;}
   };
 
   return (
@@ -291,6 +299,7 @@ function Login() {
                 )}
               </Button>
             </form>
+            {window.location.protocol !== 'file:' && <Button type="button" variant="outline" className="mt-3 w-full h-11" disabled={loading||resetLoading||validatingReferral} onClick={handleGoogle}>Continue with Google</Button>}
 
             <div className="mt-6 text-center">
               <span className="text-sm text-muted-foreground">

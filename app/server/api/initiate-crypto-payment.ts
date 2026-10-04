@@ -12,6 +12,7 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (process.env.MORPHLY_PAYMENT_MODE === 'sandbox') return res.status(503).json({status:'failed',message:'Crypto payments are not enabled in this sandbox review'});
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
   const { packageId, credits, priceUSD, redirectUrl } = req.body || {};

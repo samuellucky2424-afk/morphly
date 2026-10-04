@@ -2,15 +2,15 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { useNavigate } from 'react-router-dom';
 import { getDefaultRoute, ROUTES } from '@/lib/routes';
 import { apiFetch } from '@/lib/api-client';
-import { supabase } from '@/lib/supabase';
+import { firebaseSessionClient } from '@/lib/firebase-auth';
 import { trackLogin, trackSignupCompleted } from '@/lib/telemetry-client';
-import type { User as SupabaseUser } from '@supabase/supabase-js';
+import type { AuthUser as FirebaseAuthUser } from '@/lib/auth-types';
 import { normalizeReferralCode } from '@/utils/referralCode';
 import { validateReferralCode } from '@/lib/account';
 import { EXISTING_ACCOUNT_MESSAGE, getRegistrationOutcome, normalizeEmail } from '@/lib/auth-flow';
 import type { RegistrationOutcome } from '@/lib/auth-flow';
 
-// We map Supabase's user object properties to what our frontend expects where possible
+// We map Firebase user object properties to what our frontend expects where possible
 interface User {
   id: string;
   name: string;
@@ -28,6 +28,7 @@ interface AuthContextType {
   adminRole: string | null;
   defaultRoute: string;
   login: (email: string, password: string) => Promise<void>;
+  loginWithGoogle: (referralCode?: string) => Promise<void>;
   logout: () => void;
   register: (email: string, name: string, password: string, referralCode?: string) => Promise<RegistrationOutcome>;
   loading: boolean;
@@ -87,15 +88,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Helper to map Supabase User
-  const formatUser = (supabaseUser: SupabaseUser, adminState?: { isAdmin: boolean; adminRole: string | null }): User => {
-    const metadata = supabaseUser.user_metadata || {};
+  // Helper to map Firebase user
+  const formatUser = (authUser: FirebaseAuthUser, adminState?: { isAdmin: boolean; adminRole: string | null }): User => {
+    const metadata = authUser.user_metadata || {};
     return {
-      id: supabaseUser.id,
-      name: metadata.name || metadata.full_name || supabaseUser.email?.split('@')[0] || 'User',
-      email: supabaseUser.email || '',
+      id: authUser.id,
+      name: metadata.name || metadata.full_name || authUser.email?.split('@')[0] || 'User',
+      email: authUser.email || '',
       avatar: metadata.avatar_url || metadata.picture,
-      createdAt: supabaseUser.created_at,
+      createdAt: authUser.created_at,
       isAdmin: Boolean(adminState?.isAdmin),
       adminRole: adminState?.adminRole ?? null,
     };
@@ -140,7 +141,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const hydrateUserFromSession = useCallback(async (currentSession: Awaited<ReturnType<typeof supabase.auth.getSession>>['data']['session']) => {
+  const hydrateUserFromSession = useCallback(async (currentSession: Awaited<ReturnType<typeof firebaseSessionClient.auth.getSession>>['data']['session']) => {
     if (!currentSession?.user) {
       hydrationRef.current = null;
       if (isLocalPreview) {
@@ -185,7 +186,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let active = true;
     // Check active session
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+    firebaseSessionClient.auth.getSession().then(({ data: { session: currentSession } }) => {
       if (active) void hydrateUserFromSession(currentSession);
     }).catch(() => {
       if (!active) return;
@@ -197,7 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+    const { data: { subscription } } = firebaseSessionClient.auth.onAuthStateChange(
       (event, currentSession) => {
         if (event === 'USER_UPDATED') hydrationRef.current = null;
         void hydrateUserFromSession(currentSession);
@@ -220,7 +221,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setError(null);
     
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
+      const { data, error: authError } = await firebaseSessionClient.auth.signInWithPassword({
         email: normalizeEmail(email),
         password,
       });
@@ -244,6 +245,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const loginWithGoogle = async (referralCode = '') => {
+    setLoading(true);setError(null);
+    try {
+      const {data,error:authError}=await firebaseSessionClient.auth.signInWithGoogle(normalizeReferralCode(referralCode));
+      if(authError)throw authError;
+      if(!data.session)throw new Error('Unable to establish your session. Please try again.');
+      const signedInUser=await hydrateUserFromSession(data.session);
+      if(signedInUser){navigate(getDefaultRoute(signedInUser.isAdmin),{replace:true});trackLogin();}
+    }catch(err){setError(err instanceof Error?err.message:'Google sign-in failed');throw err;}
+    finally{setLoading(false);}
+  };
+
   const register = async (email: string, name: string, password: string, referralCode?: string) => {
     setLoading(true);
     setError(null);
@@ -261,7 +274,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      const { data, error: authError } = await supabase.auth.signUp({
+      const { data, error: authError } = await firebaseSessionClient.auth.signUp({
         email: normalizeEmail(email),
         password,
         options: {
@@ -310,7 +323,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(true);
     hydrationRef.current = null;
     try {
-      await supabase.auth.signOut({ scope: 'local' });
+      await firebaseSessionClient.auth.signOut({ scope: 'local' });
     } catch (err) {
       console.error('Logout error:', err);
     } finally {
@@ -333,6 +346,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       adminRole,
       defaultRoute,
       login, 
+      loginWithGoogle,
       logout, 
       register, 
       loading, 

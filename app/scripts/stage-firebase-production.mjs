@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+const token=JSON.parse(fs.readFileSync('C:/Users/HP/AppData/Roaming/com.vercel.cli/Data/auth.json','utf8')).token;
+const config=JSON.parse(fs.readFileSync('C:/morphly-private/firebase-web-config.json','utf8')).result.sdkConfig;
+if(config.projectId!=='luckyweb-f546e')throw new Error('Unexpected Firebase project');
+const endpoint='https://api.vercel.com/v10/projects/prj_rME29907uR31V5VD6GaCbNWfyRPo/env?teamId=team_Rqjlq0vnQIpM7meLPFVDdeHR';
+const headers={Authorization:`Bearer ${token}`,'Content-Type':'application/json'};
+const response=await fetch(endpoint,{headers});
+if(!response.ok)throw new Error(`Environment inspection failed (${response.status})`);
+const existing=(await response.json()).envs;
+const required=['FLUTTERWAVE_SECRET_KEY','FLUTTERWAVE_WEBHOOK_SECRET_HASH','FLUTTERWAVE_SAVINGS_SUBACCOUNT_ID','RESEND_API_KEY','RESEND_FROM_EMAIL'];
+const keys=new Set(existing.filter(e=>e.target?.includes('production')).map(e=>e.key));
+for(const key of required)if(!keys.has(key))throw new Error(`Missing existing production ${key}`);
+const values={FIREBASE_PROJECT_ID:config.projectId,FIREBASE_DATABASE_ID:'morphly-production',FIREBASE_SERVICE_ACCOUNT_JSON:JSON.stringify(JSON.parse(fs.readFileSync('C:/morphly-private/firebase-service-account.json','utf8'))),VITE_FIREBASE_CONFIG:JSON.stringify(config),VITE_PAYMENT_MODE:'live',MORPHLY_PAYMENT_MODE:'live',VITE_PUBLIC_APP_URL:'https://live.morphly.fun',VITE_API_BASE_URL:'https://live.morphly.fun/api',MORPHLY_CUSTOMER_EMAILS_ENABLED:'false'};
+const variables=Object.entries(values).map(([key,value])=>({key,value,type:key==='FIREBASE_SERVICE_ACCOUNT_JSON'?'encrypted':'plain',target:['production']}));
+const update=await fetch(endpoint+'&upsert=true',{method:'POST',headers,body:JSON.stringify(variables)});
+if(!update.ok)throw new Error(`Production configuration staging failed (${update.status})`);
+console.log(JSON.stringify({configuredKeys:Object.keys(values),preservedPaymentAndEmailCredentials:true,customerEmailsPaused:true,liveDomainsUnchanged:true}));

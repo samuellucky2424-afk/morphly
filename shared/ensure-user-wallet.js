@@ -74,6 +74,7 @@ async function insertMissingWallet(supabaseAdmin, userId) {
 }
 
 export async function ensureUserWallet(supabaseAdmin, user) {
+  if (supabaseAdmin.provider === 'firebase') return supabaseAdmin.provision(user);
   await ensurePublicUser(supabaseAdmin, user);
 
   const referralCodeResult = await supabaseAdmin.rpc('morphly_ensure_user_referral_code', {

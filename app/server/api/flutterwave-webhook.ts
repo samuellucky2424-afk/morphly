@@ -1,5 +1,9 @@
 // @ts-nocheck
 import crypto from 'crypto';
+import { sandboxPayments, verifySandboxPayment } from '../firebase-sandbox-payment.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { hash } from '../firebase-store.js';
+import { validSignature } from '../firebase-payment-runtime.mjs';
 
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
@@ -46,6 +50,19 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
+
+  if (sandboxPayments()) {
+    const raw = await readRawBody(req);
+    if (!validSignature('flutterwave',Buffer.from(raw),getHeader(req,'flutterwave-signature'),process.env.FLUTTERWAVE_WEBHOOK_SECRET_HASH)) return res.status(401).json({error:'Invalid signature'});
+    try {
+      const event=JSON.parse(raw);
+      if ((event.type||event.event)!=='charge.completed') return res.json({received:true,ignored:true});
+      const orders=await firebaseDb.collection('review_payment_orders').where('chargeId','==',event.data?.id||'').limit(2).get();
+      if (orders.size!==1) return res.json({received:true,unmatched:true});
+      const order=orders.docs[0].data();
+      return res.json({received:true,...await verifySandboxPayment({reference:order.reference,transactionId:event.data.id,userId:order.userId})});
+    } catch {return res.status(503).json({error:'Verification or fulfillment unavailable; retry'});}
+  }
 
   const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
   const webhookSecretHash = process.env.FLUTTERWAVE_WEBHOOK_SECRET_HASH || process.env.FLW_SECRET_HASH;

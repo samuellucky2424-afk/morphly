@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { sandboxPayments, verifySandboxPayment } from '../firebase-sandbox-payment.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
   applyVerifiedFlutterwavePayment,
@@ -39,6 +40,7 @@ export default async function handler(req, res) {
     const authResult = await authenticateRequestUser(req, supabaseAdmin);
     if (authResult.error) return res.status(authResult.status).json({ status: 'failed', message: authResult.error });
     if (authResult.user.id !== userId) return res.status(403).json({ status: 'failed', message: 'User mismatch' });
+    if (sandboxPayments()) return res.json(await verifySandboxPayment({reference,transactionId,userId}));
     const { data: profile } = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
     if (profile?.account_status === 'suspended') return res.status(403).json({ status: 'failed', message: 'Account suspended' });
     const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;

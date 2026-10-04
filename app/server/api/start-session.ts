@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
+import { sessionStartLimit } from '../session-start-limit.js';
+import { createDecartTemporaryKey } from '../decart-token.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
@@ -10,12 +12,12 @@ const XMAX_DEFAULT_API_BASE_URL = 'https://api.xmax.cloud/open/api/v1';
 const XMAX_REALTIME_MODEL = 'x2.0';
 const VIDU_REALTIME_MODEL = 's2-editing';
 const VIDU_DEFAULT_API_BASE_URL = 'https://api.vidu.com';
-const DEFAULT_REALTIME_PROVIDER = 'xmax';
+const DEFAULT_REALTIME_PROVIDER = 'vidu';
 const TEMPORARY_KEY_GRACE_SECONDS = 120;
 const DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS = 1800;
 const DEFAULT_UNVERIFIED_WALLET_LIMIT = 5000;
 const TOKEN_MINT_WINDOW_MINUTES = 10;
-const TOKEN_MINT_LIMIT_PER_WINDOW = 6;
+const TOKEN_MINT_LIMIT_PER_WINDOW = 30;
 const VIDU_TOKEN_MAX_ATTEMPTS = 2;
 const VIDU_TOKEN_RETRY_DELAY_MS = 600;
 
@@ -32,18 +34,22 @@ function getViduApiBaseUrl() {
 }
 
 export function normalizeRealtimeProvider(value) {
-  return (value === 'vidu' || value === 'decart') ? 'vidu' : DEFAULT_REALTIME_PROVIDER;
+  return (value === 'vidu' || value === 'decart') ? value : DEFAULT_REALTIME_PROVIDER;
 }
 
 function getProviderModel(provider) {
+  if (provider === 'decart') return 'lucy-2.5';
   return (provider === 'vidu' || provider === 'decart') ? VIDU_REALTIME_MODEL : XMAX_REALTIME_MODEL;
 }
 
 function getProviderApiKey(provider) {
+  if (provider === 'decart') return process.env.DECART_API_KEY?.trim() || null;
   return (provider === 'vidu' || provider === 'decart') ? getViduApiKey() : getXmaxApiKey();
 }
 
 function getProviderPublicLabel(provider) {
+  if (provider === 'decart') return 'Plus';
+  if (provider === 'vidu') return 'Pro';
   return (provider === 'vidu' || provider === 'decart') ? 'Pro' : 'Plus';
 }
 
@@ -52,6 +58,7 @@ function getXmaxApiBaseUrl() {
 }
 
 function getProviderSessionLimitSeconds(provider) {
+  if (provider === 'decart') return Math.min(3600,Math.max(60,Number(process.env.DECART_MAX_SESSION_SECONDS)||1800));
   const configured = Number(
     (provider === 'vidu' || provider === 'decart')
       ? (process.env.VIDU_MAX_SESSION_SECONDS || process.env.DECART_MAX_SESSION_SECONDS)
@@ -297,6 +304,7 @@ async function createProviderTemporaryCredential({
   imageUrl,
   editingType,
 }) {
+  if (provider === 'decart') return createDecartTemporaryKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
   if (provider === 'vidu' || provider === 'decart') {
     return createViduTemporaryKey({
       apiKey,
@@ -336,9 +344,7 @@ async function recordProviderTokenAudit({
     installation_id: installationId,
     session_id: sessionId,
     platform,
-    event_name: status === 'issued'
-      ? `${(provider === 'vidu' || provider === 'decart') ? 'vidu_token' : 'xmax_key'}_issued`
-      : `${(provider === 'vidu' || provider === 'decart') ? 'vidu_token' : 'xmax_key'}_failed`,
+    event_name: `${provider === 'decart' ? 'decart_token' : 'vidu_token'}_${status === 'issued' ? 'issued' : 'failed'}`,
     metadata: {
       provider,
       model,
@@ -357,16 +363,10 @@ async function recordProviderTokenAudit({
 
 async function getRecentTokenMintCount(userId) {
   const since = new Date(Date.now() - TOKEN_MINT_WINDOW_MINUTES * 60 * 1000).toISOString();
-  // Only count sessions that actually received a provider token (credits > 0
-  // recorded at start is not reliable, so use the durable issuance audit). A
-  // failed start must not consume the user's retry budget.
-  const eventCountResult = await supabaseAdmin.from('analytics_events').select('id', { count: 'exact', head: true })
+  const result = await supabaseAdmin.from('analytics_events').select('created_at')
     .eq('user_id', userId).in('event_name', ['xmax_key_issued', 'vidu_token_issued', 'decart_token_issued']).gte('created_at', since);
-
-  if (eventCountResult.error) {
-    console.warn('Unable to read token audit rate limit:', eventCountResult.error.message);
-  }
-  return eventCountResult.count || 0;
+  if (result.error) throw result.error;
+  return sessionStartLimit(result.data || []);
 }
 
 async function hasWalletCreditProvenance(userId) {
@@ -524,7 +524,7 @@ export default async function handler(req, res) {
   try {
     const isLocalPreview = isLocalPreviewRequest(req);
 
-    if (!['xmax', 'vidu', 'decart'].includes(req.body?.provider)) {
+    if (!['vidu', 'decart'].includes(req.body?.provider)) {
       return res.status(400).json({ allowed: false, error: 'Choose an engine before streaming.' });
     }
 
@@ -573,7 +573,7 @@ export default async function handler(req, res) {
     }
 
     if (!providerApiKey) {
-      const environmentName = (provider === 'vidu' || provider === 'decart') ? 'VIDU_API_KEY' : 'XMAX_API_KEY';
+      const environmentName = provider === 'decart' ? 'DECART_API_KEY' : 'VIDU_API_KEY';
       return res.status(503).json({
         allowed: false,
         error: `${getProviderPublicLabel(provider)} is not configured on this server.`,
@@ -685,15 +685,18 @@ export default async function handler(req, res) {
       });
     }
 
-    if (recentTokenMints >= TOKEN_MINT_LIMIT_PER_WINDOW) {
+    if (recentTokenMints.retryAfterSeconds > 0) {
       await logRequestEvent('start-session.rate_limited', {
         userId,
-        recentTokenMints,
+        recentTokenMints: recentTokenMints.count,
         windowMinutes: TOKEN_MINT_WINDOW_MINUTES,
       });
+      res.setHeader('Retry-After', String(recentTokenMints.retryAfterSeconds));
       return res.status(429).json({
         allowed: false,
-        error: `Too many AI sessions. Try again in ${TOKEN_MINT_WINDOW_MINUTES} minutes.`,
+        code: 'SESSION_START_RATE_LIMIT',
+        retryAfterSeconds: recentTokenMints.retryAfterSeconds,
+        error: `Too many recent connection attempts. Retry in ${recentTokenMints.retryAfterSeconds} seconds. This is Morphly's retry limit, not an AI capacity error.`,
       });
     }
 
@@ -747,6 +750,10 @@ export default async function handler(req, res) {
     }
 
     const auditStartedAt = Date.now();
+    if (supabaseAdmin.provider === 'firebase') {
+      const saved = await supabaseAdmin.from('sessions').update({provider,provider_max_seconds:providerSession.sessionLimit || maxSeconds}).eq('id',newSession.id);
+      if (saved.error) throw saved.error;
+    }
     // Provider attribution lives in analytics_events. The optional provider
     // columns are absent from older session schemas and must not block startup.
     await recordProviderTokenAudit({

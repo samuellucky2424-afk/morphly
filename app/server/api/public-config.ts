@@ -35,8 +35,12 @@ export default async function handler(req, res) {
     // including when the required split subaccount configuration is missing.
     flutterwavePublicKey: '',
     ivorypayPublicKey,
-    isCryptoPaymentEnabled,
-    supabaseUrl: process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '',
-    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '',
+    isCryptoPaymentEnabled: process.env.MORPHLY_PAYMENT_MODE === 'sandbox' ? false : isCryptoPaymentEnabled,
+    backend: 'firebase',
+    database: process.env.FIREBASE_DATABASE_ID || '(default)',
+    realtimeProviders: ['vidu','decart'],
+    reviewVersion: 'firebase-vidu-decart-v1',
+    paymentMode: process.env.MORPHLY_PAYMENT_MODE || 'unconfigured',
+    firebaseConfig: JSON.parse(process.env.VITE_FIREBASE_CONFIG || '{}'),
   });
 }

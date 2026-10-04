@@ -1,5 +1,6 @@
 import path from "path"
 import fs from "fs"
+import { buildSync } from 'esbuild';
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv } from "vite"
 import { inspectAttr } from 'kimi-plugin-inspect-react'
@@ -28,16 +29,10 @@ export default defineConfig(({ command, mode }) => {
       }
       fs.copyFileSync(path.resolve(__dirname, 'src/components/admin-engagement.css'), path.join(destination, 'engagement.css'));
       fs.copyFileSync(path.resolve(__dirname, 'src/styles/theme.css'), path.join(destination, 'theme.css'));
-      fs.copyFileSync(
-        path.resolve(__dirname, 'node_modules/@supabase/supabase-js/dist/umd/supabase.js'),
-        path.join(destination, 'supabase.js'),
-      );
+      buildSync({ entryPoints: [path.join(source, 'firebase-auth.js')], bundle: true, minify: true, platform: 'browser', nodePaths: [path.resolve(__dirname, 'node_modules')], outfile: path.join(destination, 'firebase.js') });
       const resetDestination = path.resolve(__dirname, 'dist/reset-password');
       fs.mkdirSync(resetDestination, { recursive: true });
-      fs.copyFileSync(path.join(source, 'reset-password.html'), path.join(resetDestination, 'index.html'));
-      for (const fileName of ['reset-password.js', 'password-recovery.mjs']) {
-        fs.copyFileSync(path.join(source, fileName), path.join(resetDestination, fileName));
-      }
+      fs.writeFileSync(path.join(resetDestination, 'index.html'), '<!doctype html><meta charset="utf-8"><title>Password reset</title><p>Open the password reset link from your Firebase email to choose a new password. <a href="/#/login">Return to sign in</a></p>');
     },
   };
 

@@ -647,6 +647,7 @@ function Subscription() {
         <div className="mb-4">
           <h1 className="text-xl font-bold text-foreground tracking-tight">Purchase Credits</h1>
           <p className="text-xs text-muted-foreground mt-0.5">Select a credit package for real-time AI transformations</p>
+          {import.meta.env.VITE_PAYMENT_MODE === 'sandbox' && <p className="mt-3 rounded-md border border-border p-3 text-sm">Firebase review: payments use Flutterwave’s test card automatically. No real money is charged. Test purchases update this Firebase review wallet and can qualify referral rewards.</p>}
         </div>
 
         {/* Payment Method Selector */}

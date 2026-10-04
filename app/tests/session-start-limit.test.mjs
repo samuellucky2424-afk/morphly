@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {sessionStartLimit} from '../server/session-start-limit.js';
+const now=Date.parse('2026-10-04T21:00:00Z');
+const events=(count,age)=>Array.from({length:count},()=>({created_at:new Date(now-age).toISOString()}));
+test('six spaced failures do not impose the old ten-minute cooldown',()=>assert.equal(sessionStartLimit(events(6,90_000),now).retryAfterSeconds,0));
+test('rapid retries receive the actual remaining burst cooldown',()=>assert.equal(sessionStartLimit(events(6,40_000),now).retryAfterSeconds,20));
+test('excessive issuance still hits a sustained safety cap',()=>assert.equal(sessionStartLimit(events(30,120_000),now).retryAfterSeconds,480));
+test('expired events cannot prolong a cooldown',()=>assert.equal(sessionStartLimit(events(30,600_000),now).retryAfterSeconds,0));
+test('cooldown waits until enough requests expire, not only the oldest',()=>assert.equal(sessionStartLimit([...events(1,59_000),...events(6,10_000)],now).retryAfterSeconds,50));

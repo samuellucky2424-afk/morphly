@@ -133,12 +133,12 @@ test('admin login gives immediate feedback, prevents repeated submissions and re
   const h = harness();
   const authTask = deferred();
   let attempts = 0;
-  h.context.window.supabase = { createClient: () => ({ auth: {
+  h.context.window.morphlyFirebase = { createClient: () => ({ auth: {
     getSession: async () => ({ data: { session: null } }),
     onAuthStateChange() {},
     signInWithPassword: () => { attempts++; return authTask.promise; },
   } }) };
-  h.context.fetch = async () => ({ json: async () => ({ supabaseUrl: 'https://example.test', supabaseAnonKey: 'public-fixture' }) });
+  h.context.fetch = async () => ({ json: async () => ({ firebaseConfig: { apiKey: 'public-fixture' } }) });
   await h.run('init()');
   const button = h.element('#adminLoginForm button[type="submit"]');
   const submit = h.element('#adminLoginForm').handlers.submit;
