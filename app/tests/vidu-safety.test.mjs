@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isLocalPreviewRequest } from '../server/local-preview.js';
-import { createViduTemporaryKey } from '../server/api/start-session.ts';
+import startSession, { createViduTemporaryKey } from '../server/api/start-session.ts';
 
 test('preview requires an explicit development flag and a direct loopback request', () => {
   const req = { socket: { remoteAddress: '127.0.0.1' }, headers: {} };
@@ -43,6 +43,15 @@ test('Vidu creation sends the selected image and bare server authorization, retu
   assert.equal(result.rtc.token, 'rtc-auth');
   assert.equal(result.traceId, 'trace-1');
   assert.equal(JSON.stringify(result).includes(apiKey), false);
+});
+
+test('removed Pro engine is rejected before creating or billing a provider session', async t => {
+  t.mock.method(globalThis, 'fetch', () => { throw Error('Provider must not be contacted'); });
+  const res={setHeader(){},status(code){this.code=code;return this;},json(body){this.body=body;return this;}};
+  await startSession({method:'POST',headers:{},body:{provider:'decart'}},res);
+  assert.equal(res.code,400);
+  assert.equal(res.body.allowed,false);
+  assert.match(res.body.error,/Only Plus subject replacement/);
 });
 
 test('Vidu does not create sessions without an image or retry ambiguous provider failures', async (t) => {

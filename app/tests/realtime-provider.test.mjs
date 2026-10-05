@@ -19,15 +19,15 @@ const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.t
 const appShell = fs.readFileSync(path.join(appDirectory, 'src/App.tsx'), 'utf8');
 const startSessionApi = fs.readFileSync(path.join(appDirectory, 'server/api/start-session.ts'), 'utf8');
 
-test('legacy resolver fallback remains compatible and both realtime providers are available', () => {
+test('Vidu is the only available realtime provider', () => {
   assert.equal(DEFAULT_REALTIME_PROVIDER, 'vidu');
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['vidu', 'decart']);
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ label }) => label), ['Plus', 'Pro']);
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['vidu']);
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ label }) => label), ['Plus']);
   assert.equal(getRealtimeProviderLabel('vidu'), 'Plus');
   assert.equal(getRealtimeProviderLabel('decart'), 'Pro');
   assert.equal(resolveRealtimeProvider(undefined), 'vidu');
   assert.equal(resolveRealtimeProvider('vidu'), 'vidu');
-  assert.equal(resolveRealtimeProvider('decart'), 'decart');
+  assert.equal(resolveRealtimeProvider('decart'), 'vidu');
 });
 
 test('Vidu uses the native S2-Editing character model', () => {
@@ -43,11 +43,9 @@ test('Vidu realtime errors provide actionable user messages', () => {
   assert.match(dashboard, /getViduRealtimeUserMessage\(error, fallback\)/);
 });
 
-test('dashboard exposes a compact provider switch and locks it during active sessions', () => {
-  const selector = fs.readFileSync(path.join(appDirectory, 'src/components/EngineChoice.tsx'), 'utf8');
-  assert.match(selector, /data-testid="realtime-provider-selector"/);
-  assert.match(dashboard, /value=\{selectedProvider\}/);
-  assert.match(dashboard, /disabled=\{isLoading \|\| isStreaming\}/);
+test('dashboard shows the single engine without an engine chooser', () => {
+  assert.match(dashboard, /data-testid="realtime-provider-selector"/);
+  assert.doesNotMatch(dashboard, /EngineChoice|connectToDecart|decartSdkReadyPromise/);
   assert.match(dashboard, /provider: requestedProvider/);
   assert.match(dashboard, /connectToRealtimeProvider/);
   assert.match(dashboard, /mirror: 'auto'/);

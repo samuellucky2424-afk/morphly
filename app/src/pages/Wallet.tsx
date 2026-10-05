@@ -39,7 +39,7 @@ function Wallet() {
             <p className="text-sm text-muted-foreground">
               Estimated stream time: <span className="text-foreground font-semibold">~{estimatedMinutes}m {Math.round(estimatedRemainingSeconds)}s</span>
             </p>
-            <p className="text-xs text-muted-foreground mt-1">Based on Plus rate (2 credits per second). Pro deducts 2.5 credits per second.</p>
+            <p className="text-xs text-muted-foreground mt-1">Based on the Plus rate of 2 credits per second.</p>
           </div>
           <Button 
             onClick={() => navigate('/settings')}

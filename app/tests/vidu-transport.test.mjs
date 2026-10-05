@@ -83,12 +83,12 @@ test('Vidu uses scoped signaling credentials and displays only the renderer, the
   h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
   const session = await connected;
   assert.equal(h.outputs[0].getVideoTracks()[0], h.generated);
-  await session.set({ image: 'https://example.com/new.png', editingType: 'background_replacement' });
+  await session.set({ image: 'https://example.com/new.png', editingType: 'background_replacement', prompt: 'This text must not reach the provider' });
   assert.equal(h.sent[1].type, 13);
-  assert.equal(h.sent[1].payload.switch_prompt.editing_type, 'background_replacement');
+  assert.equal(h.sent[1].payload.switch_prompt.editing_type, 'subject_replacement');
   assert.equal(h.sent[1].live_id, 'live-id');
   assert.equal(h.sent[1].conn_id, 'connection-id');
-  assert.equal(h.sent[1].payload.switch_prompt.prompts[0].content, 'https://example.com/new.png');
+  assert.deepEqual(h.sent[1].payload.switch_prompt.prompts, [{type:'image',content:'https://example.com/new.png'}]);
   await session.disconnect();
   await session.disconnect();
   assert.deepEqual(h.sent.map(message => message.type), [1, 13, 5]);
@@ -201,5 +201,5 @@ test('Edge signaling failures remain browser errors instead of provider-capacity
   const connected=h.client.connect(h.input,h.options);const rejection=assert.rejects(connected,/could not connect in Edge/);await tick();
   h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===1000).fn();
   h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===2000).fn();h.socket.onerror();
-  await rejection;assert.equal(h.errors[0].code,'VIDU_SIGNALING_UNREACHABLE');assert.match(h.errors[0].message,/Chrome or choose Pro/);
+  await rejection;assert.equal(h.errors[0].code,'VIDU_SIGNALING_UNREACHABLE');assert.match(h.errors[0].message,/Chrome/);
 });

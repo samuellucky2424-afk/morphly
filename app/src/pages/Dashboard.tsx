@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import './dashboard.css';
-import { EngineChoice } from '@/components/EngineChoice';
 import { CustomerEngagement } from '@/components/CustomerEngagement';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -18,9 +17,7 @@ import {
   CircleAlert,
   X,
 } from 'lucide-react';
-import type { RealTimeClient } from '@decartai/sdk';
 import type { ViduRealtimeSession } from '@/lib/vidu-realtime';
-import { BACKGROUND_PRESETS, buildRealtimeTransformPrompt } from '@/lib/background-presets';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
@@ -67,8 +64,6 @@ import {
 } from '@/lib/realtime-quality';
 import { prepareRealtimeReferenceImage } from '@/lib/reference-image';
 import {
-  DECART_REALTIME_MODEL,
-  getDecartRealtimeUserMessage,
   VIDU_REALTIME_PROVIDER,
   VIDU_REALTIME_MODEL,
   DEFAULT_REALTIME_PROVIDER,
@@ -160,7 +155,7 @@ type VirtualCameraProfile = {
   frameRate: number;
 };
 
-const BASE_PROMPT = 'Turn the person into the reference image';
+const BASE_PROMPT = '';
 const DEFAULT_ENHANCE = false;
 const POLLING_INTERVAL = 5000; // poll session-status every 5 s for live credit display
 const TRANSFORM_SYNC_DEBOUNCE_MS = 180;
@@ -422,7 +417,6 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
 }
 
 // Preload both SDK modules so selecting an engine never starts with a bundle download.
-const decartSdkReadyPromise = import('@/lib/decart-client');
 const viduSdkReadyPromise = import('@/lib/vidu-realtime');
 
 function Dashboard() {
@@ -441,7 +435,7 @@ function Dashboard() {
   const [cameraPermission, setCameraPermission] = useState<PermissionState | 'unsupported' | 'unknown'>('unknown');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isRefreshingCameras, setIsRefreshingCameras] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<RealtimeProvider | ''>(DEFAULT_REALTIME_PROVIDER);
+  const [selectedProvider] = useState<RealtimeProvider>(DEFAULT_REALTIME_PROVIDER);
   const [engineReadiness, setEngineReadiness] = useState<Record<RealtimeProvider, boolean>>({
     decart: true,
     vidu: true,
@@ -451,12 +445,11 @@ function Dashboard() {
     vidu: null,
   });
   const [isUpdaterBlocking, setIsUpdaterBlocking] = useState(false);
-  const [isEngineChoiceOpen, setIsEngineChoiceOpen] = useState(false);
   const [isTourRunning, setIsTourRunning] = useState(false);
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [isValidatingImage, setIsValidatingImage] = useState(false);
-  const [activeBgPreset, setActiveBgPreset] = useState<string>('original');
-  const [customBgPrompt, setCustomBgPrompt] = useState<string>('');
+  const [activeBgPreset] = useState<string>('original');
+  const [customBgPrompt] = useState<string>('');
   const [prompt] = useState(BASE_PROMPT);
 
   const isBlendedMode = Boolean(referenceImage) && (activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()));
@@ -465,14 +458,9 @@ function Dashboard() {
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
     selectedProvider,
   );
-  const minCreditsToStart = selectedProvider === 'decart' ? 25 : getCreditRatePerSecond(false, false, selectedProvider);
+  const minCreditsToStart = getCreditRatePerSecond(false, false, selectedProvider);
 
-  const activePrompt = selectedProvider ? buildRealtimeTransformPrompt(
-    selectedProvider,
-    Boolean(referenceImage),
-    activeBgPreset,
-    customBgPrompt,
-  ) : BASE_PROMPT;
+  const activePrompt = '';
   const [preferredMode, setPreferredMode] = useState<QualityMode>('hd');
   const [runtimeModeCap, setRuntimeModeCap] = useState<QualityMode>('hd');
   const [connectionState, setConnectionState] = useState<ConnectionState>('disconnected');
@@ -489,7 +477,6 @@ function Dashboard() {
   const webcamSourceStreamRef = useRef<MediaStream | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const realtimeClientRef = useRef<RealtimeClient | null>(null);
-  const decartAbortRef = useRef<AbortController | null>(null);
   const viduAbortRef = useRef<AbortController | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transformSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -500,7 +487,7 @@ function Dashboard() {
   const sessionTokenExpiresAtRef = useRef(0);
   const sessionIdRef = useRef('');
   const sessionProviderRef = useRef<RealtimeProvider>(DEFAULT_REALTIME_PROVIDER);
-  const sessionRealtimeModelRef = useRef<string>(DECART_REALTIME_MODEL);
+  const sessionRealtimeModelRef = useRef<string>(VIDU_REALTIME_MODEL);
   const usageFlushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const generationMeterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pendingBillableSecondsRef = useRef(0);
@@ -668,7 +655,6 @@ function Dashboard() {
       });
 
     void Promise.allSettled([
-      preloadProvider('decart', decartSdkReadyPromise),
       preloadProvider('vidu', viduSdkReadyPromise),
     ]);
 
@@ -1372,8 +1358,6 @@ function Dashboard() {
   }, []);
 
   const disconnectRealtime = useCallback((options?: { skipStateUpdate?: boolean }) => {
-    decartAbortRef.current?.abort();
-    decartAbortRef.current = null;
     viduAbortRef.current?.abort();
     viduAbortRef.current = null;
     clearSoftReconnectTimer();
@@ -1622,9 +1606,7 @@ function Dashboard() {
       const fallback = 'Morphly could not apply that live update. The previous style is still active.';
       setDashboardError({
         title: 'Update not applied',
-        message: (sessionProviderRef.current === VIDU_REALTIME_PROVIDER)
-          ? getViduRealtimeUserMessage(error, fallback)
-          : getDecartRealtimeUserMessage(error, fallback),
+        message: getViduRealtimeUserMessage(error, fallback),
       });
     } finally {
       transformInFlightRef.current = false;
@@ -1661,233 +1643,6 @@ function Dashboard() {
       }
     }, immediate ? 0 : TRANSFORM_SYNC_DEBOUNCE_MS);
   }, [flushTransformSync]);
-
-  const connectToDecart = useCallback(async (
-    stream: MediaStream,
-    apiToken: string,
-    initialTransform: TransformState,
-    options?: { isRecovery?: boolean },
-  ): Promise<RealtimeClient> => {
-    let activeRealtimeClient: RealtimeClient | null = null;
-    let activeRealtimeSession: RealTimeClient | null = null;
-    const controller = new AbortController();
-    decartAbortRef.current = controller;
-    const startupDeadline = setTimeout(() => controller.abort(), 40000);
-    let firstFrameSettled = false;
-    let firstFrameDelivered = false;
-    let resolveFirstFrame: (() => void) | null = null;
-    let rejectFirstFrame: ((error: Error) => void) | null = null;
-    const firstFramePromise = new Promise<void>((resolve, reject) => {
-      resolveFirstFrame = resolve;
-      rejectFirstFrame = reject;
-    });
-    void firstFramePromise.catch(() => {});
-
-    const confirmFirstFrame = () => {
-      if (firstFrameSettled) return;
-      firstFrameSettled = true;
-      firstFrameDelivered = true;
-      if (firstFrameReadyRef.current === confirmFirstFrame) {
-        firstFrameReadyRef.current = null;
-      }
-      markRemoteFrameFresh();
-      resolveFirstFrame?.();
-    };
-
-    const failBeforeFirstFrame = (error: unknown) => {
-      if (firstFrameSettled) return;
-      firstFrameSettled = true;
-      if (firstFrameReadyRef.current === confirmFirstFrame) {
-        firstFrameReadyRef.current = null;
-      }
-      rejectFirstFrame?.(new Error(
-        getRealtimeSdkErrorMessage(error) || 'Pro failed before delivering video output.',
-      ));
-    };
-
-    try {
-      cancelRemoteFrameMonitor();
-      hasRemoteFrameRef.current = false;
-      setHasRemoteFrame(false);
-      lastRemoteFrameAtRef.current = 0;
-      firstFrameReadyRef.current = confirmFirstFrame;
-      setUiStatus(options?.isRecovery ? 'Reconnecting Pro...' : 'Connecting to Pro...');
-
-      if (morphlyCamWindowEnabledRef.current && morphlyCamWindowRef.current && !morphlyCamWindowRef.current.closed) {
-        updateMorphlyCamStatus(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
-        updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
-      }
-
-      const { connectDecartRealtime } = await import('@/lib/decart-realtime');
-      const handleConnectionChange = (nextState: ConnectionState) => {
-        connectionStateRef.current = nextState;
-        setConnectionState(nextState);
-
-        if (nextState === 'connected' || nextState === 'generating') {
-          sessionEverConnectedRef.current = true;
-          restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
-          restartFailureCountRef.current = 0;
-          setDashboardError((current) => current?.title === 'Pro stream interrupted' ? null : current);
-          setUiStatus(hasRemoteFrameRef.current ? 'Live' : 'Preparing Pro output...');
-          return;
-        }
-
-        if (nextState === 'disconnected') {
-          setUiStatus('Disconnected');
-          void flushBillableUsage();
-
-          if (!hasRemoteFrameRef.current) {
-            failBeforeFirstFrame(new Error('Pro disconnected before delivering video output.'));
-          } else if (!restartInFlightRef.current && isStreamingRef.current) {
-            void handleStopRef.current?.({ silent: true });
-          }
-        }
-      };
-
-      const realtimeSession = await connectDecartRealtime(stream, apiToken, initialTransform, {
-        signal: controller.signal,
-        onConnectionChange: handleConnectionChange,
-        onRemoteStream: (editedStream: MediaStream) => {
-          const video = outputVideoRef.current as VideoElementWithFrameCallbacks | null;
-          if (!video) return;
-
-          if (video.srcObject !== editedStream) {
-            video.srcObject = editedStream;
-          }
-
-          video.playbackRate = 1;
-          video.latencyHint = 'interactive';
-
-          let readinessArmed = false;
-          const playRemote = () => {
-            if (readinessArmed) return;
-            readinessArmed = true;
-            void video.play().catch(() => {});
-
-            if (video.requestVideoFrameCallback) {
-              frameCallbackHandleRef.current = video.requestVideoFrameCallback(() => {
-                frameCallbackHandleRef.current = null;
-                setStreamMetrics((current) => ({
-                  ...current,
-                  frameWidth: video.videoWidth,
-                  frameHeight: video.videoHeight,
-                }));
-                confirmFirstFrame();
-                startRemoteFrameMonitor();
-              });
-              return;
-            }
-
-            const confirmLoadedFrame = () => {
-              if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) {
-                setStreamMetrics((current) => ({
-                  ...current,
-                  frameWidth: video.videoWidth,
-                  frameHeight: video.videoHeight,
-                }));
-                confirmFirstFrame();
-                startRemoteFrameMonitor();
-              }
-            };
-
-            video.addEventListener('loadeddata', confirmLoadedFrame, { once: true });
-            confirmLoadedFrame();
-          };
-
-          video.onloadedmetadata = playRemote;
-          playRemote();
-
-          syncMorphlyCamStream(
-            editedStream,
-            options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...',
-          );
-        },
-      });
-      activeRealtimeSession = realtimeSession;
-
-      const handleError = (error: unknown) => {
-        const hadFirstFrame = firstFrameDelivered;
-        console.error('[Decart] realtime error:', error);
-        failBeforeFirstFrame(error);
-        if (hadFirstFrame) {
-          setDashboardError({
-            title: 'Pro stream interrupted',
-            message: getDecartRealtimeUserMessage(error),
-          });
-        }
-      };
-      realtimeSession.on('error', handleError);
-      const handleSessionEnded = () => { void handleStopRef.current?.({ silent: true }); };
-      realtimeSession.on('sessionEnded', handleSessionEnded);
-
-      setUiStatus('Preparing Pro output...');
-
-      const realtimeClient: RealtimeClient = {
-        disconnect: async () => {
-          realtimeSession.off('error', handleError);
-          realtimeSession.off('sessionEnded', handleSessionEnded);
-          await realtimeSession.disconnect();
-          if (decartAbortRef.current === controller) decartAbortRef.current = null;
-        },
-        setTransform: async (transform) => {
-          await realtimeSession.set({
-            prompt: transform.prompt,
-            enhance: transform.enhance,
-            image: transform.image,
-          });
-        },
-        getConnectionState: () => realtimeSession.getConnectionState(),
-        getSessionUid: () => realtimeSession.sessionId,
-      };
-      activeRealtimeClient = realtimeClient;
-      sessionEverConnectedRef.current = true;
-      realtimeClientRef.current = realtimeClient;
-
-      const currentState = realtimeClient.getConnectionState();
-      connectionStateRef.current = currentState;
-      setConnectionState(currentState);
-      setUiStatus('Preparing Pro output...');
-      setStreamMetrics(createEmptyStreamMetrics());
-      lastAppliedTransformRef.current = initialTransform;
-      console.log('[Decart] Lucy 2.5 startup state acknowledged.');
-
-      await withTimeout(
-        firstFramePromise,
-        AI_FIRST_FRAME_TIMEOUT_MS,
-        `Pro connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`,
-      );
-
-      if (!firstFrameTrackedRef.current) {
-        firstFrameTrackedRef.current = true;
-        trackFirstFrameReceived(sessionIdRef.current || undefined);
-      }
-
-      return realtimeClient;
-    } catch (error) {
-      firstFrameSettled = true;
-      if (firstFrameReadyRef.current === confirmFirstFrame) {
-        firstFrameReadyRef.current = null;
-      }
-      const errorMessage = getRealtimeSdkErrorMessage(error) || 'Unknown Decart SDK error';
-      console.error(`[Decart] SDK error: ${errorMessage}`);
-      if (realtimeClientRef.current === activeRealtimeClient) {
-        realtimeClientRef.current = null;
-      }
-      await activeRealtimeSession?.disconnect();
-      throw error instanceof Error ? error : new Error(errorMessage);
-    } finally {
-      clearTimeout(startupDeadline);
-    }
-  }, [
-    cancelRemoteFrameMonitor,
-    flushBillableUsage,
-    getMorphlyCamGuideMessage,
-    markRemoteFrameFresh,
-    syncMorphlyCamStream,
-    startRemoteFrameMonitor,
-    updateMorphlyCamPlaceholder,
-    updateMorphlyCamStatus,
-  ]);
 
   const connectToVidu = useCallback(async (
     stream: MediaStream,
@@ -1955,9 +1710,7 @@ function Dashboard() {
         updateMorphlyCamPlaceholder(getMorphlyCamGuideMessage(false));
       }
 
-      const { createViduClient, models } = options?.provider === 'decart'
-        ? await import('@/lib/decart-client')
-        : await import('@/lib/vidu-realtime');
+      const { createViduClient, models } = await import('@/lib/vidu-realtime');
       const client = createViduClient({ apiKey: apiToken, baseUrl: options?.baseUrl });
       const model = models.realtime(options?.modelName || VIDU_REALTIME_MODEL);
       // The reference image is already part of the server creation request.
@@ -2058,7 +1811,6 @@ function Dashboard() {
         },
       });
       activeRealtimeSession = realtimeSession;
-      if (options?.provider === 'decart') await realtimeSession.set(initialTransform);
 
       const handleError = (error: unknown) => {
         const hadFirstFrame = firstFrameDelivered;
@@ -2171,10 +1923,8 @@ function Dashboard() {
       });
     }
 
-    return connectToDecart(stream, apiToken, initialTransform, {
-      isRecovery: options?.isRecovery,
-    });
-  }, [connectToVidu, connectToDecart]);
+    throw new Error('Only Plus subject replacement is available.');
+  }, [connectToVidu]);
 
   const restartRealtimeSession = useCallback(async (
     reason: string,
@@ -2187,7 +1937,7 @@ function Dashboard() {
     }
     if (sessionTokenExpiresAtRef.current && Date.now() >= sessionTokenExpiresAtRef.current) {
       await handleStopRef.current?.({ silent: true });
-      setDashboardError({ title: 'Pro session ended', message: 'Start a new Pro session to continue.', canRetry: true });
+      setDashboardError({ title: 'Plus session ended', message: 'Start a new Plus session to continue.', canRetry: true });
       return;
     }
     if (!isStreamingRef.current || restartInFlightRef.current || !sessionTokenRef.current) {
@@ -2345,7 +2095,7 @@ function Dashboard() {
     sessionTokenRef.current = '';
     sessionIdRef.current = '';
     sessionProviderRef.current = DEFAULT_REALTIME_PROVIDER;
-    sessionRealtimeModelRef.current = DECART_REALTIME_MODEL;
+    sessionRealtimeModelRef.current = VIDU_REALTIME_MODEL;
     firstFrameTrackedRef.current = false;
     resetBillableUsageTracking();
     isStreamingRef.current = false;
@@ -2358,7 +2108,7 @@ function Dashboard() {
     stopWebcam();
     setIsStreaming(false);
     setSessionStatus('IDLE');
-    setSelectedProvider('');
+
     setUiStatus('Disconnected');
 
     if (!options?.silent) {
@@ -2726,7 +2476,7 @@ function Dashboard() {
     }
     if (isValidatingImage) return 'Morphly is checking the reference image.';
     if (!isDevOrPreview && credits < minCreditsToStart) {
-      return selectedProvider === 'decart' ? 'Pro needs at least 25 credits to start (2.5 cr/sec).' : 'You do not have enough credits. Buy credits to continue.';
+      return 'You do not have enough credits. Buy credits to continue.';
     }
     if (!isEngineReady) return engineLoadError || 'The Morphly engine is not ready yet.';
     if (!isDevOrPreview && isUpdaterBlocking) return 'Wait for the application update process to finish.';
@@ -2780,7 +2530,6 @@ function Dashboard() {
   };
 
   const handleStart = async () => {
-    if (!selectedProvider) { setIsEngineChoiceOpen(true); return; }
     const requestedProvider = selectedProvider;
     const requestedProviderLabel = getRealtimeProviderLabel(requestedProvider);
     const startupStartedAt = performance.now();
@@ -3063,17 +2812,6 @@ function Dashboard() {
     setPreferredMode(mode as QualityMode);
   };
 
-  const handleProviderChange = (provider: string) => {
-    if (isLoading || isStreaming) return;
-    setDashboardError(null);
-    if (provider !== 'decart' && provider !== 'vidu') return;
-    const nextProvider = provider;
-    setSelectedProvider(nextProvider);
-    if (nextProvider === VIDU_REALTIME_PROVIDER) { setActiveBgPreset('original'); setCustomBgPrompt(''); }
-    setRuntimeModeCap('hd');
-
-  };
-
   const handleFullScreenToggle = async () => {
     try {
       if (window.electron?.isElectron) {
@@ -3176,7 +2914,7 @@ function Dashboard() {
                   <Monitor aria-hidden="true" className="size-5 stroke-[1.4]" />
                 </div>
                 <h2 className="mt-3 text-xs font-semibold text-foreground">Preview offline</h2>
-                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">Choose an engine, camera and image to begin.</p>
+                <p className="mt-1.5 text-[11px] leading-4 text-muted-foreground">Choose a camera and reference image to begin.</p>
           </div>
         )}
 
@@ -3247,7 +2985,7 @@ function Dashboard() {
                   <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin text-primary" />
               <span>
                 {isSyncingTransform
-                  ? 'Applying prompt/image changes without reconnecting...'
+                  ? 'Applying reference image without reconnecting...'
                   : connectionState === 'reconnecting'
                     ? 'Reconnecting stream...'
                     : uiStatus}
@@ -3328,14 +3066,7 @@ function Dashboard() {
               <span>{referenceImage ? 'Change Image' : 'Upload Image'}</span>
             </button>
 
-            <EngineChoice
-              value={selectedProvider}
-              onSelect={handleProviderChange}
-              open={isEngineChoiceOpen}
-              onOpenChange={setIsEngineChoiceOpen}
-              disabled={isLoading || isStreaming}
-              blended={isBlendedMode}
-            />
+            <span className="flex min-h-11 items-center rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground" data-testid="realtime-provider-selector">Plus · 2 cr/sec</span>
 
             <select
               value={(selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart') ? 'hd' : preferredMode}
@@ -3399,39 +3130,6 @@ function Dashboard() {
               </select>
             </div>
 
-            {/* AI Background Dropdown Selector */}
-            <div
-              data-tour="background-selector"
-              className="morphly-session-field flex min-w-0 basis-full flex-col justify-center rounded-md border border-border bg-background px-2.5 sm:max-w-[220px] sm:flex-1 sm:basis-[180px]"
-            >
-              <div className="mb-0.5 flex items-center justify-between gap-2 leading-none">
-                <label htmlFor="background-preset-selector" className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-                  AI background
-                </label>
-                <span className={`text-[10px] font-semibold tabular-nums ${isBlendedMode ? 'text-warning' : 'text-muted-foreground'}`}>
-                  {selectedProvider ? `${currentCreditRate} cr/s` : 'Choose engine'}
-                </span>
-              </div>
-              <select
-                id="background-preset-selector"
-                value={activeBgPreset}
-                onChange={(event) => {
-                  const newPreset = event.target.value;
-                  setActiveBgPreset(newPreset);
-                  setCustomBgPrompt('');
-                }}
-                disabled={selectedProvider !== 'decart'}
-                title={selectedProvider === 'decart' ? 'Select AI background' : 'Choose Pro to change the background'}
-                aria-label="Select AI background"
-                className="h-5 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-medium text-foreground outline-none focus:text-foreground"
-              >
-                {BACKGROUND_PRESETS.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.label}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-2">

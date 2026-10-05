@@ -1,4 +1,4 @@
-﻿import { VIDU_REALTIME_MODEL } from './realtime-provider';
+import { VIDU_REALTIME_MODEL } from './realtime-provider';
 import type { RtcEngine } from 'aliyun-rtc-sdk';
 
 export type ViduConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
@@ -207,8 +207,8 @@ export class ViduRealtimeClient {
         currentSocket.close();
         if (socketAttempts >= 3 || (closeCode !== undefined && [1008, 4001, 4003].includes(closeCode))) {
           fail(typeof navigator !== 'undefined' && /Edg\//.test(navigator.userAgent)
-            ? 'Plus signaling could not connect in Edge. Try this session in Chrome or choose Pro. Browser or network filtering may be blocking the connection.'
-            : 'Plus signaling could not connect. Retry, or choose Pro. Browser or network filtering may be blocking the connection.', 'ws_handshake_failed');
+            ? 'Plus signaling could not connect in Edge. Try this session in Chrome. Browser or network filtering may be blocking the connection.'
+            : 'Plus signaling could not connect. Retry. Browser or network filtering may be blocking the connection.', 'ws_handshake_failed');
           return;
         }
         changeState('reconnecting');
@@ -275,7 +275,7 @@ export class ViduRealtimeClient {
           if (!image && !input.editingType) return;
           send(13, { switch_prompt: {
             ...(image ? { prompts: [{ type: 'image', content: image }] } : {}),
-            ...(input.editingType ? { editing_type: input.editingType } : {}),
+            editing_type: 'subject_replacement',
           } });
         },
         disconnect: async () => { await cleanup(); state = 'disconnected'; },

@@ -829,7 +829,6 @@ function Subscription() {
           <h3 className="text-xs font-semibold text-foreground mb-1.5">Usage & Billing Details</h3>
           <ul className="text-[11px] text-muted-foreground space-y-1 leading-snug">
             <li>- Plus: 2 credits/sec for standard morph (4 credits/sec for dual background morph)</li>
-            <li>- Pro: 2.5 credits/sec</li>
             <li>- 500 credits &asymp; 4m 10s &bull; 1,000 credits &asymp; 8m 20s</li>
             {isCryptoEnabled && <li>- Instant on-chain confirmation across USDT/USDC networks</li>}
             <li>- Credits do not expire</li>

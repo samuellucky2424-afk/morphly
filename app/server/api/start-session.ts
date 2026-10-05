@@ -479,8 +479,8 @@ export default async function handler(req, res) {
   try {
     const isLocalPreview = isLocalPreviewRequest(req);
 
-    if (!['vidu', 'decart'].includes(req.body?.provider)) {
-      return res.status(400).json({ allowed: false, error: 'Choose an engine before streaming.' });
+    if (req.body?.provider !== 'vidu') {
+      return res.status(400).json({ allowed: false, error: 'Only Plus subject replacement is available. Update Morphly and try again.' });
     }
 
     const provider = normalizeRealtimeProvider(req.body?.provider);

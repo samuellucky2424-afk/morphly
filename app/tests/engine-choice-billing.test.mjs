@@ -28,6 +28,6 @@ test('session API refuses missing or invalid engine choices before any provider 
     await startSession({ method: 'POST', headers: {}, body: { provider: choice } }, res);
     assert.equal(status, 400);
     assert.equal(body.allowed, false);
-    assert.match(body.error, /Choose an engine/);
+    assert.match(body.error, /Only Plus subject replacement/);
   }
 });
