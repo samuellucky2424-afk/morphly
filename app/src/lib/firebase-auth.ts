@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signOut, onIdTokenChanged, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, getAdditionalUserInfo } from 'firebase/auth';
 import type { User as FirebaseUser } from 'firebase/auth';
 import type { AuthUser as User, AuthSession as Session } from './auth-types';
+import {getFirebaseAuthErrorMessage} from './firebase-auth-errors';
 
 const config = JSON.parse(import.meta.env.VITE_FIREBASE_CONFIG || '{}');
 const firebaseAuth=getAuth(initializeApp(config));
@@ -12,7 +13,7 @@ async function sessionFor(user:FirebaseUser|null,force=false):Promise<Session|nu
   const mapped={id:user.uid,email:user.email||'',created_at:user.metadata.creationTime||'',user_metadata:{name:user.displayName,avatar_url:user.photoURL},app_metadata:{},aud:'authenticated',identities:[{provider:'firebase'}]} as unknown as User;
   return {access_token:token,user:mapped,token_type:'bearer',expires_in:3600,refresh_token:''} as Session;
 }
-const resultError=(error:unknown)=>({data:{user:null,session:null},error:(error instanceof Error?error:new Error('Authentication failed')) as Error & {code?:string}});
+const resultError=(error:unknown)=>({data:{user:null,session:null},error:Object.assign(new Error(getFirebaseAuthErrorMessage(error)),{code:(error as {code?:string})?.code})});
 async function provisionSession(session:Session,referralCode=''){
   const {apiFetch}=await import('./api-client');
   const response=await apiFetch('/firebase-register',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${session.access_token}`},body:JSON.stringify({referralCode})});
@@ -22,7 +23,7 @@ async function provisionSession(session:Session,referralCode=''){
 export const firebaseSessionClient={auth:{
   async getSession(){await firebaseAuth.authStateReady();return {data:{session:await sessionFor(firebaseAuth.currentUser)},error:null};},
   async refreshSession(){return {data:{session:await sessionFor(firebaseAuth.currentUser,true)},error:null};},
-  onAuthStateChange(callback:(event:string,session:Session|null)=>void){let first=true;const unsubscribe=onIdTokenChanged(firebaseAuth,user=>{if(registering)return;void sessionFor(user).then(session=>{callback(first?'INITIAL_SESSION':user?'SIGNED_IN':'SIGNED_OUT',session);first=false;});});return {data:{subscription:{unsubscribe}}};},
+  onAuthStateChange(callback:(event:string,session:Session|null)=>void){let first=true;const unsubscribe=onIdTokenChanged(firebaseAuth,user=>{if(registering)return;void sessionFor(user).then(session=>{if(firebaseAuth.currentUser!==user)return;callback(first?'INITIAL_SESSION':user?'SIGNED_IN':'SIGNED_OUT',session);first=false;}).catch(()=>{if(firebaseAuth.currentUser!==user)return;callback(first?'INITIAL_SESSION':'SIGNED_OUT',null);first=false;});});return {data:{subscription:{unsubscribe}}};},
   async signInWithPassword({email,password}:{email:string;password:string}){try{const credential=await signInWithEmailAndPassword(firebaseAuth,email,password);const session=await sessionFor(credential.user);return {data:{session,user:session!.user},error:null};}catch(error){return resultError(error);}},
   async signInWithGoogle(referralCode=''){
     registering=true;
@@ -49,5 +50,5 @@ export const firebaseSessionClient={auth:{
     }catch(error){return resultError(error);}finally{registering=false;}
   },
   async signOut(_options?:unknown){await signOut(firebaseAuth);return {error:null};},
-  async resetPasswordForEmail(email:string,_options?:unknown){try{await sendPasswordResetEmail(firebaseAuth,email);return {data:{},error:null};}catch(error){return {data:null,error:error instanceof Error?error:new Error('Password reset failed')};}},
+  async resetPasswordForEmail(email:string,_options?:unknown){try{await sendPasswordResetEmail(firebaseAuth,email.trim().toLowerCase(),{url:'https://live.morphly.fun/#/login',handleCodeInApp:false});return {data:{},error:null};}catch(error){if((error as {code?:string})?.code==='auth/user-not-found')return {data:{},error:null};return {data:null,error:new Error(getFirebaseAuthErrorMessage(error))};}},
 }};
