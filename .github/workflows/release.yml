@@ -10,7 +10,53 @@ permissions:
   contents: write
 
 jobs:
+  release-status:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    outputs:
+      build-needed: ${{ steps.status.outputs.build-needed }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: Verify existing release before building
+      id: status
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $version = (Get-Content app/package.json | ConvertFrom-Json).version
+        $tag = "v$version"
+        if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne $tag) {
+          throw "Release tag does not match the application version."
+        }
+        $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+        try {
+          $release = Invoke-RestMethod "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" -Headers $headers
+        } catch {
+          if ([int]$_.Exception.Response.StatusCode -ne 404) { throw }
+          $release = $null
+        }
+        if ($release -and !$release.draft) {
+          foreach ($name in @("Morphly-Setup-$version.exe", "latest.yml")) {
+            $asset = @($release.assets | Where-Object { $_.name -eq $name })
+            if ($asset.Count -ne 1 -or $asset[0].state -ne 'uploaded' -or $asset[0].size -le 0 -or $asset[0].digest -notmatch '^sha256:[a-f0-9]{64}$') {
+              throw "Published release $tag has a missing or invalid asset: $name"
+            }
+          }
+          $metadata = Invoke-RestMethod ($release.assets | Where-Object name -eq 'latest.yml').browser_download_url
+          if ($metadata -notmatch "(?m)^version: $([regex]::Escape($version))\s*$" -or $metadata -notmatch [regex]::Escape("Morphly-Setup-$version.exe")) {
+            throw "Published updater metadata does not match $tag."
+          }
+          "build-needed=false" >> $env:GITHUB_OUTPUT
+          "### $tag is already published`nVerified installer and updater assets. Skipped rebuilding and replacing public update files." >> $env:GITHUB_STEP_SUMMARY
+        } else {
+          "build-needed=true" >> $env:GITHUB_OUTPUT
+        }
+
   build:
+    needs: release-status
+    if: needs.release-status.outputs.build-needed == 'true'
     runs-on: windows-latest
 
     steps:
@@ -72,12 +118,19 @@ jobs:
         & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-cpu.test.py
         if ($LASTEXITCODE -ne 0) { throw "MorphlyVC audio regression tests failed." }
 
+    - name: Load verified Firebase production client settings
+      shell: pwsh
+      run: |
+        $config = Invoke-RestMethod 'https://live.morphly.fun/api/public-config'
+        if ($config.backend -ne 'firebase' -or $config.database -ne 'morphly-production' -or $config.firebaseConfig.projectId -ne 'luckyweb-f546e') {
+          throw "Live Firebase production configuration could not be verified."
+        }
+        "VITE_FIREBASE_CONFIG=$($config.firebaseConfig | ConvertTo-Json -Compress)" >> $env:GITHUB_ENV
+        "VITE_API_BASE_URL=https://live.morphly.fun/api" >> $env:GITHUB_ENV
+        "VITE_PUBLIC_APP_URL=https://live.morphly.fun" >> $env:GITHUB_ENV
+
     - name: Build Electron app without publishing
       working-directory: app
-      env:
-        VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL || secrets.VITE_SUPABASE_URL || vars.SUPABASE_URL || secrets.SUPABASE_URL }}
-        VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY || secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
-        VITE_API_URL: ${{ vars.VITE_API_URL || secrets.VITE_API_URL }}
       run: npm run electron:build
 
     - name: Resolve release version
