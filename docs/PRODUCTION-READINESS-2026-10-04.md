@@ -1,4 +1,4 @@
-# Firebase production release — October 5, 2026
+# Firebase production release ï¿½ October 5, 2026
 
 The live website uses Firebase project `luckyweb-f546e` and named Firestore database `morphly-production`. Sandbox previews use `(default)`. Firebase Authentication preserves migrated account IDs and imported password hashes. Google sign-in is enabled on the website; Windows currently uses email/password authentication.
 
@@ -8,9 +8,11 @@ Client Firestore access is denied. Authenticated server endpoints enforce owners
 
 The live application verifies Flutterwave purchases, atomically grants purchased credits and referral rewards, and deduplicates transaction retries. Purchase confirmations use a durable outbox and Resend idempotency. The intended live Flutterwave callback is `https://live.morphly.fun/api/flutterwave-webhook`. The replacement secret is stored privately. Dashboard confirmation that the user saved the live callback is still pending. No live charge was created during validation. Admin reconciliation reviews recent successful Morphly charges through the same independent verification path; five recent payments were already credited and deduplicated. One prior successful charge lacks account-ID metadata and requires manual owner review before crediting.
 
-Plus costs 2 credits/sec and Pro costs 2.5 credits/sec. Vendor names and the review label are hidden from engine selection. Fractional billing is retained, retries deduplicated, and unused translation reservations refunded.
+Plus (Vidu) is the only available video engine, at 2 credits/sec. Session creation and image updates enforce `subject_replacement`, using a reference image without text prompts. Pro selection and background controls are removed; the server rejects new Pro sessions. Historical Pro billing records and fractional credits are retained. Retry deduplication and translation refunds remain in place.
 
-Validation: 309 application tests, 13 Firestore emulator tests and eight Windows voice extraction tests passed. Live checks verified named-database configuration, migrated owner/admin access and valid/invalid webhook signatures. Voice setup now supports long Windows paths, checks extraction disk space, preserves downloaded files for retry, and displays concise errors. Detailed extraction diagnostics are saved locally. The exact underlying failure on the customer's computer still requires retesting.
+Validation: 310 application tests, 13 Firestore emulator tests and eight Windows voice extraction tests passed. Live checks verified named-database configuration, migrated owner/admin access and valid/invalid webhook signatures. Voice setup now supports long Windows paths, checks extraction disk space, preserves downloaded files for retry, and displays concise errors. Detailed extraction diagnostics are saved locally. The exact underlying failure on the customer's computer still requires retesting.
 
 Windows 2.5.23 was published after the Firebase website switched. The 2.5.24 installer was published with the voice fixes after package and remote checksum verification (125,180,027 bytes; SHA-256 `7160d7d2f628566efebb964da10af4690639f27c1c4e9878f6cf70de2e554856`). Models remain pinned to the verified v2.5.22 archive. Release staging verifies checksums, Firebase configuration, absence of private environment files and native camera resources before publication. Installers are not Authenticode signed.
 
+
+Windows 2.5.25 was published with the single-engine subject-replacement workflow. Its uploaded installer and updater metadata were verified: 125,013,360 bytes; SHA-256 `d5686ea88cdf65b95a9f096749c02ce989685507f3935d567f62e0e4d3c92f2a`. Live checks verified Pro rejection and the absence of Pro/background controls; no provider session or charge was created during those checks.
