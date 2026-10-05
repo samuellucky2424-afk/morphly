@@ -1,6 +1,13 @@
 ﻿import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createVoiceEngineSetup } from '../electron/voice-engine-setup.js';
+import {voiceSetupError} from '../shared/voice-errors.js';
+test('voice setup errors show recovery steps instead of encoded PowerShell commands',async()=>{
+  const encoded='Command failed: powershell.exe -EncodedCommand '+ 'A'.repeat(10000);
+  const setup=createVoiceEngineSetup({isInstalled:()=>false,onInstalled:()=>{},install:async()=>{throw new Error(encoded);}});
+  const result=await setup.start();assert.equal(result.success,false);assert.match(result.error,/Retry setup/);assert.ok(result.error.length<200);assert.doesNotMatch(result.error,/EncodedCommand/);
+  assert.match(voiceSetupError({stderr:'There is not enough disk space'}),/Free some disk space/);
+});
 
 test('startup setup starts immediately and manual clicks join the same download',async()=>{
   let installed=false,calls=0,ready=0,resolveInstall;const events=[];

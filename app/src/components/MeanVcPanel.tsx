@@ -4,6 +4,7 @@ import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
 import { useApp } from '@/context/AppContext';
 import { supabase } from '@/lib/supabase';
 import { selectableVoiceOutputs } from '../../shared/voice-audio-devices.js';
+import {voiceSetupError} from '../../shared/voice-errors.js';
 import {
   AudioWaveform,
   Check,
@@ -218,7 +219,7 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
       </span>
       <div className="min-w-0">
         <p className="text-[11px] font-medium text-foreground">{item.label}</p>
-        <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{item.detail}</p>
+        <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{voiceSetupError(item.detail)}</p>
       </div>
     </div>
   );
@@ -753,7 +754,7 @@ export function MeanVcPanel() {
 
           {error ? (
             <div className="mx-4 mt-3 rounded-md border border-destructive/25 bg-danger-soft px-3 py-2 text-[11px] leading-5 text-destructive" role="alert">
-              {error}
+              {voiceSetupError(error)}
             </div>
           ) : null}
 
@@ -1025,7 +1026,7 @@ export function MeanVcPanel() {
                   ) : null}
                   {voiceEngine.error && !voiceEngine.retrying ? (
                     <p className="mt-2 text-[10px] leading-4 text-destructive" role="alert">
-                      {voiceEngine.error}
+                      {voiceSetupError(voiceEngine.error)}
                     </p>
                   ) : null}
                   <Button

@@ -3336,7 +3336,6 @@ function Dashboard() {
               disabled={isLoading || isStreaming}
               blended={isBlendedMode}
             />
-            <span className="px-2 text-xs text-muted-foreground">Firebase review · Vidu / Decart</span>
 
             <select
               value={(selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart') ? 'hd' : preferredMode}

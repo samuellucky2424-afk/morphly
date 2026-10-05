@@ -4,6 +4,7 @@ import fsp from 'fs/promises';
 import https from 'https';
 import path from 'path';
 import { createInterface } from 'node:readline';
+import { voiceSetupError } from '../shared/voice-errors.js';
 import { retryDownload } from '../shared/download-retry.js';
 
 import { VOICE_ENGINE_ASSET_NAME, VOICE_ENGINE_MANIFEST_NAME, downloadVoiceEngineArchive, validateVoiceEngineManifest } from '../shared/voice-engine-archive.js';
@@ -28,10 +29,6 @@ export function isVoiceEngineInstalled(installRoot) {
 
 export function getVoiceEnginePath(installRoot) {
   return path.join(installRoot, VOICE_ENGINE_DIRECTORY_NAME);
-}
-
-function quoteForPowerShell(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function request(url, options = {}) {
@@ -135,12 +132,20 @@ async function selectDownloadDirectory(tempRoot, version) {
 
 export async function extractZip(zipPath, destinationDirectory, onProgress = () => {}) {
   const script = await fsp.readFile(new URL('./extract-voice-engine.ps1', import.meta.url), 'utf8');
-  const command = `$archivePath = ${quoteForPowerShell(zipPath)}; $stagingPath = ${quoteForPowerShell(destinationDirectory)};\n${script}`;
+  await fsp.mkdir(destinationDirectory,{recursive:true});
+  // PowerShell cannot read a script inside app.asar. Write an actual script
+  // and pass separate arguments instead of embedding it in a huge command.
+  const scriptPath=path.join(destinationDirectory,'.extract-voice-engine.ps1');
+  await fsp.writeFile(scriptPath,script);
   await new Promise((resolve, reject) => {
     const child = execFile('powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')],
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-ArchivePath', zipPath, '-StagingPath', destinationDirectory],
       { windowsHide: true, timeout: EXTRACT_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 },
-      error => error ? reject(error) : resolve());
+      async (error,_stdout,stderr) => {
+        if(!error){resolve();return;}
+        await fsp.writeFile(path.join(destinationDirectory,'extraction-error.log'),String(stderr||error.message)).catch(()=>{});
+        reject(Object.assign(new Error(voiceSetupError({message:error.message,stderr})),{code:'VOICE_ENGINE_EXTRACTION_FAILED'}));
+      });
     const lines = createInterface({ input: child.stdout });
     lines.on('line', line => {
       const match = /^EXTRACT (\d+)$/.exec(line);

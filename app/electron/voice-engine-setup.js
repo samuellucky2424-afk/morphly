@@ -1,5 +1,6 @@
 ﻿// Retain setup state in the main process: downloads can start before sign-in or
 // before the voice panel mounts, and navigation must not restart a download.
+import {voiceSetupError} from '../shared/voice-errors.js';
 export function createVoiceEngineSetup({ isInstalled, install, onInstalled, onState = () => {} }) {
   let pending = null;
   let state = { phase: 'idle', percent: 0, retrying: false, error: null };
@@ -16,7 +17,7 @@ export function createVoiceEngineSetup({ isInstalled, install, onInstalled, onSt
         publish({ phase: 'done', percent: 100 });
         return { success: true, ...result };
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to install the voice engine.';
+        const message = voiceSetupError(error);
         publish({ phase: 'idle', error: message });
         return { success: false, error: message };
       } finally { pending = null; }

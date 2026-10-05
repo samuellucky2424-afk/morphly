@@ -110,3 +110,11 @@ test('Windows extractor rejects archive paths outside its runtime staging direct
   await assert.rejects(extractZip(archive, path.join(root, 'staging')), /unsafe path/);
   await assert.rejects(fs.access(path.join(root, 'outside.txt')), { code: 'ENOENT' });
 });
+test('Windows extractor accepts a root entry and installs files beyond the legacy path limit', {skip:process.platform!=='win32'},async t=>{
+  const root=await temporary(t),archive=path.join(root,'long-path.zip'),stage=path.join(root,'staging');
+  const relative='runtime-40ms/'+Array.from({length:12},(_,i)=>`torch-header-directory-${i}`).join('/')+'/model.txt';
+  assert.ok(path.join(stage,relative).length>260);
+  await createZip(archive,[{name:'runtime-40ms',data:''},{name:relative,data:'long-path model'}]);
+  await extractZip(archive,stage);
+  assert.equal(await fs.readFile(path.join(stage,relative),'utf8'),'long-path model');
+});

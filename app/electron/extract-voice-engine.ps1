@@ -1,7 +1,12 @@
-# $archivePath and $stagingPath are supplied by the desktop installer.
+param([Parameter(Mandatory=$true)][string]$ArchivePath,[Parameter(Mandatory=$true)][string]$StagingPath)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$root = [IO.Path]::GetFullPath($stagingPath).TrimEnd('\') + '\'
+function ExtendedPath([string]$value) {
+    if ($value.StartsWith('\\?\')) { return $value }
+    if ($value.StartsWith('\\')) { return '\\?\UNC\' + $value.Substring(2) }
+    return '\\?\' + $value
+}
+$root = (ExtendedPath ([IO.Path]::GetFullPath($stagingPath))).TrimEnd('\') + '\'
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $lock = $null
 $archive = $null
@@ -15,19 +20,47 @@ try {
             Start-Sleep -Milliseconds 250
         }
     }
-    $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    $archive = [IO.Compression.ZipFile]::OpenRead((ExtendedPath ([IO.Path]::GetFullPath($archivePath))))
     [long]$total = 0
     foreach ($entry in $archive.Entries) { $total += $entry.Length }
+    $driveRoot = [IO.Path]::GetPathRoot([IO.Path]::GetFullPath($stagingPath))
+    if ($driveRoot -match '^[A-Za-z]:\\$') {
+        [long]$remaining = 0
+        foreach ($entry in $archive.Entries) {
+            $relative = $entry.FullName.Replace('/', '\')
+            if ($relative.TrimEnd('\') -eq 'runtime-40ms' -and $entry.Length -eq 0) { continue }
+            if (!$relative.StartsWith('runtime-40ms\', [StringComparison]::OrdinalIgnoreCase) -or
+                $relative.Contains(':') -or $relative.Split('\') -contains '..' -or $relative.Split('\') -contains '.') {
+                throw 'The voice engine archive contains an unsafe path.'
+            }
+            if (!$relative.EndsWith('\')) {
+                $existing = $root + $relative
+                if (![IO.File]::Exists($existing) -or ([IO.FileInfo]$existing).Length -ne $entry.Length) { $remaining += $entry.Length }
+            }
+        }
+        [long]$available = ([IO.DriveInfo]::new($driveRoot)).AvailableFreeSpace
+        if ([IO.File]::Exists(($root + '.entry.tmp'))) { $available += ([IO.FileInfo]($root + '.entry.tmp')).Length }
+        if ($remaining + 64MB -gt $available) {
+            [Console]::Error.WriteLine(('VOICE_SETUP_SPACE ' + [Math]::Ceiling(($remaining + 64MB) / 1GB)))
+            throw 'Not enough free disk space to unpack the voice engine.'
+        }
+    }
     [long]$completed = 0
     $lastPercent = -1
     $buffer = New-Object byte[] 1048576
     foreach ($entry in $archive.Entries) {
         $relative = $entry.FullName.Replace('/', '\')
-        $destination = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $relative))
+        if ($relative.TrimEnd('\') -eq 'runtime-40ms' -and $entry.Length -eq 0) {
+            [IO.Directory]::CreateDirectory(($root + 'runtime-40ms\')) | Out-Null
+            continue
+        }
         if (!$relative.StartsWith('runtime-40ms\', [StringComparison]::OrdinalIgnoreCase) -or
-            $relative.Contains(':') -or !$destination.StartsWith(($root + 'runtime-40ms\'), [StringComparison]::OrdinalIgnoreCase)) {
+            $relative.Contains(':') -or $relative.Split('\') -contains '..' -or $relative.Split('\') -contains '.') {
             throw 'The voice engine archive contains an unsafe path.'
         }
+        # Extended paths avoid Windows' legacy 260-character limit. Validate
+        # relative components before joining; never normalize away traversal.
+        $destination = $root + $relative
         if ($relative.EndsWith('\')) {
             [IO.Directory]::CreateDirectory($destination) | Out-Null
             continue
