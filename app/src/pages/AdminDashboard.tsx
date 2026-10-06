@@ -36,6 +36,7 @@ import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { apiFetchWithAuth } from '@/lib/api-client';
+import { formatDate, formatDateTime } from '@/lib/admin-dates';
 
 interface AdminUserRecord {
   id: string;
@@ -194,27 +195,6 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return payload as T;
-}
-
-function formatDate(value: string | null | undefined) {
-  if (!value) {
-    return 'Unknown';
-  }
-
-  return new Intl.DateTimeFormat('en-GB', {
-    dateStyle: 'medium',
-  }).format(new Date(value));
-}
-
-function formatDateTime(value: string | null | undefined) {
-  if (!value) {
-    return 'Never';
-  }
-
-  return new Intl.DateTimeFormat('en-GB', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
 }
 
 function formatCurrency(value: number) {
