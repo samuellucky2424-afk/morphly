@@ -977,7 +977,30 @@ function exportReport() {
   showToast(exportingUsage ? "AI usage report exported." : "User report exported.");
 }
 
+async function logoutAdmin() {
+  const button = $("#logoutButton");
+  if (button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Logging out...";
+  button.setAttribute("aria-busy", "true");
+  try {
+    const { error } = await window.morphlySupabase.auth.signOut();
+    if (error) throw error;
+    window.morphlyAccessToken = null;
+    state.currentAdmin = null;
+    window.clearInterval(startAuthenticatedApp.refreshTimer);
+    $("#adminApp").hidden = true;
+    window.location.reload();
+  } catch (error) {
+    showToast(error.message || "Unable to log out. Please try again.");
+    button.disabled = false;
+    button.textContent = "Log out";
+    button.setAttribute("aria-busy", "false");
+  }
+}
+
 function bindEvents() {
+  $("#logoutButton").addEventListener("click", logoutAdmin);
   $$("[data-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.view)));
   $$("[data-go-view]").forEach((button) => button.addEventListener("click", () => setView(button.dataset.goView)));
   $$("[data-period]").forEach((button) => button.addEventListener("click", async () => {
