@@ -64,33 +64,6 @@ function harness(userAgent = '') {
     events, timers, sent, engine, diagnostics, get socket() { return socket; }, get destroyed() { return destroyed; }, get audio() { return audio; } };
 }
 
-test('RTC diagnostics distinguish join and publication failures without leaking SDK details', async () => {
-  for (const operation of ['joinChannel', 'publishLocalVideoStream']) {
-    const h = harness();
-    h.engine[operation] = () => new Promise(() => {});
-    const connected = h.client.connect(h.input, h.options);
-    const rejection = assert.rejects(connected, /render_close/);
-    await tick();
-    h.socket.open();
-    h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
-    await tick();
-    h.events.get('occurError')({ code: 1234, message: 'rtc-token short-lived-secret' });
-    h.events.get('videoPublishStateChanged')(1, 2);
-    h.socket.message({ type: 6, payload: { hangup: { hangup_reason: 'render_close' } } });
-    await rejection;
-    const failure = h.diagnostics.find(entry => entry.event === 'session_failed');
-    assert.equal(failure.stage, operation === 'joinChannel' ? 'joining_rtc' : 'publishing_camera');
-    assert.equal(failure.rtcJoined, operation !== 'joinChannel');
-    assert.equal(failure.publishState, 2);
-    assert.equal(failure.rtcErrorCode, 1234);
-    assert.equal(failure.published, false);
-    assert.equal(h.destroyed, 1);
-    for (const secret of ['rtc-token', 'short-lived-secret']) {
-      assert.equal(JSON.stringify(h.diagnostics).includes(secret), false);
-    }
-  }
-});
-
 test('Vidu uses scoped signaling credentials and displays only the renderer, then hangs up once', async () => {
   const h = harness();
   const connected = h.client.connect(h.input, h.options);

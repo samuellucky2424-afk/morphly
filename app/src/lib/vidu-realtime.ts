@@ -90,10 +90,6 @@ export class ViduRealtimeClient {
     let cleanupPromise: Promise<void> | null = null;
     let published = false;
     let receivedVideo = false;
-    let rtcJoined = false;
-    let stage = 'preparing_camera';
-    let publishState: number | null = null;
-    let rtcErrorCode: number | null = null;
     let initRetry: ReturnType<typeof setTimeout> | undefined;
     let socketRetry: ReturnType<typeof setTimeout> | undefined;
     let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -144,17 +140,13 @@ export class ViduRealtimeClient {
       cleanupPromise = Promise.resolve().then(() => currentEngine?.destroy()).catch(() => {});
       return cleanupPromise;
     };
-    const diagnostic = (event: string, reason?: string) => {
-      console.warn('[Vidu] session diagnostics', JSON.stringify({
-        liveId, traceId: options.traceId, event, reason, stage, initialized: ready,
-        rtcJoined, published, receivedVideo, publishState, rtcErrorCode,
-        cameraState: cameraTrack.readyState,
-      }));
-    };
     const fail = (message: string, reason?: string) => {
       if (stopped) return;
       const error = Object.assign(new Error(message), { code: reason === 'ws_handshake_failed' ? 'VIDU_SIGNALING_UNREACHABLE' : undefined });
-      diagnostic('session_failed', reason);
+      console.warn('[Vidu] session diagnostics', JSON.stringify({
+        liveId, traceId: options.traceId, reason, initialized: ready,
+        published, receivedVideo,
+      }));
       rejectStartup(error);
       void cleanup();
       options.onError?.(error);
@@ -170,19 +162,6 @@ export class ViduRealtimeClient {
       window.addEventListener('pagehide', onPageHide);
       options.signal?.addEventListener('abort', onAbort, { once: true });
       startupTimer = setTimeout(() => fail('Plus connection timed out before receiving generated video.'), 35000);
-      engine.on('occurError', (error: unknown) => {
-        if (stopped) return;
-        // SDK error messages can contain signed URLs. Record only numeric codes.
-        const code = typeof error === 'number' ? error
-          : error && typeof error === 'object' && 'code' in error ? error.code : null;
-        rtcErrorCode = typeof code === 'number' && Number.isFinite(code) ? code : null;
-        diagnostic('rtc_error');
-      });
-      engine.on('videoPublishStateChanged', (_old: number, next: number) => {
-        if (stopped) return;
-        publishState = typeof next === 'number' && Number.isFinite(next) ? next : null;
-        diagnostic('video_publish_state');
-      });
       engine.on('videoSubscribeStateChanged', (userId: string, _old: number, next: number) => {
         if (String(userId) !== renderUid || next !== 3 || stopped) return;
         void engine?.getVideoTrack({ userId, streamType: 0 }).then(track => {
@@ -208,7 +187,6 @@ export class ViduRealtimeClient {
       const preparedTrack = await Promise.race([engine.getVideoTrack({ streamType: 0 }), failurePromise]);
       assertActive();
       if (!preparedTrack) throw new Error('Plus could not prepare the selected camera track.');
-      stage = 'initializing_signaling';
       const connectSignaling = () => {
       clearTimeout(socketRetry);
       if (stopped) return;
@@ -279,24 +257,14 @@ export class ViduRealtimeClient {
       connectSignaling();
       await Promise.race([initPromise, failurePromise]);
       assertActive();
-      stage = 'joining_rtc';
-      diagnostic('rtc_join_started');
       await Promise.race([engine.joinChannel(rtc.token, rtc.user_id), failurePromise]);
       assertActive();
-      rtcJoined = true;
-      stage = 'publishing_camera';
-      diagnostic('rtc_join_completed');
       await Promise.race([engine.publishLocalVideoStream(true), failurePromise]);
-      assertActive();
       published = true;
-      stage = 'waiting_for_renderer';
-      diagnostic('camera_publish_completed');
       await Promise.race([videoPromise, failurePromise]);
       assertActive();
       clearTimeout(startupTimer);
       changeState('generating');
-      stage = 'generating';
-      diagnostic('renderer_received');
       return {
         sessionId: liveId,
         getConnectionState: () => state,
@@ -315,7 +283,6 @@ export class ViduRealtimeClient {
         off: (_event, handler) => { listeners.delete(handler); },
       };
     } catch (error) {
-      if (!stopped) diagnostic('startup_rejected');
       await cleanup();
       throw error;
     }
