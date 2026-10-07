@@ -211,7 +211,21 @@ export async function createViduTemporaryKey({
       if (!liveId || !renderUid || typeof rtc?.token !== 'string' || !rtc.token || rtc.token === apiKey || !rtc.user_id) {
         return { error: { error: 'VIDU_RTC_CREDENTIAL_MISSING', details: 'Vidu returned incomplete RTC connection details.' } };
       }
-      const expiresAt = data?.expires_at || data?.data?.expires_at || new Date(Date.now() + sessionLimit * 1000).toISOString();
+      // Vidu reports RTC expiry as Unix seconds; the scoped secret shares that deadline.
+      const credentialExpiries = [
+        Number(rtc.token_expire_at) * 1000,
+        Date.parse(data?.expires_at || data?.data?.expires_at || ''),
+      ].filter(value => Number.isFinite(value) && value > 0 && value <= 8.64e15);
+      const expiryMs = credentialExpiries.length
+        ? Math.min(...credentialExpiries)
+        : Date.now() + sessionLimit * 1000;
+      if (expiryMs <= Date.now()) {
+        return { error: { error: 'VIDU_SESSION_EXPIRED', details: 'Vidu returned expired session credentials. Start a new session.' } };
+      }
+      if (['ending', 'ended'].includes(data?.live?.status || data?.data?.live?.status)) {
+        return { error: { error: 'VIDU_SESSION_ENDED', details: 'Vidu returned an ended session. Start a new session.' } };
+      }
+      const expiresAt = new Date(expiryMs).toISOString();
 
       return {
         token: clientSecret,

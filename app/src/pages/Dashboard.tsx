@@ -1657,6 +1657,8 @@ function Dashboard() {
       modelName?: string;
       baseUrl?: string;
       maxSeconds?: number;
+      expiresAt?: string | null;
+      serverNow?: number;
       liveId?: string;
       traceId?: string;
       renderUid?: string;
@@ -1748,6 +1750,8 @@ function Dashboard() {
         apiKey: apiToken,
         baseUrl: options?.baseUrl,
         maxSeconds: options?.maxSeconds,
+        expiresAt: options?.expiresAt,
+        serverNow: options?.serverNow,
         liveId: options?.liveId,
         traceId: options?.traceId,
         renderUid: options?.renderUid,
@@ -1906,6 +1910,8 @@ function Dashboard() {
       modelName?: string;
       baseUrl?: string;
       maxSeconds?: number;
+      expiresAt?: string | null;
+      serverNow?: number;
       liveId?: string;
       traceId?: string;
       renderUid?: string;
@@ -1919,6 +1925,8 @@ function Dashboard() {
         modelName: VIDU_REALTIME_MODEL,
         baseUrl: options?.baseUrl,
         maxSeconds: options?.maxSeconds,
+        expiresAt: options?.expiresAt,
+        serverNow: options?.serverNow,
         liveId: options?.liveId,
         traceId: options?.traceId,
         renderUid: options?.renderUid,
@@ -2685,6 +2693,8 @@ function Dashboard() {
             connectToRealtimeProvider(requestedProvider, stream, sessionToken, getDesiredTransformState(), {
               baseUrl: startResponse.baseUrl,
               maxSeconds: startResponse.maxSeconds,
+              expiresAt: startResponse.expiresAt,
+              serverNow: startResponse.serverNow,
               liveId: startResponse.liveId,
               traceId: startResponse.traceId,
               renderUid: startResponse.renderUid,

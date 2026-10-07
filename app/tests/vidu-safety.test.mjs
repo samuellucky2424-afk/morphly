@@ -39,10 +39,49 @@ test('Vidu creation sends the selected image and bare server authorization, retu
   });
   const result = await createViduTemporaryKey({ apiKey, maxSeconds: 1800, imageUrl: 'https://example.com/my-image.png', editingType: 'background_replacement' });
   assert.equal(result.token, 'session-secret');
+  assert.equal(result.liveId, 'live-1');
   assert.equal(result.sessionLimit, 90);
   assert.equal(result.rtc.token, 'rtc-auth');
   assert.equal(result.traceId, 'trace-1');
   assert.equal(JSON.stringify(result).includes(apiKey), false);
+});
+
+test('Vidu creates fresh credential pairs and returns the same regional host used for creation', async (t) => {
+  const previousBase = process.env.VIDU_API_BASE_URL;
+  t.after(() => {
+    if (previousBase === undefined) delete process.env.VIDU_API_BASE_URL;
+    else process.env.VIDU_API_BASE_URL = previousBase;
+  });
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async url => {
+    assert.equal(new URL(url).origin, process.env.VIDU_API_BASE_URL);
+    calls++;
+    return Response.json({ client_secret: `secret-${calls}`, live: { id: `live-${calls}` },
+      render_uid: `render-${calls}`, rtc: { user_id: `user-${calls}`, token: `rtc-${calls}` } });
+  });
+  for (const baseUrl of ['https://api.vidu.com', 'https://api.vidu.cn']) {
+    process.env.VIDU_API_BASE_URL = baseUrl;
+    const result = await createViduTemporaryKey({ apiKey: 'test-server-key', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
+    assert.equal(result.liveId, `live-${calls}`);
+    assert.equal(result.token, `secret-${calls}`);
+    assert.equal(result.rtc.token, `rtc-${calls}`);
+    assert.equal(result.baseUrl, baseUrl);
+  }
+  assert.equal(calls, 2);
+});
+
+test('Vidu preserves the provider expiry and rejects expired or ended creation responses', async (t) => {
+  const tokenExpiry = Math.floor(Date.now() / 1000) + 7200;
+  let response = { client_secret: 'session-secret', live: { id: 'live-1', status: 'waiting' },
+    render_uid: 'renderer', rtc: { user_id: 'camera-user', token: 'rtc-auth', token_expire_at: String(tokenExpiry) } };
+  t.mock.method(globalThis, 'fetch', async () => Response.json(response));
+  const create = () => createViduTemporaryKey({ apiKey: 'test-server-key', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
+  assert.equal((await create()).expiresAt, new Date(tokenExpiry * 1000).toISOString());
+  response.rtc.token_expire_at = String(Math.floor(Date.now() / 1000) - 1);
+  assert.equal((await create()).error.error, 'VIDU_SESSION_EXPIRED');
+  response.rtc.token_expire_at = String(tokenExpiry);
+  response.live.status = 'ended';
+  assert.equal((await create()).error.error, 'VIDU_SESSION_ENDED');
 });
 
 test('removed Pro engine is rejected before creating or billing a provider session', async t => {

@@ -36,6 +36,8 @@ export interface ViduClientOptions {
   renderUid?: string;
   rtc?: Record<string, unknown> | null;
   maxSeconds?: number;
+  expiresAt?: string | null;
+  serverNow?: number;
   signal?: AbortSignal;
   modelName?: string;
   mirror?: 'auto' | boolean;
@@ -90,10 +92,19 @@ export class ViduRealtimeClient {
       || !this.apiKey || this.apiKey.startsWith('mock_') || this.apiKey.startsWith('vda_')) {
       throw new Error('Plus requires real Vidu session credentials. Restart the session.');
     }
+    const credentialExpiries = [Number(rtc.token_expire_at) * 1000, Date.parse(options.expiresAt || '')]
+      .filter(value => Number.isFinite(value) && value > 0 && value <= 8.64e15);
+    const clockOffsetMs = typeof options.serverNow === 'number' && Number.isFinite(options.serverNow)
+      ? options.serverNow - Date.now() : 0;
+    const credentialDeadline = credentialExpiries.length ? Math.min(...credentialExpiries) - clockOffsetMs : Infinity;
+    const credentialsExpired = () => Date.now() >= credentialDeadline;
+    const expiredMessage = 'Plus session credentials expired. Start a new session.';
+    if (credentialsExpired()) throw new Error(expiredMessage);
     const inputTrack = inputStream.getVideoTracks()[0];
     if (!inputTrack || inputTrack.readyState !== 'live') throw new Error('Plus requires an active camera.');
     const AliRtcEngine = await prepareViduRtc();
     if (options.signal?.aborted) throw new Error('Plus session was cancelled.');
+    if (credentialsExpired()) throw new Error(expiredMessage);
     // DEBUG (0) prints join credentials and signed stream URLs to the console.
     // Keep our scoped diagnostics below instead of the SDK's raw transport logs.
     AliRtcEngine.setLogLevel(AliRtcEngine.AliRtcLogLevel.NONE);
@@ -113,6 +124,7 @@ export class ViduRealtimeClient {
     let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
     let socketAttempts = 0;
     let sessionTimer: ReturnType<typeof setTimeout> | undefined;
+    let credentialTimer: ReturnType<typeof setTimeout> | undefined;
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     const listeners = new Set<(error: unknown) => void>();
     let rejectStartup: (error: Error) => void = () => {};
@@ -137,6 +149,7 @@ export class ViduRealtimeClient {
       clearTimeout(socketRetry);
       clearTimeout(handshakeTimer);
       clearTimeout(sessionTimer);
+      clearTimeout(credentialTimer);
       clearTimeout(startupTimer);
       window.removeEventListener('pagehide', onPageHide);
       options.signal?.removeEventListener('abort', onAbort);
@@ -180,6 +193,12 @@ export class ViduRealtimeClient {
       window.addEventListener('pagehide', onPageHide);
       options.signal?.addEventListener('abort', onAbort, { once: true });
       startupTimer = setTimeout(() => fail('Plus connection timed out before receiving generated video.'), 35000);
+      if (credentialDeadline - Date.now() <= 155000) {
+        // Later deadlines cannot be reached within the startup + session duration caps.
+        credentialTimer = setTimeout(() => {
+          if (credentialsExpired()) fail(expiredMessage, 'credentials_expired');
+        }, Math.max(0, credentialDeadline - Date.now()));
+      }
       engine.on('videoSubscribeStateChanged', (userId: string, _old: number, next: number) => {
         if (String(userId) !== renderUid || next !== 3 || stopped) return;
         void engine?.getVideoTrack({ userId, streamType: 0 }).then(track => {
@@ -208,6 +227,7 @@ export class ViduRealtimeClient {
       const connectSignaling = () => {
       clearTimeout(socketRetry);
       if (stopped) return;
+      if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
       socketAttempts++;
       const currentSocket = new WebSocket(buildViduSocketUrl(options.baseUrl || this.baseUrl, liveId, connId, this.apiKey));
       socket = currentSocket;
@@ -235,6 +255,7 @@ export class ViduRealtimeClient {
       handshakeTimer = setTimeout(() => retryHandshake(), 7000);
       currentSocket.onopen = () => {
         clearTimeout(handshakeTimer);
+        if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
         if (!stopped) { changeState('connecting'); send(1, { conn_init: { version: 1 } }); }
       };
       currentSocket.onerror = () => retryHandshake();
@@ -257,6 +278,7 @@ export class ViduRealtimeClient {
           } else if (ack?.error_code === 'NOT_READY') {
             clearTimeout(initRetry);
             initRetry = setTimeout(() => {
+              if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
               if (!stopped) { try { send(1, { conn_init: { version: 1 } }); } catch { fail('Plus signaling disconnected.'); } }
             }, 2000);
           } else fail(`Plus initialization failed (${ack?.error_code || 'unknown'}).`);

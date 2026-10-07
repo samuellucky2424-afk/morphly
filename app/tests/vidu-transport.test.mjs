@@ -16,6 +16,8 @@ function harness(userAgent = '', supportCheck = async () => ({ support: true }))
   let socket;
   let destroyed = 0;
   let supportChecks = 0;
+  let now = Date.now();
+  class ClockDate extends Date { static now() { return now; } }
   const original = { readyState: 'live', stopped: false, stop() { this.stopped = true; }, clone: () => clone };
   const clone = { readyState: 'live', stopped: false, stop() { this.stopped = true; } };
   const generated = { kind: 'video', id: 'generated', readyState: 'live' };
@@ -44,7 +46,7 @@ function harness(userAgent = '', supportCheck = async () => ({ support: true }))
   }
   const exports = {};
   const context = vm.createContext({
-    navigator: { userAgent }, exports, URL, URLSearchParams, crypto: { randomUUID: () => 'connection-id' }, WebSocket: Socket,
+    navigator: { userAgent }, exports, URL, URLSearchParams, Date: ClockDate, crypto: { randomUUID: () => 'connection-id' }, WebSocket: Socket,
     console: { warn: (_label, message) => diagnostics.push(JSON.parse(message)) },
     window: { addEventListener() {}, removeEventListener() {} },
     MediaStream: class { constructor(tracks) { this.tracks = tracks; } getVideoTracks() { return this.tracks; } },
@@ -62,8 +64,70 @@ function harness(userAgent = '', supportCheck = async () => ({ support: true }))
   const options = { liveId: 'live-id', traceId: 'trace-id', renderUid: 'renderer', rtc: { token: 'rtc-token', user_id: 'camera-user' }, maxSeconds: 60,
     onRemoteStream: stream => outputs.push(stream), onError: error => errors.push(error) };
   return { exports, client, options, input: { getVideoTracks: () => [original] }, original, clone, generated, outputs, errors,
-    events, timers, sent, engine, diagnostics, get socket() { return socket; }, get destroyed() { return destroyed; }, get audio() { return audio; }, get supportChecks() { return supportChecks; } };
+    events, timers, sent, engine, diagnostics, advanceTime(ms) { now += ms; }, get now() { return now; }, get socket() { return socket; }, get destroyed() { return destroyed; }, get audio() { return audio; }, get supportChecks() { return supportChecks; } };
 }
+
+test('Vidu connects to the session regional host without changing its credential pair', async () => {
+  for (const baseUrl of ['https://api.vidu.com', 'https://api.vidu.cn']) {
+    const h = harness();
+    const connected = h.client.connect(h.input, { ...h.options, baseUrl });
+    const rejection = assert.rejects(connected, /ended this session/);
+    await tick();
+    const url = new URL(h.socket.url);
+    assert.equal(url.hostname, new URL(baseUrl).hostname);
+    assert.equal(url.searchParams.get('live_id'), h.options.liveId);
+    assert.equal(url.searchParams.get('client_secret'), 'short-lived-secret');
+    h.socket.open();
+    h.socket.message({ type: 6, payload: { hangup: { hangup_reason: 'user_hangup' } } });
+    await rejection;
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test('Vidu rejects expired credentials before loading RTC or opening a socket', async () => {
+  const h = harness();
+  await assert.rejects(h.client.connect(h.input, { ...h.options,
+    rtc: { ...h.options.rtc, token_expire_at: String(Math.floor(h.now / 1000) - 1) } }), /credentials expired/);
+  assert.equal(h.supportChecks, 0);
+  assert.equal(h.socket, undefined);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Vidu uses server time and cannot retry a handshake after credentials expire', async () => {
+  const h = harness();
+  // A browser clock ahead by a day must not invalidate fresh provider credentials.
+  const serverNow = h.now - 86400000;
+  const expiresAt = new Date(serverNow + 2000).toISOString();
+  const connected = h.client.connect(h.input, { ...h.options, serverNow, expiresAt });
+  const rejection = assert.rejects(connected, /credentials expired/);
+  await tick();
+  const first = h.socket;
+  first.onerror();
+  h.advanceTime(2001);
+  [...h.timers.values()].find(timer => timer.ms === 1000).fn();
+  await rejection;
+  assert.equal(h.socket, first);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Vidu closes an initialized session at the provider credential deadline', async () => {
+  const h = harness();
+  const connected = h.client.connect(h.input, { ...h.options, expiresAt: new Date(h.now + 10000).toISOString() });
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  const session = await connected;
+  h.advanceTime(10000);
+  [...h.timers.values()].find(timer => timer.ms === 10000).fn();
+  await tick();
+  assert.equal(session.getConnectionState(), 'disconnected');
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+});
 
 test('Plus preflight checks and caches RTC readiness without opening a session or camera', async () => {
   const h = harness();
