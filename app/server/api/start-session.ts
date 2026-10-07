@@ -1,7 +1,6 @@
 // @ts-nocheck
 import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
-import { sessionStartLimit } from '../session-start-limit.js';
 import { createDecartTemporaryKey as createScopedDecartKey } from '../decart-token.js';
 import { realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
@@ -17,8 +16,6 @@ const DEFAULT_REALTIME_PROVIDER = 'vidu';
 const TEMPORARY_KEY_GRACE_SECONDS = 120;
 const DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS = 1800;
 const DEFAULT_UNVERIFIED_WALLET_LIMIT = 5000;
-const TOKEN_MINT_WINDOW_MINUTES = 10;
-const TOKEN_MINT_LIMIT_PER_WINDOW = 30;
 const VIDU_TOKEN_MAX_ATTEMPTS = 2;
 const VIDU_TOKEN_RETRY_DELAY_MS = 600;
 
@@ -330,14 +327,6 @@ async function recordProviderTokenAudit({
   }
 }
 
-async function getRecentTokenMintCount(userId) {
-  const since = new Date(Date.now() - TOKEN_MINT_WINDOW_MINUTES * 60 * 1000).toISOString();
-  const result = await supabaseAdmin.from('analytics_events').select('created_at')
-    .eq('user_id', userId).in('event_name', ['xmax_key_issued', 'vidu_token_issued', 'decart_token_issued']).gte('created_at', since);
-  if (result.error) throw result.error;
-  return sessionStartLimit(result.data || []);
-}
-
 async function hasWalletCreditProvenance(userId) {
   const [transactionResult, ledgerResult, adminResult] = await Promise.all([
     supabaseAdmin.from('transactions')
@@ -574,13 +563,12 @@ export default async function handler(req, res) {
     });
 
     const validationStartedAt = Date.now();
-    // Independent account, wallet, stale-session, and rate-limit checks share one
+    // Independent account, wallet, and stale-session checks share one
     // network round trip instead of delaying startup in a serial chain.
-    const [profileResult, activeSessionsResult, walletResult, recentTokenMints] = await Promise.all([
+    const [profileResult, activeSessionsResult, walletResult] = await Promise.all([
       supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle(),
       selectActiveSessions(userId),
       supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
-      getRecentTokenMintCount(userId),
     ]);
 
     if (profileResult.error) throw profileResult.error;
@@ -651,21 +639,6 @@ export default async function handler(req, res) {
       return res.status(403).json({
         allowed: false,
         error: 'This wallet balance requires administrator review before AI usage can continue.',
-      });
-    }
-
-    if (recentTokenMints.retryAfterSeconds > 0) {
-      await logRequestEvent('start-session.rate_limited', {
-        userId,
-        recentTokenMints: recentTokenMints.count,
-        windowMinutes: TOKEN_MINT_WINDOW_MINUTES,
-      });
-      res.setHeader('Retry-After', String(recentTokenMints.retryAfterSeconds));
-      return res.status(429).json({
-        allowed: false,
-        code: 'SESSION_START_RATE_LIMIT',
-        retryAfterSeconds: recentTokenMints.retryAfterSeconds,
-        error: `Too many recent connection attempts. Retry in ${recentTokenMints.retryAfterSeconds} seconds. This is Morphly's retry limit, not an AI capacity error.`,
       });
     }
 

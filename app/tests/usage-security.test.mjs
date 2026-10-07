@@ -56,17 +56,16 @@ test('AI billing RPCs are restricted to the service role', () => {
   assert.match(migration, /REVOKE INSERT, UPDATE, DELETE ON public\.sessions FROM anon, authenticated/);
 });
 
-test('Decart temporary keys use the scoped SDK adapter and issuance stays rate limited', () => {
+test('temporary keys stay scoped and large wallet grants are verified', () => {
   const token = fs.readFileSync(new URL('../server/decart-token.js', import.meta.url), 'utf8');
   assert.match(startSession, /createScopedDecartKey/);
   assert.match(token, /allowedModels:\['lucy-2.5'\]/);
   assert.match(token, /maxSessionDuration:sessionLimit/);
   assert.match(token, /expiresIn:Math.min\(3600,sessionLimit\+120\)/);
   assert.match(token, /morphlySessionId:sessionId,morphlyUserId:userId/);
-  assert.match(startSession, /TOKEN_MINT_LIMIT_PER_WINDOW/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);
-  assert.match(startSession, /vidu_token/);
+  assert.match(startSession, /\$\{provider\}_token_issued/);
   assert.match(startSession, /provider === 'vidu'/);
 });
 
@@ -75,7 +74,7 @@ test('Vidu receives only scoped real-time session credentials', () => {
   assert.match(startSession, /\/live\/s_editing\/realtime/);
   assert.match(startSession, /VIDU_TOKEN_MAX_ATTEMPTS = 2/);
   assert.match(startSession, /sessionLimit/);
-  assert.match(startSession, /vidu_token/);
+  assert.match(startSession, /\$\{provider\}_token_issued/);
 });
 
 test('Vidu is the default and Decart keeps its own provider', () => {
