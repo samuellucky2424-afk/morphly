@@ -1,6 +1,26 @@
 import { VIDU_REALTIME_MODEL } from './realtime-provider';
 import type { RtcEngine } from 'aliyun-rtc-sdk';
 
+let rtcReadyPromise: Promise<typeof import('aliyun-rtc-sdk')['default']> | null = null;
+
+export function prepareViduRtc() {
+  if (!rtcReadyPromise) {
+    rtcReadyPromise = import('aliyun-rtc-sdk').then(async ({ default: AliRtcEngine }) => {
+      // Load and check the browser before creating a short-lived provider session.
+      AliRtcEngine.setLogLevel(AliRtcEngine.AliRtcLogLevel.NONE);
+      const support = await AliRtcEngine.isSupported();
+      if (!support.support) {
+        throw new Error('This browser cannot run Plus video. Use an updated Chrome or Edge.');
+      }
+      return AliRtcEngine;
+    }).catch(error => {
+      rtcReadyPromise = null;
+      throw error;
+    });
+  }
+  return rtcReadyPromise;
+}
+
 export type ViduConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
 export interface ViduTransformInput {
   prompt?: string;
@@ -72,10 +92,8 @@ export class ViduRealtimeClient {
     }
     const inputTrack = inputStream.getVideoTracks()[0];
     if (!inputTrack || inputTrack.readyState !== 'live') throw new Error('Plus requires an active camera.');
-    const { default: AliRtcEngine } = await import('aliyun-rtc-sdk');
-    const support = await AliRtcEngine.isSupported();
+    const AliRtcEngine = await prepareViduRtc();
     if (options.signal?.aborted) throw new Error('Plus session was cancelled.');
-    if (!support.support) throw new Error('This browser cannot run Plus video. Use an updated Chrome or Edge.');
     // DEBUG (0) prints join credentials and signed stream URLs to the console.
     // Keep our scoped diagnostics below instead of the SDK's raw transport logs.
     AliRtcEngine.setLogLevel(AliRtcEngine.AliRtcLogLevel.NONE);

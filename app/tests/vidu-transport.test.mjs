@@ -8,13 +8,14 @@ const source = readFileSync(new URL('../src/lib/vidu-realtime.ts', import.meta.u
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function harness(userAgent = '') {
+function harness(userAgent = '', supportCheck = async () => ({ support: true })) {
   const events = new Map();
   const timers = new Map();
   const sent = [];
   const diagnostics = [];
   let socket;
   let destroyed = 0;
+  let supportChecks = 0;
   const original = { readyState: 'live', stopped: false, stop() { this.stopped = true; }, clone: () => clone };
   const clone = { readyState: 'live', stopped: false, stop() { this.stopped = true; } };
   const generated = { kind: 'video', id: 'generated', readyState: 'live' };
@@ -50,7 +51,7 @@ function harness(userAgent = '') {
     setTimeout: (fn, ms) => { const id = {}; timers.set(id, { fn, ms }); return id; },
     clearTimeout: id => timers.delete(id),
     require: name => name === './realtime-provider' ? { VIDU_REALTIME_MODEL: 's2-editing' } : {
-      default: { isSupported: async () => ({ support: true }), AliRtcLogLevel: { NONE: 5 },
+      default: { isSupported: async () => { supportChecks++; return supportCheck(); }, AliRtcLogLevel: { NONE: 5 },
         setLogLevel(level) { assert.equal(level, 5, 'raw SDK credential logs must be disabled'); }, getInstance: () => engine },
     },
   });
@@ -61,8 +62,34 @@ function harness(userAgent = '') {
   const options = { liveId: 'live-id', traceId: 'trace-id', renderUid: 'renderer', rtc: { token: 'rtc-token', user_id: 'camera-user' }, maxSeconds: 60,
     onRemoteStream: stream => outputs.push(stream), onError: error => errors.push(error) };
   return { exports, client, options, input: { getVideoTracks: () => [original] }, original, clone, generated, outputs, errors,
-    events, timers, sent, engine, diagnostics, get socket() { return socket; }, get destroyed() { return destroyed; }, get audio() { return audio; } };
+    events, timers, sent, engine, diagnostics, get socket() { return socket; }, get destroyed() { return destroyed; }, get audio() { return audio; }, get supportChecks() { return supportChecks; } };
 }
+
+test('Plus preflight checks and caches RTC readiness without opening a session or camera', async () => {
+  const h = harness();
+  const first = h.exports.prepareViduRtc();
+  assert.equal(h.exports.prepareViduRtc(), first);
+  await first;
+  assert.equal(h.supportChecks, 1);
+  assert.equal(h.socket, undefined);
+  assert.equal(h.events.size, 0);
+  assert.equal(h.original.stopped, false);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(h.client.connect(h.input, { ...h.options, signal: controller.signal }), /cancelled/);
+  assert.equal(h.supportChecks, 1);
+  assert.equal(h.socket, undefined);
+});
+
+test('unsupported RTC preflight can be retried without creating provider connections', async () => {
+  let supported = false;
+  const h = harness('', async () => ({ support: supported }));
+  await assert.rejects(h.exports.prepareViduRtc(), /cannot run Plus/);
+  supported = true;
+  await h.exports.prepareViduRtc();
+  assert.equal(h.supportChecks, 2);
+  assert.equal(h.socket, undefined);
+});
 
 test('Vidu uses scoped signaling credentials and displays only the renderer, then hangs up once', async () => {
   const h = harness();

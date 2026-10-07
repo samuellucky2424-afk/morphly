@@ -416,8 +416,11 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
   return response.json();
 }
 
-// Preload both SDK modules so selecting an engine never starts with a bundle download.
-const viduSdkReadyPromise = import('@/lib/vidu-realtime');
+// Include AliRTC's nested bundle and support check before requesting live credentials.
+const viduSdkReadyPromise = import('@/lib/vidu-realtime').then(async module => {
+  await module.prepareViduRtc();
+  return module;
+});
 
 function Dashboard() {
   const { user, logout } = useAuth();
@@ -2595,6 +2598,10 @@ function Dashboard() {
     });
 
     try {
+      if (requestedProvider === VIDU_REALTIME_PROVIDER) {
+        setUiStatus('Preparing Plus...');
+        await viduSdkReadyPromise;
+      }
       setUiStatus('Opening camera...');
       const stream = await startWebcam(activeMode, {
         forceNewStream: true,
