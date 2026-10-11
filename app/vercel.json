@@ -12,7 +12,10 @@
       "maxDuration": 30
     }
   },
-  "crons": [{ "path": "/api/engagement-cron", "schedule": "0 10 * * *" }],
+  "crons": [
+    { "path": "/api/engagement-cron", "schedule": "0 10 * * *" },
+    { "path": "/api/payment-sweep", "schedule": "0 11 * * *" }
+  ],
   "rewrites": [
     { "source": "/private/morphly/login", "destination": "/private/morphly/login/index.html" },
     { "source": "/reset-password", "destination": "/reset-password/index.html" },

@@ -22,6 +22,7 @@ import versionHandler from './api/version.js';
 import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
 import firebaseRegisterHandler from './api/firebase-register.js';
+import paymentSweepHandler from './api/payment-sweep.js';
 
 const routeHandlers = {
   'firebase-register': firebaseRegisterHandler,
@@ -52,6 +53,7 @@ const routeHandlers = {
   'session-status': sessionStatusHandler,
   'start-session': startSessionHandler,
   'verify-payment': verifyPaymentHandler,
+  'payment-sweep': paymentSweepHandler,
   'initiate-flutterwave-payment': initiateFlutterwavePaymentHandler,
   'flutterwave-payment-return': initiateFlutterwavePaymentHandler,
   'initiate-crypto-payment': initiateCryptoPaymentHandler,

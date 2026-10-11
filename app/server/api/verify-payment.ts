@@ -10,6 +10,8 @@ import {
   verifyFlutterwaveTransactionByReference,
 } from '../flutterwave-payment.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { settleCheckout } from '../payment-checkouts.js';
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -46,6 +48,35 @@ export default async function handler(req, res) {
     const flutterwaveSecretKey = process.env.FLUTTERWAVE_SECRET_KEY;
     if (!flutterwaveSecretKey) {
       return res.status(500).json({ status: 'failed', message: 'Missing Flutterwave Secret Key' });
+    }
+
+    // Checkouts created by this server are settled from their stored record,
+    // so the client's userId, packageId and amount are never trusted.
+    if (firebaseDb) {
+      const checkout = await settleCheckout(firebaseDb, reference, {
+        secretKey: flutterwaveSecretKey,
+        transactionId: transactionId || null,
+        expectedUserId: userId,
+      });
+      if (checkout) {
+        if (checkout.state === 'credited') {
+          return res.json({
+            status: 'success',
+            duplicate: Boolean(checkout.duplicate),
+            message: checkout.duplicate ? 'Payment already credited' : 'Payment verified and credits applied',
+            transactionId: checkout.transactionId,
+            creditsAdded: checkout.creditsAdded,
+            newCredits: checkout.newCredits,
+          });
+        }
+        if (checkout.state === 'pending') {
+          return res.status(202).json({
+            status: 'pending',
+            message: 'Your payment is still being confirmed. Credits are added automatically once it clears.',
+          });
+        }
+        return res.status(400).json({ status: 'failed', message: checkout.message });
+      }
     }
 
     const verification = transactionId

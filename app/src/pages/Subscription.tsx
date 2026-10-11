@@ -271,17 +271,35 @@ function Subscription() {
 
     void (async () => {
       try {
-        const res = await apiFetchWithAuth('/verify-payment', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            reference: paymentReturn.reference,
-            ...(paymentReturn.transactionId ? { transactionId: paymentReturn.transactionId } : {}),
-            userId: user.id,
-          }),
-        });
-
-        const data = await res.json();
+        // Verification is retried while Flutterwave still reports the payment as
+        // pending (for example bank transfers). The server settles the checkout.
+        let res: Response;
+        let data: any;
+        for (let attempt = 1; ; attempt += 1) {
+          res = await apiFetchWithAuth('/verify-payment', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              reference: paymentReturn.reference,
+              ...(paymentReturn.transactionId ? { transactionId: paymentReturn.transactionId } : {}),
+              userId: user.id,
+            }),
+          });
+          data = await res.json();
+          if (res.status !== 202 && data.status !== 'pending') break;
+          if (attempt >= 6) {
+            clearPendingFlutterwavePayment();
+            clearFlutterwaveReturnUrl();
+            toast.info(
+              paymentReturn.status === 'closed'
+                ? 'No payment is confirmed yet. If you completed payment, credits will appear automatically.'
+                : 'Payment received and being confirmed. Your credits appear automatically once it clears.',
+            );
+            navigate('/wallet', { replace: true });
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
         if (!res.ok) throw new Error(data.message || `Server returned ${res.status}`);
         if (data.status !== 'success') throw new Error(data.message || 'Payment verification failed');
 

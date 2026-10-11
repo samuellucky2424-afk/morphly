@@ -31,6 +31,12 @@ function getViduApiBaseUrl() {
   return (process.env.VIDU_API_BASE_URL?.trim() || VIDU_DEFAULT_API_BASE_URL).replace(/\/$/, '');
 }
 
+// Vidu's app-side HTTP and WebSocket APIs require the "Token <key>" scheme.
+// A bare key is rejected, which surfaced to users as a generic connection error.
+function getViduAuthorizationHeader(apiKey) {
+  return /^Token\s/i.test(apiKey) ? apiKey : `Token ${apiKey}`;
+}
+
 export function normalizeRealtimeProvider(value) {
   return value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
 }
@@ -146,7 +152,7 @@ export async function createViduTemporaryKey({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: apiKey,
+          Authorization: getViduAuthorizationHeader(apiKey),
         },
         body: JSON.stringify({
           image_url: effectiveImageUrl,
@@ -181,8 +187,8 @@ export async function createViduTemporaryKey({
           ? 'Plus could not authenticate this session. Check VIDU_API_KEY or contact support.'
           : providerStatus === 429
             ? 'Plus is limiting new sessions right now. Wait a moment, then try again.'
-            : retryable || unavailable
-              ? 'Plus is temporarily unavailable. Check your connection, then try again.'
+            : unavailable
+              ? 'Plus servers are busy or under maintenance right now. Wait a minute, then try again.'
               : 'Plus rejected this session configuration. Try Pro or contact support.';
 
         return {

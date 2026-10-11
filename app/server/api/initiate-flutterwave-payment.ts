@@ -1,6 +1,8 @@
 // @ts-nocheck
 import crypto from 'crypto';
 import { sandboxPayments, createSandboxPayment } from '../firebase-sandbox-payment.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { createCheckoutRecord, settleUserPendingCheckouts } from '../payment-checkouts.js';
 
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
@@ -226,6 +228,15 @@ export default async function handler(req, res) {
       packageId,
       reference,
     });
+
+    if (!firebaseDb) {
+      return res.status(503).json({ status: 'failed', message: 'Checkout storage is not configured' });
+    }
+    // Recover this user's older unconfirmed payments before starting a new one.
+    await settleUserPendingCheckouts(firebaseDb, userId, { secretKey: process.env.FLUTTERWAVE_SECRET_KEY });
+    // Record the checkout server-side before the user can pay. Verification
+    // grants credits only from this record.
+    await createCheckoutRecord(firebaseDb, { reference, userId, packageId, credits, amountNGN });
 
     const session = await initiateFlutterwavePayment({
       userId,

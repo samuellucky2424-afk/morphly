@@ -170,11 +170,13 @@ function transactionDate(transaction) {
   return transaction?.verified_at || transaction?.created_at || null;
 }
 
+// Accepts both legacy UUID user IDs and Firebase Auth UIDs (28 mixed-case
+// characters). Firebase UIDs are case-sensitive, so they must not be lowercased.
 function normalizeUuid(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)
-    ? normalized
-    : null;
+  const trimmed = String(value || '').trim();
+  const uuid = trimmed.toLowerCase();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid)) return uuid;
+  return /^[A-Za-z0-9]{20,128}$/.test(trimmed) ? trimmed : null;
 }
 
 function normalizeHistoryLimit(value) {

@@ -29,11 +29,11 @@ test('Vidu never substitutes the permanent API key for a client credential', asy
   }
 });
 
-test('Vidu creation sends the selected image and bare server authorization, returns scoped credentials', async (t) => {
+test('Vidu creation sends the selected image with Token authorization, returns scoped credentials', async (t) => {
   const apiKey = 'vda_server-only-test';
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(new URL(url).pathname, '/live/s_editing/realtime');
-    assert.equal(options.headers.Authorization, apiKey);
+    assert.equal(options.headers.Authorization, `Token ${apiKey}`);
     assert.deepEqual(JSON.parse(options.body), { image_url: 'https://example.com/my-image.png', editing_type: 'subject_replacement' });
     return Response.json({ client_secret: 'session-secret', live: { id: 'live-1', live_duration: 90, trace_id: 'trace-1' }, render_uid: 'render-1', rtc: { user_id: 'user-1', token: 'rtc-auth' } });
   });
@@ -44,6 +44,17 @@ test('Vidu creation sends the selected image and bare server authorization, retu
   assert.equal(result.rtc.token, 'rtc-auth');
   assert.equal(result.traceId, 'trace-1');
   assert.equal(JSON.stringify(result).includes(apiKey), false);
+});
+
+test('Vidu does not double-prefix an already Token-scheme key and reports 5xx as a provider issue', async (t) => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    assert.equal(options.headers.Authorization, 'Token vda_prefixed');
+    return new Response(JSON.stringify({ message: 'upstream' }), { status: 503 });
+  });
+  const result = await createViduTemporaryKey({ apiKey: 'Token vda_prefixed', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
+  assert.equal(result.error.providerStatus, 503);
+  assert.equal(/connect|network|timeout/i.test(result.error.details), false);
+  t.mock.restoreAll();
 });
 
 test('Vidu creates fresh credential pairs and returns the same regional host used for creation', async (t) => {
