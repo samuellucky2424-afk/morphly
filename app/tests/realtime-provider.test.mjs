@@ -9,6 +9,7 @@ import {
   DEFAULT_REALTIME_PROVIDER,
   REALTIME_PROVIDER_OPTIONS,
   getViduRealtimeUserMessage,
+  getViduStartErrorMessage,
   getRealtimeProviderLabel,
   resolveRealtimeModel,
   resolveRealtimeProvider,
@@ -40,7 +41,34 @@ test('Vidu realtime errors provide actionable user messages', () => {
   assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Plus did not accept/i);
   assert.match(getViduRealtimeUserMessage({ message: 'Insufficient credits' }), /provider capacity is exhausted/i);
   assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Plus connection was interrupted/i);
-  assert.match(dashboard, /getViduRealtimeUserMessage\(error, fallback\)/);
+  assert.match(dashboard, /getViduStartErrorMessage\(error, fallback\)/);
+});
+
+test('start failures keep the real reason and never claim auto-recovery', () => {
+  const signaling = getViduStartErrorMessage(
+    Object.assign(new Error('Plus signaling could not connect. Retry.'), { code: 'VIDU_SIGNALING_UNREACHABLE' }),
+    'x',
+  );
+  assert.match(signaling, /api\.vidu\.com/);
+  assert.match(signaling, /firewall, VPN/);
+
+  const timeout = getViduStartErrorMessage(new Error('Plus connection timed out after 45s'), 'x');
+  assert.match(timeout, /did not return video in time/);
+  assert.match(timeout, /timed out after 45s/);
+
+  const rtc = getViduStartErrorMessage(new Error('Vidu RTC session ended. Start a new session.'), 'x');
+  assert.match(rtc, /Plus could not connect/);
+  assert.match(rtc, /Plus RTC session ended/);
+
+  for (const message of [signaling, timeout, rtc]) {
+    assert.doesNotMatch(message, /trying to recover/);
+  }
+
+  // "device"/"service" must not be misread as ICE (network) errors.
+  assert.equal(
+    getViduStartErrorMessage(new Error('The selected camera device is unavailable.'), 'x'),
+    'The selected camera device is unavailable.',
+  );
 });
 
 test('dashboard shows the single engine without an engine chooser', () => {

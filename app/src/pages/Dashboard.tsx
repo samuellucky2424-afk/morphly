@@ -68,6 +68,7 @@ import {
   VIDU_REALTIME_MODEL,
   DEFAULT_REALTIME_PROVIDER,
   getViduRealtimeUserMessage,
+  getViduStartErrorMessage,
   getRealtimeProviderLabel,
   resolveRealtimeModel,
   resolveRealtimeProvider,
@@ -359,7 +360,7 @@ function getStartSessionErrorMessage(error: unknown, provider: RealtimeProvider)
         .replace(/\bDecart\b/gi, 'Pro')
         .replace(/\bVidu\b/gi, 'Plus');
       return (provider === VIDU_REALTIME_PROVIDER)
-        ? getViduRealtimeUserMessage(error, fallback)
+        ? getViduStartErrorMessage(error, fallback)
         : fallback;
     }
   }
