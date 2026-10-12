@@ -95,7 +95,10 @@ test('startup avoids stacked retries and reports each connection phase', () => {
   assert.match(dashboard, /Opening camera/);
   assert.match(dashboard, /Authorizing \$\{requestedProviderLabel\}/);
   assert.match(dashboard, /Connecting to \$\{requestedProviderLabel\}/);
-  assert.match(startSessionApi, /profileResult, activeSessionsResult, walletResult, recentTokenMints/);
+  // Session-start cooldowns (recentTokenMints) were removed in 2ee22ed; the
+  // remaining startup lookups must still load in parallel.
+  assert.match(startSessionApi, /\[profileResult, activeSessionsResult, walletResult\] = await Promise\.all/);
+  assert.doesNotMatch(startSessionApi, /recentTokenMints/);
   assert.match(startSessionApi, /startupTimings/);
   assert.doesNotMatch(startSessionApi, /updateSessionProviderAudit/);
 });
