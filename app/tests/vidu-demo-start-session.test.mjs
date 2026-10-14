@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import { getViduApiBaseUrl, getViduDemoSessionContext, createViduDemoSignalingSession, createViduTemporaryKey } from '../server/api/start-session.ts';
-import { getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket, validateViduDemoTicket } from '../server/vidu-demo-ticket.js';
+import { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket, validateViduDemoTicket } from '../server/vidu-demo-ticket.js';
 
 const secret = randomBytes(32).toString('base64url');
 const environment = { VERCEL_ENV: 'preview', VIDU_DEMO_PROXY: 'true', VIDU_API_BASE_URL: 'https://api.vidu.com',
@@ -152,17 +152,25 @@ test('production relay requires exact HTTPS web origins and permits opaque origi
   const alias = { ...capable, headers: { ...req.headers, host: 'live.morphly.fun', origin: 'https://live.morphly.fun' } };
   assert.equal(context(alias, production).relayOrigin, 'https://live.morphly.fun');
   assert.equal(context(alias, production).audience, production.VERCEL_URL);
-  for (const platform of ['web', 'desktop']) {
-    for (const origin of ['file:///app/index.html', 'http://localhost:5173', 'https://morphly-test.vercel.app/', '', undefined]) {
-      assert.equal(context({ ...capable, headers: { ...req.headers, origin }, body: { ...capable.body, platform } }, production)
-        .error.error, 'INVALID_BROWSER_ORIGIN');
-    }
+  for (const origin of ['file:///app/index.html', 'http://localhost:5173', 'https://morphly-test.vercel.app/', '', undefined]) {
+    assert.equal(context({ ...capable, headers: { ...req.headers, origin } }, production).error.error, 'INVALID_BROWSER_ORIGIN');
+  }
+  // Electron renderers present file://, localhost, or no origin depending on
+  // the build; desktop tickets bind all of them to the opaque origin.
+  for (const origin of ['file://', 'file:///app/index.html', 'http://localhost:5173', 'https://morphly-test.vercel.app/', '', undefined]) {
+    const desktopContext = context({ ...capable, headers: { ...req.headers, origin }, body: { ...capable.body, platform: 'desktop' } }, production);
+    assert.equal(desktopContext.origin, 'null');
   }
   for (const origin of ['null', 'https://untrusted.example']) {
     assert.equal(context({ ...capable, headers: { ...req.headers, origin } }, production).error.error, 'INVALID_BROWSER_ORIGIN');
   }
   const desktop = { ...capable, headers: { ...req.headers, origin: 'null' }, body: { ...capable.body, platform: 'desktop' } };
   assert.equal(context(desktop, production).origin, 'null');
+  // The relay canonicalizes the WebSocket origin the same way, so a desktop
+  // ticket is redeemable from file:// but a web ticket is not.
+  assert.equal(canonicalRelayOrigin('file://'), 'null');
+  assert.equal(canonicalRelayOrigin(undefined), 'null');
+  assert.equal(canonicalRelayOrigin(req.headers.origin), req.headers.origin);
   assert.equal(context({ ...desktop, headers: { ...desktop.headers, origin: 'https://untrusted.example' } }, production)
     .error.error, 'INVALID_BROWSER_ORIGIN');
 });
@@ -177,7 +185,7 @@ test('production preflight rejects invalid relay configuration and origins befor
     { patch: { VIDU_DEMO_PROXY_SECRET: '' }, signalingTransport: 'morphly-proxy-v1', expected: 'AI_SESSION_CONFIG_INVALID' },
     { patch: { VIDU_API_BASE_URL: 'https://api.vidu.cn' }, signalingTransport: 'morphly-proxy-v1', expected: 'AI_SESSION_CONFIG_INVALID' },
     { origin: 'https://untrusted.example', signalingTransport: 'morphly-proxy-v1', expected: 'INVALID_BROWSER_ORIGIN' },
-    { origin: 'http://localhost:5173', platform: 'desktop', signalingTransport: 'morphly-proxy-v1', expected: 'INVALID_BROWSER_ORIGIN' },
+    { origin: 'https://untrusted.example', platform: 'desktop', signalingTransport: 'morphly-proxy-v1', expected: 'INVALID_BROWSER_ORIGIN' },
     { origin: 'null', signalingTransport: 'morphly-proxy-v1', expectedStatus: 400,
       expected: 'Open Morphly from the app or a secure web address, then try again.' },
   ]) {
@@ -194,7 +202,7 @@ test('production preflight rejects invalid relay configuration and origins befor
         if (name === '../local-preview.js') return { isLocalPreviewRequest: () => false };
         if (name === '../supabase-admin.js') return { supabaseAdmin };
         if (name === '../../../shared/admin-auth.js') return { authenticateRequestUser: async () => ({ user: { id: 'fixture-owner' } }) };
-        if (name === '../vidu-demo-ticket.js') return { getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket };
+        if (name === '../vidu-demo-ticket.js') return { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket };
         if (name === '../../../shared/backend-logger.js') return { logErrorEvent() {}, logRequestEvent() {} };
         if (name === '../realtime-billing.js') return { realtimeWalletBalance: Number };
         if (name === '../decart-token.js') return {};

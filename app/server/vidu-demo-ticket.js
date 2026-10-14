@@ -40,6 +40,18 @@ function text(value, max = 256) {
   return typeof value === 'string' && value.length > 0 && value.length <= max && !/[\x00-\x20\x7f]/.test(value);
 }
 
+// Electron renderers do not present a stable origin: packaged builds may send
+// `null` or `file://`, development builds send http://localhost. Only exact
+// HTTPS origins are meaningful bindings; every other value collapses to the
+// opaque `null`. start-session only binds `null` for authenticated desktop
+// callers, so web tickets (bound to HTTPS) cannot be redeemed this way.
+export function canonicalRelayOrigin(origin) {
+  if (typeof origin === 'string' && origin !== 'null') {
+    try { const url = new URL(origin); if (url.protocol === 'https:' && url.origin === origin) return origin; } catch {}
+  }
+  return 'null';
+}
+
 function validOrigin(origin) {
   // Packaged Electron uses a file:// renderer. The authenticated session
   // handler alone authorizes this explicit opaque origin for desktop callers.

@@ -6,7 +6,7 @@ import { realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
-import { getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket } from '../vidu-demo-ticket.js';
+import { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket } from '../vidu-demo-ticket.js';
 
 const CREDITS_PER_SECOND = 2;
 const DECART_DEFAULT_API_BASE_URL = 'https://api.decart.ai';
@@ -53,8 +53,11 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
   // Keep their scoped provider credential until they opt in, in every hosted
   // environment. Current HTTPS web and packaged desktop clients opt in below.
   if (req.body?.signalingTransport !== 'morphly-proxy-v1') return null;
-  const origin = req.headers?.origin;
   const desktop = req.body?.platform === 'desktop';
+  // Desktop renderers send `null`, `file://`, or a localhost origin depending
+  // on how they were built; bind all non-HTTPS desktop origins as `null`
+  // (the relay applies the same canonicalization when redeeming the ticket).
+  const origin = desktop ? canonicalRelayOrigin(req.headers?.origin) : req.headers?.origin;
   let relayOrigin;
   try {
     const destination = new URL(`https://${req.headers?.host || ''}`);
@@ -62,11 +65,9 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
       || destination.search || destination.hash) throw new Error();
     relayOrigin = destination.origin;
     if (desktop) {
-      // Packaged Electron (file://) sends the opaque origin 'null'; the dev
-      // build rewrites its localhost origin to 'null' too. Relay tickets can
-      // only be bound to 'null' or an HTTPS origin, so reject anything else
-      // here, before a provider session is created.
-      if (origin !== 'null') throw new Error('Desktop clients must use the opaque origin');
+      // An HTTPS origin on a desktop request is a browser page claiming to be
+      // the desktop app; accept it only for this deployment's own origin.
+      if (origin !== 'null' && origin !== relayOrigin) throw new Error('Untrusted desktop origin');
     } else if (origin === 'null') {
       throw new Error('Null origin not allowed for web');
     } else if (origin) {

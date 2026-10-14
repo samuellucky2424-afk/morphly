@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
-import { getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, validateViduDemoTicket } from './vidu-demo-ticket.js';
+import { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, validateViduDemoTicket } from './vidu-demo-ticket.js';
 
 const PATH = '/api/vidu/live';
 const UPSTREAM = 'wss://api.vidu.com/live/ws/live/connect';
@@ -110,7 +110,7 @@ export function createViduDemoProxyServer({
       const ticketProtocol = protocols.find(p => p.startsWith('morphly-ticket.'));
       if (protocols.length !== 2 || !protocols.includes('morphly.plus') || !ticketProtocol) fail('INVALID_TICKET');
       payload = validateViduDemoTicket(ticketProtocol.slice('morphly-ticket.'.length), {
-        secret, audience, origin: req.headers.origin || '', now: now(),
+        secret, audience, origin: canonicalRelayOrigin(req.headers.origin), now: now(),
       });
       const pending = claimViduDemoLease(supabase.db, payload, { now: now(), startupMs });
       // A database transaction cannot be cancelled. Release a late claim if the
