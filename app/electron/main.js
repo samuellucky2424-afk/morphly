@@ -896,6 +896,31 @@ function resolveRendererDevUrl() {
   return process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
 }
 
+// The packaged renderer runs from file://, so Chromium sends the opaque
+// `Origin: null` that the hosted Plus relay accepts for desktop clients.
+// The development renderer is served from http://localhost:5173 instead, and
+// the hosted API rejects that origin (INVALID_BROWSER_ORIGIN) and cannot bind
+// relay tickets to it. Present the same opaque origin the packaged app uses,
+// only for HTTPS/WSS calls to remote /api routes made by the dev renderer.
+let developmentOriginBridgeInstalled = false;
+function installDevelopmentOriginBridge(targetSession) {
+  if (developmentOriginBridgeInstalled || !targetSession) return;
+  let rendererOrigin;
+  try { rendererOrigin = new URL(resolveRendererDevUrl()).origin; } catch { return; }
+  developmentOriginBridgeInstalled = true;
+  targetSession.webRequest.onBeforeSendHeaders(
+    { urls: ['https://*/api/*', 'wss://*/api/*'] },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders };
+      const originKey = Object.keys(requestHeaders).find(key => key.toLowerCase() === 'origin');
+      if (originKey && requestHeaders[originKey] === rendererOrigin) {
+        requestHeaders[originKey] = 'null';
+      }
+      callback({ requestHeaders });
+    },
+  );
+}
+
 function buildLoadFailureHtml(failedUrl, errorCode, errorDescription) {
   const safeUrl = String(failedUrl ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const safeDescription = String(errorDescription ?? '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1146,6 +1171,7 @@ function createWindow() {
   });
 
   if (isDevelopment) {
+    installDevelopmentOriginBridge(mainWindow.webContents.session);
     void mainWindow.loadURL(resolveRendererDevUrl());
   } else {
     const packagedIndexHtml = path.resolve(app.getAppPath(), 'dist', 'index.html');

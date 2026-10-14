@@ -62,8 +62,11 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
       || destination.search || destination.hash) throw new Error();
     relayOrigin = destination.origin;
     if (desktop) {
-      // Desktop clients (Electron) can have origin 'null', file://, or a dev localhost origin.
-      // They authenticate with their Firebase / Supabase bearer token and don't require HTTPS browser origin matching.
+      // Packaged Electron (file://) sends the opaque origin 'null'; the dev
+      // build rewrites its localhost origin to 'null' too. Relay tickets can
+      // only be bound to 'null' or an HTTPS origin, so reject anything else
+      // here, before a provider session is created.
+      if (origin !== 'null') throw new Error('Desktop clients must use the opaque origin');
     } else if (origin === 'null') {
       throw new Error('Null origin not allowed for web');
     } else if (origin) {
