@@ -477,8 +477,9 @@ test('packaged Electron proxies only to its configured HTTPS API origin', async 
   for (const [environment, origin] of [
     [{ VITE_API_BASE_URL: 'https://desktop.morphly.test/api' }, 'https://desktop.morphly.test'],
     [{ VITE_API_URL: 'https://other.morphly.test' }, 'https://other.morphly.test'],
-    [{ VITE_API_BASE_URL: '/api' }, 'https://live.morphly.fun'],
-    [{}, 'https://live.morphly.fun'],
+    [{ VITE_API_BASE_URL: '/api' }, 'https://morphly-alpha.vercel.app'],
+    [{}, 'https://morphly-alpha.vercel.app'],
+    [{ VITE_API_BASE_URL: '/api', VITE_PUBLIC_APP_URL: 'https://live.morphly.fun' }, 'https://live.morphly.fun'],
   ]) {
     const h = harness('', undefined, 'file:///app/index.html', { electron: true, environment });
     const client = h.exports.createViduClient({ apiKey: relayTicket });
