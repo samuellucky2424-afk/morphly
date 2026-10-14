@@ -49,8 +49,8 @@ test('start failures keep the real reason and never claim auto-recovery', () => 
     Object.assign(new Error('Plus signaling could not connect. Retry.'), { code: 'VIDU_SIGNALING_UNREACHABLE' }),
     'x',
   );
-  assert.match(signaling, /api\.vidu\.com/);
-  assert.match(signaling, /firewall, VPN/);
+  assert.match(signaling, /connect to its video server/);
+  assert.doesNotMatch(signaling, /api\.vidu\.com|firewall|VPN/);
 
   const timeout = getViduStartErrorMessage(new Error('Plus connection timed out after 45s'), 'x');
   assert.match(timeout, /did not return video in time/);
@@ -69,6 +69,17 @@ test('start failures keep the real reason and never claim auto-recovery', () => 
     getViduStartErrorMessage(new Error('The selected camera device is unavailable.'), 'x'),
     'The selected camera device is unavailable.',
   );
+});
+
+test('server session-creation failures are distinct from receiving-video or user-token failures', () => {
+  const error = Object.assign(new Error('The upstream call timed out'), {
+    code: 'AI_SESSION_CREATION_FAILED', providerCode: 'TIMEOUT', providerStatus: 408,
+  });
+  const message = getViduStartErrorMessage(error, 'x');
+  assert.match(message, /creating its video session/);
+  assert.doesNotMatch(message, /internet connection|return video|expired|recover/);
+  assert.equal(getViduStartErrorMessage({ code: 'AI_SESSION_CREATION_FAILED', message: 'Plus could not authenticate with its video service.' }, 'x'),
+    'Plus could not authenticate with its video service.');
 });
 
 test('dashboard shows the single engine without an engine chooser', () => {

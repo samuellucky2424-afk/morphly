@@ -6,6 +6,7 @@ import { realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket } from '../vidu-demo-ticket.js';
 
 const CREDITS_PER_SECOND = 2;
 const DECART_DEFAULT_API_BASE_URL = 'https://api.decart.ai';
@@ -27,14 +28,79 @@ function getViduApiKey() {
   return process.env.VIDU_API_KEY?.trim() || null;
 }
 
-function getViduApiBaseUrl() {
-  return (process.env.VIDU_API_BASE_URL?.trim() || VIDU_DEFAULT_API_BASE_URL).replace(/\/$/, '');
+export function getViduApiBaseUrl(environment = process.env) {
+  const configured = environment.VIDU_API_BASE_URL?.trim() || VIDU_DEFAULT_API_BASE_URL;
+  try {
+    const url = new URL(configured);
+    if (url.protocol !== 'https:' || !['api.vidu.com', 'api.vidu.cn'].includes(url.hostname)
+      || url.username || url.password || url.port || url.pathname !== '/' || url.search || url.hash) return null;
+    return url.origin;
+  } catch { return null; }
 }
 
-// Vidu's app-side HTTP and WebSocket APIs require the "Token <key>" scheme.
-// A bare key is rejected, which surfaced to users as a generic connection error.
+const VIDU_CONFIG_ERROR = { error: 'AI_SESSION_CONFIG_INVALID', details: 'Plus server configuration needs to be corrected. Contact support.' };
+
+// Match the demo's local proxy while binding each connection to its Morphly
+// account and deployment. Packaged Electron requests have an opaque Origin.
+export function getViduDemoSessionContext(req, { environment = process.env, supabase = supabaseAdmin } = {}) {
+  if (environment.VIDU_DEMO_PROXY !== 'true') return null;
+  const audience = getViduDemoAudience(environment);
+  if (!isViduDemoProxyEnabled(environment) || !hasViduDemoProxySecret(environment.VIDU_DEMO_PROXY_SECRET)
+    || !supabase?.db || !/^[A-Za-z0-9][A-Za-z0-9.-]{0,251}[A-Za-z0-9]$/.test(audience)) {
+    return { error: VIDU_CONFIG_ERROR };
+  }
+  // Installed clients and cached web bundles may ignore signaling metadata.
+  // Keep their scoped provider credential until they advertise relay support.
+  // Preview deployments retain the original opt-in experiment contract.
+  if (environment.VERCEL_ENV === 'production'
+    && req.body?.signalingTransport !== 'morphly-proxy-v1') return null;
+  const origin = req.headers?.origin;
+  const desktop = req.body?.platform === 'desktop';
+  let relayOrigin;
+  try {
+    const destination = new URL(`https://${req.headers?.host || ''}`);
+    if (destination.username || destination.password || destination.port || destination.pathname !== '/'
+      || destination.search || destination.hash) throw new Error();
+    relayOrigin = destination.origin;
+    if (origin !== 'null' || !desktop) {
+      const source = new URL(origin);
+      if (source.protocol !== 'https:' || source.origin !== origin || (!desktop && origin !== relayOrigin)) throw new Error();
+    }
+  } catch {
+    return { error: { error: 'INVALID_BROWSER_ORIGIN', details: 'A valid app origin is required to start Plus.' } };
+  }
+  return { secret: environment.VIDU_DEMO_PROXY_SECRET, audience, origin, relayOrigin,
+    userAgent: normalizeClientLabel(req.headers?.['user-agent'], 512) || '' };
+}
+
+export function createViduDemoSignalingSession(providerSession, context, { userId, sessionId }) {
+  if (!context) return providerSession;
+  const { ticket, connectionId } = issueViduDemoTicket({ secret: context.secret,
+    userId, sessionId, liveId: providerSession.liveId, clientSecret: providerSession.token,
+    origin: context.origin, audience: context.audience, maxSeconds: providerSession.sessionLimit,
+    providerExpiresAt: providerSession.expiresAt });
+  return { ...providerSession, token: ticket,
+    signaling: { transport: 'proxy', path: '/api/vidu/live', connectionId, origin: context.relayOrigin } };
+}
+
+// Match the provided quick-start launcher's normalization for vda_ API keys.
 function getViduAuthorizationHeader(apiKey) {
   return /^Token\s/i.test(apiKey) ? apiKey : `Token ${apiKey}`;
+}
+
+function getViduSessionRequestTimeoutMs() {
+  const configured = Number(process.env.VIDU_SESSION_REQUEST_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured >= 5000 ? Math.min(60000, Math.floor(configured)) : 15000;
+}
+
+function getViduRequestErrorCode(error) {
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'TIMEOUT';
+  const allowed = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'CERT_HAS_EXPIRED',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+    'ERR_TLS_CERT_ALTNAME_INVALID', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN']);
+  const candidates = [error, error?.cause, ...(Array.isArray(error?.cause?.errors) ? error.cause.errors.slice(0, 5) : [])];
+  return candidates.map(candidate => candidate?.code).find(code => allowed.has(code)) || null;
 }
 
 export function normalizeRealtimeProvider(value) {
@@ -127,9 +193,11 @@ export async function createViduTemporaryKey({
   sessionId,
   installationId,
   imageUrl,
+  proxyContext,
 }) {
   const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 120));
   const baseUrl = getViduApiBaseUrl();
+  if (!baseUrl) return { error: VIDU_CONFIG_ERROR };
 
   if (process.env.NODE_ENV === 'development' && !process.env.VERCEL && (process.env.VIDU_MOCK === 'true' || apiKey === 'mock')) {
     return {
@@ -146,6 +214,8 @@ export async function createViduTemporaryKey({
     return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'Choose a reference image under 2 MB for Plus.' } };
   }
 
+  const requestTimeoutMs = getViduSessionRequestTimeoutMs();
+  const requestDeadline = Date.now() + requestTimeoutMs;
   for (let attempt = 1; attempt <= VIDU_TOKEN_MAX_ATTEMPTS; attempt += 1) {
     try {
       const response = await fetch(`${baseUrl}/live/s_editing/realtime`, {
@@ -153,12 +223,13 @@ export async function createViduTemporaryKey({
         headers: {
           'Content-Type': 'application/json',
           Authorization: getViduAuthorizationHeader(apiKey),
+          ...(proxyContext ? { Origin: proxyContext.origin, 'User-Agent': proxyContext.userAgent } : {}),
         },
         body: JSON.stringify({
           image_url: effectiveImageUrl,
           editing_type: 'subject_replacement',
         }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(Math.max(1, requestDeadline - Date.now())),
       });
 
       const data = await response.json().catch(() => null);
@@ -241,15 +312,21 @@ export async function createViduTemporaryKey({
         baseUrl,
       };
     } catch (error) {
-      const isTimeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
-      console.warn('[Vidu] request exception:', error?.message);
+      const providerCode = getViduRequestErrorCode(error);
+      const isTimeout = providerCode === 'TIMEOUT' || providerCode === 'UND_ERR_CONNECT_TIMEOUT' || providerCode === 'UND_ERR_HEADERS_TIMEOUT';
+      console.warn('[Vidu] request exception', {
+        operation: 'create_session', host: new URL(baseUrl).hostname,
+        requestTimeoutMs, providerCode,
+      });
 
       return {
         error: {
           error: 'AI_SESSION_CREATION_FAILED',
           providerStatus: isTimeout ? 408 : null,
-          providerCode: isTimeout ? 'TIMEOUT' : null,
-          details: 'Plus is temporarily unavailable. Check your connection, then try again.',
+          providerCode,
+          details: isTimeout
+            ? 'Plus timed out while creating its video session. Try again shortly.'
+            : 'Plus could not create its video session. Please try again.',
         },
       };
     }
@@ -274,6 +351,7 @@ async function createProviderTemporaryCredential({
   sessionId,
   installationId,
   imageUrl,
+  proxyContext,
 }) {
   if (provider === 'decart') return createScopedDecartKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
   if (provider === 'vidu' || provider === 'decart') {
@@ -284,6 +362,7 @@ async function createProviderTemporaryCredential({
       sessionId,
       installationId,
       imageUrl,
+      proxyContext,
     });
   }
 
@@ -558,6 +637,9 @@ export default async function handler(req, res) {
         error: 'A canonical browser origin is required to start an AI session.',
       });
     }
+    const proxyContext = getViduDemoSessionContext(req);
+    if (proxyContext?.error) return res.status(503).json({ allowed: false, ...proxyContext.error });
+    if (!getViduApiBaseUrl()) return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
 
     // Fire-and-forget: request logging must not delay session startup.
     void logRequestEvent('start-session.request', {
@@ -684,7 +766,7 @@ export default async function handler(req, res) {
       throw providerAuditError;
     }
     const providerCredentialStartedAt = Date.now();
-    const providerSession = await createProviderTemporaryCredential({
+    let providerSession = await createProviderTemporaryCredential({
       provider,
       apiKey: providerApiKey,
       maxSeconds,
@@ -693,6 +775,7 @@ export default async function handler(req, res) {
       sessionId: newSession.id,
       installationId,
       imageUrl: req.body?.imageUrl || req.body?.image_url || req.body?.referenceImage,
+      proxyContext,
     });
     const providerCredentialMs = Date.now() - providerCredentialStartedAt;
     if (providerSession.error) {
@@ -711,6 +794,13 @@ export default async function handler(req, res) {
       });
       await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
       return res.status(502).json({ allowed: false, ...providerSession.error });
+    }
+
+    try {
+      providerSession = createViduDemoSignalingSession(providerSession, proxyContext, { userId, sessionId: newSession.id });
+    } catch {
+      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
     }
 
     const auditStartedAt = Date.now();
@@ -774,6 +864,7 @@ export default async function handler(req, res) {
       traceId: providerSession.traceId,
       renderUid: providerSession.renderUid,
       rtc: providerSession.rtc,
+      signaling: providerSession.signaling,
       expiresAt: providerSession.expiresAt,
       provider,
       model: providerModel,

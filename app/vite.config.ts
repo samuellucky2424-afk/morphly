@@ -11,6 +11,9 @@ export default defineConfig(({ command, mode }) => {
   const workspaceDirectory = path.resolve(__dirname, '..');
   const env = loadEnv(mode, workspaceDirectory, '');
   const runtimeEnv = { ...env, ...process.env };
+  if (command === 'build' && !runtimeEnv.VITE_FIREBASE_CONFIG?.trim()) {
+    throw new Error('VITE_FIREBASE_CONFIG is required to build Morphly sign-in.');
+  }
   validatePublicBuildEnvironment(runtimeEnv, {
     requireHttps: command === 'build' && mode === 'production',
   });

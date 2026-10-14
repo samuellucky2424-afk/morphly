@@ -112,3 +112,41 @@ test('Vidu does not create sessions without an image or retry ambiguous provider
   await createViduTemporaryKey({ apiKey: 'test', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
   assert.equal(calls, 1);
 });
+
+test('Vidu respects the configured request deadline and does not retry an ambiguous timeout', async (t) => {
+  const previous = process.env.VIDU_SESSION_REQUEST_TIMEOUT_MS;
+  process.env.VIDU_SESSION_REQUEST_TIMEOUT_MS = '60000';
+  t.after(() => {
+    if (previous === undefined) delete process.env.VIDU_SESSION_REQUEST_TIMEOUT_MS;
+    else process.env.VIDU_SESSION_REQUEST_TIMEOUT_MS = previous;
+  });
+  let deadline;
+  let calls = 0;
+  const logs = [];
+  t.mock.method(AbortSignal, 'timeout', ms => { deadline = ms; return new AbortController().signal; });
+  t.mock.method(console, 'warn', (...args) => logs.push(JSON.stringify(args)));
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    throw new DOMException('Do not log a private API key or reference image', 'TimeoutError');
+  });
+  const result = await createViduTemporaryKey({ apiKey: 'private-key', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
+  assert.ok(deadline > 59000 && deadline <= 60000);
+  assert.equal(calls, 1);
+  assert.equal(result.error.providerStatus, 408);
+  assert.equal(result.error.providerCode, 'TIMEOUT');
+  assert.match(result.error.details, /creating its video session/);
+  assert.doesNotMatch(JSON.stringify(logs), /private API key|reference image|private-key/);
+});
+
+test('Vidu request failures expose only recognized nested network codes', async (t) => {
+  t.mock.method(console, 'warn', () => {});
+  for (const code of ['ENOTFOUND', 'private-secret-value']) {
+    t.mock.method(globalThis, 'fetch', async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code } }); });
+    const result = await createViduTemporaryKey({ apiKey: 'private-key', maxSeconds: 60, imageUrl: 'https://example.com/image.png' });
+    assert.equal(result.error.providerCode, code === 'ENOTFOUND' ? code : null);
+    assert.equal(result.error.providerStatus, null);
+    assert.equal(JSON.stringify(result).includes('private-secret-value'), false);
+    t.mock.restoreAll();
+    t.mock.method(console, 'warn', () => {});
+  }
+});

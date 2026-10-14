@@ -17,10 +17,10 @@ import {
   CircleAlert,
   X,
 } from 'lucide-react';
-import type { ViduRealtimeSession } from '@/lib/vidu-realtime';
+import type { ViduProxySignaling, ViduRealtimeSession } from '@/lib/vidu-realtime';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
-import { apiFetchWithAuth } from '@/lib/api-client';
+import { apiFetchWithAuth, getTrustedApiOrigin } from '@/lib/api-client';
 import {
   getCreditRatePerSecond,
   getBillableUsageUnits,
@@ -90,6 +90,7 @@ type AiSessionResponse = {
   allowed: boolean;
   token?: string;
   baseUrl?: string;
+  signaling?: ViduProxySignaling;
   liveId?: string;
   traceId?: string;
   renderUid?: string;
@@ -411,7 +412,13 @@ async function apiRequest<T>(endpoint: string, options?: RequestInit): Promise<T
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw Object.assign(new Error(errorData.details || errorData.error || errorData.message || `API Error: ${response.statusText}`), { code: errorData.code, retryAfterSeconds: errorData.retryAfterSeconds });
+    const code = errorData.code || errorData.error;
+    throw Object.assign(new Error(errorData.details || errorData.error || errorData.message || `API Error: ${response.statusText}`), {
+      code: typeof code === 'string' && /^[a-zA-Z][a-zA-Z0-9_/-]{0,79}$/.test(code) ? code : undefined,
+      providerStatus: Number.isInteger(errorData.providerStatus) && errorData.providerStatus >= 100 && errorData.providerStatus <= 599 ? errorData.providerStatus : undefined,
+      providerCode: typeof errorData.providerCode === 'string' && /^[a-zA-Z0-9_/-]{1,80}$/.test(errorData.providerCode) ? errorData.providerCode : undefined,
+      retryAfterSeconds: errorData.retryAfterSeconds,
+    });
   }
 
   return response.json();
@@ -1657,6 +1664,7 @@ function Dashboard() {
       isRecovery?: boolean;
       modelName?: string;
       baseUrl?: string;
+      signaling?: ViduProxySignaling;
       maxSeconds?: number;
       expiresAt?: string | null;
       serverNow?: number;
@@ -1670,7 +1678,7 @@ function Dashboard() {
     let activeRealtimeSession: ViduRealtimeSession | null = null;
     const controller = new AbortController();
     viduAbortRef.current = controller;
-    const startupDeadline = setTimeout(() => controller.abort(), 40000);
+    const startupDeadline = setTimeout(() => controller.abort(), options?.signaling?.transport === 'proxy' ? 140000 : 40000);
     let firstFrameSettled = false;
     let firstFrameDelivered = false;
     let resolveFirstFrame: (() => void) | null = null;
@@ -1717,7 +1725,7 @@ function Dashboard() {
       }
 
       const { createViduClient, models } = await import('@/lib/vidu-realtime');
-      const client = createViduClient({ apiKey: apiToken, baseUrl: options?.baseUrl });
+      const client = createViduClient({ apiKey: apiToken, baseUrl: options?.baseUrl, signaling: options?.signaling });
       const model = models.realtime(options?.modelName || VIDU_REALTIME_MODEL);
       // The reference image is already part of the server creation request.
 
@@ -1750,6 +1758,7 @@ function Dashboard() {
         signal: controller.signal,
         apiKey: apiToken,
         baseUrl: options?.baseUrl,
+        signaling: options?.signaling,
         maxSeconds: options?.maxSeconds,
         expiresAt: options?.expiresAt,
         serverNow: options?.serverNow,
@@ -1910,6 +1919,7 @@ function Dashboard() {
       isRecovery?: boolean;
       modelName?: string;
       baseUrl?: string;
+      signaling?: ViduProxySignaling;
       maxSeconds?: number;
       expiresAt?: string | null;
       serverNow?: number;
@@ -1925,6 +1935,7 @@ function Dashboard() {
         isRecovery: options?.isRecovery,
         modelName: VIDU_REALTIME_MODEL,
         baseUrl: options?.baseUrl,
+        signaling: options?.signaling,
         maxSeconds: options?.maxSeconds,
         expiresAt: options?.expiresAt,
         serverNow: options?.serverNow,
@@ -2643,6 +2654,7 @@ function Dashboard() {
             installationId: getInstallationId(),
             platform: window.electron ? 'desktop' : 'web',
             provider: requestedProvider,
+            ...(getTrustedApiOrigin() ? { signalingTransport: 'morphly-proxy-v1' } : {}),
             billingVersion: 2,
             ...(viduReference ? { referenceImage: viduReference, editingType: 'subject_replacement' } : {}),
           }),
@@ -2690,9 +2702,11 @@ function Dashboard() {
         try {
           setUiStatus(`Connecting to ${requestedProviderLabel}...`);
           const providerConnectStartedAt = performance.now();
+          const connectTimeoutMs = startResponse.signaling?.transport === 'proxy' ? 145000 : AI_CONNECT_TIMEOUT_MS[requestedProvider];
           realtimeClient = await withTimeout(
             connectToRealtimeProvider(requestedProvider, stream, sessionToken, getDesiredTransformState(), {
               baseUrl: startResponse.baseUrl,
+              signaling: startResponse.signaling,
               maxSeconds: startResponse.maxSeconds,
               expiresAt: startResponse.expiresAt,
               serverNow: startResponse.serverNow,
@@ -2701,8 +2715,8 @@ function Dashboard() {
               renderUid: startResponse.renderUid,
               rtc: startResponse.rtc,
             }),
-            AI_CONNECT_TIMEOUT_MS[requestedProvider],
-            `${requestedProviderLabel} connection timed out after ${AI_CONNECT_TIMEOUT_MS[requestedProvider] / 1000}s`,
+            connectTimeoutMs,
+            `${requestedProviderLabel} connection timed out after ${connectTimeoutMs / 1000}s`,
           );
           if (!realtimeClient) throw new Error(`${requestedProviderLabel} connection was not established`);
           console.info('[AI_STARTUP]', {

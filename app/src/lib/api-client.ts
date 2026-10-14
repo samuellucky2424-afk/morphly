@@ -34,6 +34,21 @@ function getApiBase(): string {
   return configuredBase || `${DEPLOYED_APP_ORIGIN}/api`;
 }
 
+export function getTrustedApiOrigin(): string | null {
+  if (typeof window === 'undefined') return null;
+  const candidate = window.location.protocol === 'https:'
+    ? window.location.origin
+    : isFileProtocol() && window.electron ? getApiBase() : null;
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    if (url.protocol !== 'https:' || url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 function withLeadingSlash(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;
 }

@@ -27,5 +27,7 @@ test_shmem.ps1
 app/node_modules/
 app/dist/
 app/release/
+app/release-*/
+app/.meanvc/
 app/build/
 app/.codex-run/

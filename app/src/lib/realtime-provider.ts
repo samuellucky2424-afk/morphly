@@ -48,14 +48,20 @@ function sanitizeProviderNames(text: string): string {
  * visible so user screenshots are diagnosable.
  */
 export function getViduStartErrorMessage(error: unknown, fallback: string): string {
-  const candidate = error as { code?: unknown; message?: unknown } | null;
+  const candidate = error as { code?: unknown; message?: unknown; providerCode?: unknown } | null;
   const code = typeof candidate?.code === 'string' ? candidate.code : '';
   const message = error instanceof Error ? error.message : typeof candidate?.message === 'string' ? candidate.message : '';
   const diagnostic = `${code} ${message}`.toLowerCase();
   const detail = sanitizeProviderNames(message || fallback).slice(0, 180);
 
+  if (code === 'AI_SESSION_CREATION_FAILED') {
+    if (['TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(String(candidate?.providerCode))) {
+      return 'Plus timed out while creating its video session. Try again shortly.';
+    }
+    return detail;
+  }
   if (code === 'VIDU_SIGNALING_UNREACHABLE') {
-    return 'Plus could not reach its video server (api.vidu.com). A firewall, VPN, proxy or antivirus may be blocking it. Check your network, then try again.';
+    return 'Plus could not connect to its video server. Start a new session and try again.';
   }
   if (/timed out|timeout/.test(diagnostic)) {
     return `Plus did not return video in time. Check your internet connection, then try again. (${detail})`;

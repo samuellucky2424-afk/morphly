@@ -1,5 +1,8 @@
 import { VIDU_REALTIME_MODEL } from './realtime-provider';
+import { getTrustedApiOrigin } from './api-client';
 import type { RtcEngine } from 'aliyun-rtc-sdk';
+
+type CameraRtcEngine = RtcEngine & { startPreview(): Promise<void> };
 
 let rtcReadyPromise: Promise<typeof import('aliyun-rtc-sdk')['default']> | null = null;
 
@@ -22,6 +25,35 @@ export function prepareViduRtc() {
 }
 
 export type ViduConnectionState = 'connecting' | 'connected' | 'generating' | 'disconnected' | 'reconnecting';
+type ViduStartupPhase = 'camera_preparing' | 'camera_prepared' | 'signaling_open' | 'initialized'
+  | 'rtc_joining' | 'rtc_joined' | 'camera_preview' | 'publishing' | 'published'
+  | 'renderer_online' | 'renderer_subscribing' | 'renderer_subscribed' | 'video_received';
+
+// AliRtcErrorType values from the pinned AliRTC 7.1.9 SDK. Audio, screen and
+// optional secondary-video failures do not stop this camera-only startup.
+const RTC_CAMERA_FAILURES = new Set([17039620, 17039621, 17039622, 17039623]);
+const RTC_VIDEO_PUBLISH_FAILURES = new Set([16843857, 16974597, 16843782]);
+const RTC_VIDEO_SUBSCRIBE_FAILURES = new Set([16844114, 16974852, 16844112]);
+const RTC_JOIN_FAILURES = new Set([33620481, 33620482, 33620484, 33620483, 33620485,
+  16908804, 16974081, 16974338]);
+
+function numericRtcCode(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && Math.abs(value) <= 2147483647
+    ? value : undefined;
+}
+
+function rtcErrorCode(error: unknown): number | undefined {
+  if (typeof error === 'number') return numericRtcCode(error);
+  if (!error || typeof error !== 'object') return undefined;
+  const candidate = error as { code?: unknown; errorCode?: unknown };
+  return numericRtcCode(candidate.code) ?? numericRtcCode(candidate.errorCode);
+}
+export interface ViduProxySignaling {
+  transport: 'proxy';
+  path: '/api/vidu/live';
+  connectionId: string;
+  origin?: string;
+}
 export interface ViduTransformInput {
   prompt?: string;
   enhance?: boolean;
@@ -31,6 +63,7 @@ export interface ViduTransformInput {
 export interface ViduClientOptions {
   apiKey?: string;
   baseUrl?: string;
+  signaling?: ViduProxySignaling;
   liveId?: string;
   traceId?: string;
   renderUid?: string;
@@ -76,12 +109,26 @@ export function buildViduSocketUrl(baseUrl: string, liveId: string, connId: stri
   return url.toString();
 }
 
+export function buildViduProxySocketUrl(signaling: ViduProxySignaling): string {
+  const trustedOrigin = getTrustedApiOrigin();
+  if (!signaling || signaling.transport !== 'proxy' || signaling.path !== '/api/vidu/live'
+    || typeof signaling.connectionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(signaling.connectionId)
+    || !trustedOrigin || (signaling.origin !== undefined && signaling.origin !== trustedOrigin)) {
+    throw new Error('Unsupported Plus relay address. Start a new session.');
+  }
+  const url = new URL('/api/vidu/live', trustedOrigin);
+  url.protocol = 'wss:';
+  return url.toString();
+}
+
 export class ViduRealtimeClient {
   private apiKey: string;
   private baseUrl: string;
-  constructor(options: { apiKey: string; baseUrl?: string }) {
+  private signaling?: ViduProxySignaling;
+  constructor(options: { apiKey: string; baseUrl?: string; signaling?: ViduProxySignaling }) {
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl || 'https://api.vidu.com';
+    this.signaling = options.signaling;
   }
 
   async connect(inputStream: MediaStream, options: ViduClientOptions = {}): Promise<ViduRealtimeSession> {
@@ -92,6 +139,12 @@ export class ViduRealtimeClient {
       || !this.apiKey || this.apiKey.startsWith('mock_') || this.apiKey.startsWith('vda_')) {
       throw new Error('Plus requires real Vidu session credentials. Restart the session.');
     }
+    const signaling = options.signaling === undefined ? this.signaling : options.signaling;
+    const proxyUrl = signaling === undefined ? null : buildViduProxySocketUrl(signaling);
+    if (proxyUrl && !/^[A-Za-z0-9_.-]{1,12000}$/.test(this.apiKey)) {
+      throw new Error('Plus relay session credentials are invalid. Start a new session.');
+    }
+    const startupTimeoutMs = proxyUrl ? 120000 : 35000;
     const credentialExpiries = [Number(rtc.token_expire_at) * 1000, Date.parse(options.expiresAt || '')]
       .filter(value => Number.isFinite(value) && value > 0 && value <= 8.64e15);
     const clockOffsetMs = typeof options.serverNow === 'number' && Number.isFinite(options.serverNow)
@@ -108,9 +161,10 @@ export class ViduRealtimeClient {
     // DEBUG (0) prints join credentials and signed stream URLs to the console.
     // Keep our scoped diagnostics below instead of the SDK's raw transport logs.
     AliRtcEngine.setLogLevel(AliRtcEngine.AliRtcLogLevel.NONE);
-    let engine: RtcEngine | null = AliRtcEngine.getInstance();
+    // startPreview is present in pinned 7.1.9, but absent from our narrow shim.
+    let engine: CameraRtcEngine | null = AliRtcEngine.getInstance() as CameraRtcEngine;
     const cameraTrack = inputTrack.clone();
-    const connId = crypto.randomUUID();
+    const connId = signaling?.connectionId || crypto.randomUUID();
     let socket: WebSocket | null = null;
     let sequence = 1;
     let state: ViduConnectionState = 'connecting';
@@ -119,6 +173,10 @@ export class ViduRealtimeClient {
     let cleanupPromise: Promise<void> | null = null;
     let published = false;
     let receivedVideo = false;
+    let startupComplete = false;
+    const startupStartedAt = Date.now();
+    let lastPhase: ViduStartupPhase = 'camera_preparing';
+    let startupFailure: Error | null = null;
     let initRetry: ReturnType<typeof setTimeout> | undefined;
     let socketRetry: ReturnType<typeof setTimeout> | undefined;
     let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -130,13 +188,32 @@ export class ViduRealtimeClient {
     let rejectStartup: (error: Error) => void = () => {};
     let resolveInit: () => void = () => {};
     let resolveVideo: () => void = () => {};
+    let resolvePublished: () => void = () => {};
     const initPromise = new Promise<void>(resolve => { resolveInit = resolve; });
     const videoPromise = new Promise<void>(resolve => { resolveVideo = resolve; });
+    const publishedPromise = new Promise<void>(resolve => { resolvePublished = resolve; });
     const failurePromise = new Promise<never>((_, reject) => { rejectStartup = reject; });
     void failurePromise.catch(() => {});
     const changeState = (next: ViduConnectionState) => {
       state = next;
       options.onConnectionChange?.(next);
+    };
+    const logStartup = (event: 'phase' | 'rtc_error' | 'rtc_connection_state' | 'camera_exception'
+      | 'video_publish_state' | 'renderer_subscription_state' | 'startup_failed',
+    codes: { code?: unknown; stateCode?: unknown; reasonCode?: unknown } = {}) => {
+      const safeCodes: Record<string, number> = {};
+      for (const [name, value] of Object.entries(codes)) {
+        const code = numericRtcCode(value);
+        if (code !== undefined) safeCodes[name] = code;
+      }
+      const details = JSON.stringify({ event, phase: lastPhase,
+        elapsedMs: Math.max(0, Date.now() - startupStartedAt), ...safeCodes });
+      if (event === 'startup_failed') console.warn('[Vidu] startup', details);
+      else console.info('[Vidu] startup', details);
+    };
+    const recordPhase = (phase: ViduStartupPhase, code?: unknown) => {
+      lastPhase = phase;
+      logStartup('phase', { code });
     };
     const send = (type: number, payload: Record<string, unknown>) => {
       if (socket?.readyState !== WebSocket.OPEN) throw new Error('Plus signaling connection is closed.');
@@ -168,16 +245,30 @@ export class ViduRealtimeClient {
       const currentEngine = engine;
       engine = null;
       currentEngine?.removeAllListeners();
-      cleanupPromise = Promise.resolve().then(() => currentEngine?.destroy()).catch(() => {});
+      // Media and signaling stop above even if SDK destruction never settles.
+      cleanupPromise = new Promise<void>(resolve => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(destroyTimer);
+          resolve();
+        };
+        const destroyTimer = setTimeout(finish, 2000);
+        void Promise.resolve().then(() => currentEngine?.destroy()).catch(() => {}).then(finish);
+      });
       return cleanupPromise;
     };
-    const fail = (message: string, reason?: string) => {
+    const fail = (message: string, reason?: string, rawCode?: unknown) => {
       if (stopped) return;
-      const error = Object.assign(new Error(message), { code: reason === 'ws_handshake_failed' ? 'VIDU_SIGNALING_UNREACHABLE' : undefined });
-      console.warn('[Vidu] session diagnostics', JSON.stringify({
-        liveId, traceId: options.traceId, reason, initialized: ready,
-        published, receivedVideo,
-      }));
+      const code = numericRtcCode(rawCode);
+      const context = code === undefined ? `Stage: ${lastPhase}.` : `RTC code: ${code}. Stage: ${lastPhase}.`;
+      const error = Object.assign(new Error(`${message} ${context}`), {
+        code: reason === 'ws_handshake_failed' ? 'VIDU_SIGNALING_UNREACHABLE' : undefined,
+        rtcCode: code, startupPhase: lastPhase,
+      });
+      startupFailure = error;
+      logStartup('startup_failed', { code });
       rejectStartup(error);
       void cleanup();
       options.onError?.(error);
@@ -192,18 +283,78 @@ export class ViduRealtimeClient {
       changeState('connecting');
       window.addEventListener('pagehide', onPageHide);
       options.signal?.addEventListener('abort', onAbort, { once: true });
-      startupTimer = setTimeout(() => fail('Plus connection timed out before receiving generated video.'), 35000);
-      if (credentialDeadline - Date.now() <= 155000) {
+      startupTimer = setTimeout(() => fail('Plus connection timed out before receiving generated video.'), startupTimeoutMs);
+      if (credentialDeadline - Date.now() <= startupTimeoutMs + 120000) {
         // Later deadlines cannot be reached within the startup + session duration caps.
         credentialTimer = setTimeout(() => {
           if (credentialsExpired()) fail(expiredMessage, 'credentials_expired');
         }, Math.max(0, credentialDeadline - Date.now()));
       }
+      const rendererError = (error: unknown, uid?: string) => {
+        if (stopped || startupComplete || (uid !== undefined && String(uid) !== renderUid)) return;
+        const code = rtcErrorCode(error);
+        if (code !== undefined && RTC_VIDEO_SUBSCRIBE_FAILURES.has(code)) {
+          fail('Plus could not receive the renderer video. Start a new session.', 'rtc_subscribe_failed', code);
+        }
+      };
+      engine.on('occurError', (error, uid) => {
+        if (stopped || startupComplete) return;
+        const code = rtcErrorCode(error);
+        logStartup('rtc_error', { code });
+        const localError = uid === undefined || String(uid) === rtc.user_id;
+        if (code !== undefined && localError && RTC_CAMERA_FAILURES.has(code)) {
+          fail('Plus could not use the selected camera. Start a new session.', 'rtc_camera_failed', code);
+        } else if (code !== undefined && localError && RTC_VIDEO_PUBLISH_FAILURES.has(code)) {
+          fail('Plus could not publish the camera video. Start a new session.', 'rtc_publish_failed', code);
+        } else if (code !== undefined && localError && RTC_JOIN_FAILURES.has(code)) {
+          fail('Plus could not join its video room. Start a new session.', 'rtc_join_failed', code);
+        } else rendererError(error, uid);
+      });
+      // 7.1.9 forwards this internal event through occurError. Register the alias
+      // for SDK builds that expose it, while using the public event above.
+      (engine as RtcEngine & { on(event: 'remoteSubscribeError', handler: typeof rendererError): void })
+        .on('remoteSubscribeError', rendererError);
+      engine.on('localDeviceException', (device, exception) => {
+        if (stopped || startupComplete) return;
+        if ((device === 4 && [9, 10, 11].includes(exception)) || (device === 6 && exception === 13)) {
+          logStartup('camera_exception', { code: exception, stateCode: device });
+          fail('Plus lost access to the selected camera. Start a new session.', 'rtc_camera_failed', exception);
+        }
+      });
+      engine.on('connectionStatusChange', (status, reason) => {
+        if (stopped || startupComplete) return;
+        logStartup('rtc_connection_state', { stateCode: status, reasonCode: reason });
+        if (status === 5 || (status === 1 && reason === 8)) {
+          fail('Plus could not connect to its video room. Start a new session.', 'rtc_join_failed', reason);
+        }
+      });
+      engine.on('videoPublishStateChanged', (_old, next) => {
+        if (stopped) return;
+        logStartup('video_publish_state', { stateCode: next });
+        // State 1 may precede SDK retries; only state 3 confirms publication.
+        if (next === 3 && !published) {
+          published = true;
+          recordPhase('published', next);
+          resolvePublished();
+        }
+      });
+      engine.on('remoteUserOnLineNotify', uid => {
+        if (!stopped && !receivedVideo && String(uid) === renderUid) recordPhase('renderer_online');
+      });
       engine.on('videoSubscribeStateChanged', (userId: string, _old: number, next: number) => {
-        if (String(userId) !== renderUid || next !== 3 || stopped) return;
+        if (String(userId) !== renderUid || stopped || receivedVideo) return;
+        if (next === 2) recordPhase('renderer_subscribing', next);
+        else if (next === 3) recordPhase('renderer_subscribed', next);
+        else logStartup('renderer_subscription_state', { stateCode: next });
+        if (next !== 3) return;
         void engine?.getVideoTrack({ userId, streamType: 0 }).then(track => {
-          if (!track || stopped) return;
+          if (stopped) return;
+          if (!track || track.readyState === 'ended') {
+            fail('Plus subscribed to its renderer but received no usable video track. Start a new session.', 'rtc_video_track_missing');
+            return;
+          }
           receivedVideo = true;
+          recordPhase('video_received');
           options.onRemoteStream?.(new MediaStream([track]));
           resolveVideo();
           if (ready) changeState('generating');
@@ -224,12 +375,15 @@ export class ViduRealtimeClient {
       const preparedTrack = await Promise.race([engine.getVideoTrack({ streamType: 0 }), failurePromise]);
       assertActive();
       if (!preparedTrack) throw new Error('Plus could not prepare the selected camera track.');
+      recordPhase('camera_prepared');
       const connectSignaling = () => {
       clearTimeout(socketRetry);
       if (stopped) return;
       if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
       socketAttempts++;
-      const currentSocket = new WebSocket(buildViduSocketUrl(options.baseUrl || this.baseUrl, liveId, connId, this.apiKey));
+      const currentSocket = proxyUrl
+        ? new WebSocket(proxyUrl, ['morphly.plus', `morphly-ticket.${this.apiKey}`])
+        : new WebSocket(buildViduSocketUrl(options.baseUrl || this.baseUrl, liveId, connId, this.apiKey));
       socket = currentSocket;
       let retryScheduled = false;
       const retryHandshake = (closeCode?: number) => {
@@ -244,19 +398,17 @@ export class ViduRealtimeClient {
         currentSocket.onerror = null; currentSocket.onclose = null;
         currentSocket.close();
         if (socketAttempts >= 3 || (closeCode !== undefined && [1008, 4001, 4003].includes(closeCode))) {
-          fail(typeof navigator !== 'undefined' && /Edg\//.test(navigator.userAgent)
-            ? 'Plus signaling could not connect in Edge. Try this session in Chrome. Browser or network filtering may be blocking the connection.'
-            : 'Plus signaling could not connect. Retry. Browser or network filtering may be blocking the connection.', 'ws_handshake_failed');
+          fail('Plus signaling could not connect. Start a new session and try again.', 'ws_handshake_failed');
           return;
         }
         changeState('reconnecting');
         socketRetry = setTimeout(connectSignaling, socketAttempts * 1000);
       };
-      handshakeTimer = setTimeout(() => retryHandshake(), 7000);
+      handshakeTimer = setTimeout(() => retryHandshake(), proxyUrl ? 120000 : 7000);
       currentSocket.onopen = () => {
         clearTimeout(handshakeTimer);
         if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
-        if (!stopped) { changeState('connecting'); send(1, { conn_init: { version: 1 } }); }
+        if (!stopped) { recordPhase('signaling_open'); changeState('connecting'); send(1, { conn_init: { version: 1 } }); }
       };
       currentSocket.onerror = () => retryHandshake();
       currentSocket.onclose = event => retryHandshake(event.code);
@@ -270,6 +422,7 @@ export class ViduRealtimeClient {
             clearTimeout(initRetry);
             if (!ready) {
               ready = true;
+              recordPhase('initialized');
               changeState('connected');
               sessionTimer = setTimeout(() => fail('Plus quality-test session finished. Start again to continue.'),
                 Math.max(1, Math.min(options.maxSeconds || 120, 120)) * 1000);
@@ -281,7 +434,7 @@ export class ViduRealtimeClient {
               if (credentialsExpired()) { fail(expiredMessage, 'credentials_expired'); return; }
               if (!stopped) { try { send(1, { conn_init: { version: 1 } }); } catch { fail('Plus signaling disconnected.'); } }
             }, 2000);
-          } else fail(`Plus initialization failed (${ack?.error_code || 'unknown'}).`);
+          } else fail('Plus could not initialize this session. Start a new session.', 'initialization_failed', ack?.error_code);
         } else if (message.type === 6) {
           const rawReason = message.payload?.hangup?.hangup_reason;
           const reason = typeof rawReason === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(rawReason)
@@ -290,19 +443,27 @@ export class ViduRealtimeClient {
             ? 'Plus’s rendering connection closed before the session finished (sip_close). Please try again.'
             : `Vidu ended this session (${reason}). Please try again.`, reason);
         } else if (message.type === 14 && message.payload?.switch_prompt_ack?.success === false) {
-          fail(`Plus could not change the image (${message.payload.switch_prompt_ack.error_code || 'unknown'}).`);
+          fail('Plus could not change the reference image. Start a new session.', 'image_update_failed', message.payload.switch_prompt_ack.error_code);
         }
       };
       };
       connectSignaling();
       await Promise.race([initPromise, failurePromise]);
       assertActive();
+      recordPhase('rtc_joining');
       await Promise.race([engine.joinChannel(rtc.token, rtc.user_id), failurePromise]);
       assertActive();
+      recordPhase('rtc_joined');
+      recordPhase('camera_preview');
+      await Promise.race([engine.startPreview(), failurePromise]);
+      assertActive();
+      recordPhase('publishing');
       await Promise.race([engine.publishLocalVideoStream(true), failurePromise]);
-      published = true;
+      assertActive();
+      await Promise.race([publishedPromise, failurePromise]);
       await Promise.race([videoPromise, failurePromise]);
       assertActive();
+      startupComplete = true;
       clearTimeout(startupTimer);
       changeState('generating');
       return {
@@ -323,10 +484,20 @@ export class ViduRealtimeClient {
         off: (_event, handler) => { listeners.delete(handler); },
       };
     } catch (error) {
+      if (!startupFailure && !stopped) {
+        const failedPhase = lastPhase as ViduStartupPhase;
+        const message = failedPhase === 'rtc_joining'
+          ? 'Plus could not join its video room. Start a new session.'
+          : failedPhase === 'publishing' || failedPhase === 'published'
+            ? 'Plus could not publish the camera video. Start a new session.'
+            : 'Plus could not complete video startup. Start a new session.';
+        // SDK errors can embed RTC credentials or signed URLs in their message.
+        fail(message, 'rtc_startup_failed', rtcErrorCode(error));
+      }
       await cleanup();
-      throw error;
+      throw startupFailure || new Error('Plus video startup was cancelled.');
     }
   }
 }
-export function createViduClient(options: { apiKey: string; baseUrl?: string }) { return new ViduRealtimeClient(options); }
+export function createViduClient(options: { apiKey: string; baseUrl?: string; signaling?: ViduProxySignaling }) { return new ViduRealtimeClient(options); }
 export const models = { realtime: (modelName: string = VIDU_REALTIME_MODEL) => modelName };

@@ -6,9 +6,13 @@ import ts from 'typescript';
 
 const source = readFileSync(new URL('../src/lib/vidu-realtime.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+const apiSource = readFileSync(new URL('../src/lib/api-client.ts', import.meta.url), 'utf8');
+const compiledApi = ts.transpileModule(apiSource.replace(/import\.meta\.env/g, 'testEnvironment'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText;
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function harness(userAgent = '', supportCheck = async () => ({ support: true })) {
+function harness(userAgent = '', supportCheck = async () => ({ support: true }), pageUrl = 'https://preview.morphly.test', { electron = false, environment = {} } = {}) {
   const events = new Map();
   const timers = new Map();
   const sent = [];
@@ -32,27 +36,38 @@ function harness(userAgent = '', supportCheck = async () => ({ support: true }))
     switchCamera: async (_id, track) => { selected = track; },
     getVideoTrack: async ({ userId, streamType }) => { assert.equal(streamType, 0); return userId ? generated : selected; },
     joinChannel: async (token, uid) => { assert.equal(token, 'rtc-token'); assert.equal(uid, 'camera-user'); },
-    publishLocalVideoStream: async enabled => { assert.equal(enabled, true); },
+    startPreview: async () => {},
+    publishLocalVideoStream: async enabled => {
+      assert.equal(enabled, true);
+      events.get('videoPublishStateChanged')?.(1, 2);
+      events.get('videoPublishStateChanged')?.(2, 3);
+    },
     destroy: async () => { destroyed++; },
   };
   class Socket {
     static OPEN = 1;
     readyState = 0;
-    constructor(url) { this.url = url; socket = this; }
+    constructor(url, protocols) { this.url = url; this.protocols = Array.from(protocols || []); socket = this; }
     send(json) { sent.push(JSON.parse(json)); }
     close() { this.readyState = 3; }
     open() { this.readyState = 1; this.onopen?.(); }
     message(value) { this.onmessage?.({ data: JSON.stringify(value) }); }
   }
   const exports = {};
+  const pageWindow = { location: new URL(pageUrl), addEventListener() {}, removeEventListener() {}, ...(electron ? { electron: {} } : {}) };
+  const apiExports = {};
+  vm.runInContext(compiledApi, vm.createContext({ exports: apiExports, window: pageWindow, URL,
+    testEnvironment: environment, require: () => ({ firebaseSessionClient: {} }),
+  }));
   const context = vm.createContext({
     navigator: { userAgent }, exports, URL, URLSearchParams, Date: ClockDate, crypto: { randomUUID: () => 'connection-id' }, WebSocket: Socket,
-    console: { warn: (_label, message) => diagnostics.push(JSON.parse(message)) },
-    window: { addEventListener() {}, removeEventListener() {} },
+    console: { warn: (_label, message) => diagnostics.push(JSON.parse(message)),
+      info: (_label, message) => diagnostics.push(JSON.parse(message)) },
+    window: pageWindow,
     MediaStream: class { constructor(tracks) { this.tracks = tracks; } getVideoTracks() { return this.tracks; } },
     setTimeout: (fn, ms) => { const id = {}; timers.set(id, { fn, ms }); return id; },
     clearTimeout: id => timers.delete(id),
-    require: name => name === './realtime-provider' ? { VIDU_REALTIME_MODEL: 's2-editing' } : {
+    require: name => name === './api-client' ? apiExports : name === './realtime-provider' ? { VIDU_REALTIME_MODEL: 's2-editing' } : {
       default: { isSupported: async () => { supportChecks++; return supportCheck(); }, AliRtcLogLevel: { NONE: 5 },
         setLogLevel(level) { assert.equal(level, 5, 'raw SDK credential logs must be disabled'); }, getInstance: () => engine },
     },
@@ -228,10 +243,11 @@ test('Vidu rejects master keys, mock credentials and unrelated signaling hosts',
     await assert.rejects(h.exports.createViduClient({ apiKey }).connect(h.input, h.options), /real Vidu session credentials/);
   }
   assert.throws(() => h.exports.buildViduSocketUrl('https://example.com', 'live', 'conn', 'secret'), /Unsupported/);
+  assert.throws(() => h.exports.buildViduSocketUrl('https://service.vidu.com', 'live', 'conn', 'secret'), /Unsupported/);
   assert.equal(h.socket, undefined);
 });
 
-test('Vidu preserves safe provider close reasons and trace IDs without logging credentials', async () => {
+test('Vidu preserves safe provider close reasons with controlled diagnostics only', async () => {
   for (const reason of ['sip_close', 'duration_limit', 'https://secret.test/?token=secret', undefined]) {
     const h = harness();
     const connected = h.client.connect(h.input, h.options);
@@ -241,10 +257,12 @@ test('Vidu preserves safe provider close reasons and trace IDs without logging c
     h.socket.message({ type: 6, payload: { hangup: { hangup_reason: reason } } });
     await rejection;
     assert.equal(h.destroyed, 1);
-    assert.equal(h.diagnostics[0].traceId, 'trace-id');
-    assert.equal(h.diagnostics[0].receivedVideo, false);
+    assert.equal(h.diagnostics.at(-1).event, 'startup_failed');
+    assert.equal(h.diagnostics.at(-1).phase, 'signaling_open');
     const logged = JSON.stringify(h.diagnostics);
-    for (const secret of ['short-lived-secret', 'rtc-token', 'secret.test']) assert.equal(logged.includes(secret), false);
+    for (const secret of ['short-lived-secret', 'rtc-token', 'secret.test', 'live-id', 'trace-id', 'renderer', 'camera-user']) {
+      assert.equal(logged.includes(secret), false);
+    }
   }
 });
 
@@ -287,10 +305,428 @@ test('cancelling during a Vidu handshake retry cannot open another socket', asyn
 });
 
 
-test('Edge signaling failures remain browser errors instead of provider-capacity errors', async () => {
+test('signaling failures keep their code without diagnosing browser or network filtering', async () => {
   const h=harness('Mozilla/5.0 Chrome/154 Safari/537.36 Edg/154.0.0.0');
-  const connected=h.client.connect(h.input,h.options);const rejection=assert.rejects(connected,/could not connect in Edge/);await tick();
+  const connected=h.client.connect(h.input,h.options);const rejection=assert.rejects(connected,/signaling could not connect/);await tick();
   h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===1000).fn();
   h.socket.onerror();[...h.timers.values()].find(timer=>timer.ms===2000).fn();h.socket.onerror();
-  await rejection;assert.equal(h.errors[0].code,'VIDU_SIGNALING_UNREACHABLE');assert.match(h.errors[0].message,/Chrome/);
+  await rejection;assert.equal(h.errors[0].code,'VIDU_SIGNALING_UNREACHABLE');assert.doesNotMatch(h.errors[0].message,/Edge|Chrome|filter|blocking/i);
+});
+
+const proxySignaling = { transport: 'proxy', path: '/api/vidu/live', connectionId: 'relay-fixed-connection' };
+const relayTicket = 'v1.encrypted-ticket.fixture-signature';
+const proxyClient = h => h.exports.createViduClient({ apiKey: relayTicket, signaling: proxySignaling });
+
+test('Plus proxy uses the page origin, subprotocol ticket and server-issued connection ID', async () => {
+  const h = harness('', undefined, 'https://preview.morphly.test:8443/#/dashboard');
+  const connected = proxyClient(h).connect(h.input, { ...h.options, baseUrl: 'https://untrusted.example', maxSeconds: 1000 });
+  await tick();
+  assert.equal(h.socket.url, 'wss://preview.morphly.test:8443/api/vidu/live');
+  assert.deepEqual(h.socket.protocols, ['morphly.plus', `morphly-ticket.${relayTicket}`]);
+  assert.equal(h.socket.url.includes(relayTicket), false);
+  assert.equal(new URL(h.socket.url).search, '');
+  assert.equal(h.audio, false);
+  h.socket.open();
+  assert.equal(h.sent[0].type, 1);
+  assert.equal(h.sent[0].conn_id, proxySignaling.connectionId);
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  const session = await connected;
+  assert.equal(h.outputs[0].getVideoTracks()[0], h.generated);
+  assert.equal([...h.timers.values()].filter(timer => timer.ms === 120000).length, 1, 'active sessions retain the 120s cap');
+  await session.set({ image: 'https://example.com/replacement.png' });
+  await session.disconnect();
+  await session.disconnect();
+  assert.deepEqual(h.sent.map(message => message.type), [1, 13, 5]);
+  assert.ok(h.sent.every(message => message.conn_id === proxySignaling.connectionId));
+  assert.equal(h.clone.stopped, true);
+  assert.equal(h.original.stopped, false);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+  assert.equal(JSON.stringify(h.diagnostics).includes(relayTicket), false);
+});
+
+test('Plus proxy rejects invalid metadata and insecure pages before any transport is opened', async () => {
+  const invalid = [null, { ...proxySignaling, transport: 'direct' },
+    { ...proxySignaling, path: 'https://untrusted.example/api/vidu/live' },
+    { ...proxySignaling, path: '//untrusted.example/api/vidu/live' },
+    { ...proxySignaling, path: '/api/vidu/live?ticket=secret' },
+    { ...proxySignaling, path: '/api/vidu/other' },
+    { ...proxySignaling, connectionId: '' }, { ...proxySignaling, connectionId: 'bad connection' }];
+  for (const signaling of invalid) {
+    const h = harness();
+    await assert.rejects(proxyClient(h).connect(h.input, { ...h.options, signaling }), /Unsupported Plus relay/);
+    assert.equal(h.socket, undefined);
+    assert.equal(h.supportChecks, 0);
+    assert.equal(h.timers.size, 0);
+  }
+  for (const pageUrl of ['http://preview.morphly.test', 'file:///app/index.html']) {
+    const h = harness('', undefined, pageUrl);
+    await assert.rejects(proxyClient(h).connect(h.input, h.options), /Unsupported Plus relay/);
+    assert.equal(h.socket, undefined);
+    assert.equal(h.supportChecks, 0);
+  }
+  for (const apiKey of ['ticket/unsafe=', 't'.repeat(12001)]) {
+    const h = harness();
+    await assert.rejects(h.exports.createViduClient({ apiKey, signaling: proxySignaling }).connect(h.input, h.options), /credentials are invalid/);
+    assert.equal(h.socket, undefined);
+    assert.equal(h.supportChecks, 0);
+  }
+});
+
+test('Plus accepts encrypted relay tickets larger than scoped secrets through the shared 12000-character bound', async () => {
+  for (const length of [6000, 12000]) {
+    const h = harness();
+    const apiKey = `v1.${'t'.repeat(length - 3)}`;
+    const controller = new AbortController();
+    const client = h.exports.createViduClient({ apiKey, signaling: proxySignaling });
+    const connected = client.connect(h.input, { ...h.options, signal: controller.signal });
+    const rejection = assert.rejects(connected, /cancelled/);
+    await tick();
+    assert.equal(h.socket.protocols[1], `morphly-ticket.${apiKey}`);
+    assert.equal(h.socket.url.includes(apiKey), false);
+    controller.abort();
+    await rejection;
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test('Plus proxy retries initialization within its 120s startup window without joining RTC early', async () => {
+  const h = harness();
+  let joined = false;
+  h.engine.joinChannel = async () => { joined = true; };
+  const connected = proxyClient(h).connect(h.input, h.options);
+  const rejection = assert.rejects(connected, /timed out/);
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: false, error_code: 'NOT_READY' } } });
+  [...h.timers.values()].find(timer => timer.ms === 2000).fn();
+  assert.deepEqual(h.sent.map(message => message.type), [1, 1]);
+  assert.ok(h.sent.every(message => message.conn_id === proxySignaling.connectionId));
+  assert.equal(joined, false);
+  assert.equal([...h.timers.values()].some(timer => timer.ms === 35000), false);
+  [...h.timers.values()].find(timer => timer.ms === 120000).fn();
+  await rejection;
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.clone.stopped, true);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus proxy cancellation clears retries and never falls back to direct signaling', async () => {
+  const h = harness();
+  const controller = new AbortController();
+  const connected = proxyClient(h).connect(h.input, { ...h.options, signal: controller.signal });
+  const rejection = assert.rejects(connected, /cancelled/);
+  await tick();
+  const first = h.socket;
+  first.onerror();
+  const retry = [...h.timers.values()].find(timer => timer.ms === 1000).fn;
+  retry();
+  assert.notEqual(h.socket, first);
+  assert.equal(h.socket.url, first.url);
+  assert.deepEqual(h.socket.protocols, first.protocols);
+  h.socket.open();
+  controller.abort();
+  await rejection;
+  const cancelledSocket = h.socket;
+  retry();
+  assert.equal(h.socket, cancelledSocket);
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.sent.at(-1).conn_id, proxySignaling.connectionId);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.original.stopped, false);
+  assert.equal(JSON.stringify(h.diagnostics).includes(relayTicket), false);
+});
+
+test('Plus proxy startup remains bounded by provider credentials even with its longer allowance', async () => {
+  const h = harness();
+  const connected = proxyClient(h).connect(h.input, { ...h.options, expiresAt: new Date(h.now + 10000).toISOString() });
+  const rejection = assert.rejects(connected, /credentials expired/);
+  await tick();
+  h.socket.open();
+  h.advanceTime(10000);
+  [...h.timers.values()].find(timer => timer.ms === 10000).fn();
+  await rejection;
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+});
+
+test('packaged Electron proxies only to its configured HTTPS API origin', async () => {
+  for (const [environment, origin] of [
+    [{ VITE_API_BASE_URL: 'https://desktop.morphly.test/api' }, 'https://desktop.morphly.test'],
+    [{ VITE_API_URL: 'https://other.morphly.test' }, 'https://other.morphly.test'],
+    [{ VITE_API_BASE_URL: '/api' }, 'https://live.morphly.fun'],
+    [{}, 'https://live.morphly.fun'],
+  ]) {
+    const h = harness('', undefined, 'file:///app/index.html', { electron: true, environment });
+    const client = h.exports.createViduClient({ apiKey: relayTicket });
+    const controller = new AbortController();
+    const connected = client.connect(h.input, { ...h.options,
+      signaling: { ...proxySignaling, origin }, signal: controller.signal });
+    const rejection = assert.rejects(connected, /cancelled/);
+    await tick();
+    assert.equal(h.socket.url, `${origin.replace('https:', 'wss:')}/api/vidu/live`);
+    assert.deepEqual(h.socket.protocols, ['morphly.plus', `morphly-ticket.${relayTicket}`]);
+    assert.equal(new URL(h.socket.url).search, '');
+    controller.abort();
+    await rejection;
+    assert.equal(h.destroyed, 1);
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test('Plus rejects supplied origins outside the trusted web or packaged API origin', async () => {
+  for (const page of [
+    { pageUrl: 'https://preview.morphly.test', electron: false, environment: { VITE_API_BASE_URL: 'https://older.example/api' } },
+    { pageUrl: 'file:///app/index.html', electron: true, environment: { VITE_API_BASE_URL: 'https://preview.morphly.test/api' } },
+  ]) {
+    for (const origin of ['https://untrusted.example', 'https://preview.morphly.test/',
+      'http://preview.morphly.test', 'https://preview.morphly.test?ticket=secret']) {
+      const h = harness('', undefined, page.pageUrl, page);
+      await assert.rejects(proxyClient(h).connect(h.input, { ...h.options, signaling: { ...proxySignaling, origin } }), /Unsupported Plus relay/);
+      assert.equal(h.socket, undefined);
+      assert.equal(h.supportChecks, 0);
+    }
+  }
+  for (const VITE_API_BASE_URL of ['http://desktop.morphly.test/api', 'https://user:password@desktop.morphly.test/api']) {
+    const h = harness('', undefined, 'file:///app/index.html', { electron: true, environment: { VITE_API_BASE_URL } });
+    await assert.rejects(proxyClient(h).connect(h.input, h.options), /Unsupported Plus relay/);
+    assert.equal(h.socket, undefined);
+  }
+});
+
+test('Plus handles an SDK publication error even when joinChannel resolves', async () => {
+  const h = harness();
+  let previewed = false;
+  h.engine.startPreview = async () => { previewed = true; };
+  h.engine.joinChannel = async () => {
+    h.events.get('occurError')({ code: 16843857, message: 'rtc-token short-lived-secret camera-user', token: 'rtc-token' });
+  };
+  const connected = h.client.connect(h.input, h.options);
+  const rejection = assert.rejects(connected, error => {
+    assert.match(error.message, /could not publish the camera video/);
+    assert.match(error.message, /16843857/);
+    assert.equal(error.startupPhase, 'rtc_joining');
+    assert.equal(error.rtcCode, 16843857);
+    assert.doesNotMatch(error.message, /rtc-token|short-lived-secret|camera-user/);
+    return true;
+  });
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await rejection;
+  assert.equal(previewed, false);
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.clone.stopped, true);
+  assert.equal(h.original.stopped, false);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+  for (const forbidden of ['rtc-token', 'short-lived-secret', 'camera-user', 'live-id', 'trace-id']) {
+    assert.equal(JSON.stringify(h.diagnostics).includes(forbidden), false);
+  }
+});
+
+test('Plus joins, previews its selected camera, then waits for confirmed publication', async () => {
+  const h = harness();
+  const order = [];
+  h.engine.joinChannel = async () => { order.push('join'); };
+  h.engine.startPreview = async () => { order.push('preview'); };
+  h.engine.publishLocalVideoStream = async () => { order.push('publish'); };
+  let resolved = false;
+  const connected = h.client.connect(h.input, h.options).then(session => { resolved = true; return session; });
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  assert.deepEqual(order, ['join', 'preview', 'publish']);
+  assert.equal(h.audio, false);
+  assert.equal(h.clone.stopped, false);
+  assert.equal(h.original.stopped, false);
+  h.events.get('remoteUserOnLineNotify')('unrelated-user');
+  h.events.get('videoSubscribeStateChanged')('unrelated-user', 2, 3);
+  h.events.get('remoteUserOnLineNotify')('renderer');
+  h.events.get('videoSubscribeStateChanged')('renderer', 1, 2);
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  await tick();
+  assert.equal(h.outputs.length, 1);
+  assert.equal(resolved, false, 'returning from publish is not publication confirmation');
+  assert.equal(h.diagnostics.some(entry => entry.phase === 'published'), false);
+  h.events.get('videoPublishStateChanged')(2, 1);
+  await tick();
+  assert.equal(h.errors.length, 0, 'SDK can internally retry after state 1');
+  h.events.get('videoPublishStateChanged')(2, 3);
+  const session = await connected;
+  assert.ok(h.diagnostics.some(entry => entry.phase === 'published' && entry.code === 3));
+  const phases = h.diagnostics.filter(entry => entry.event === 'phase').map(entry => entry.phase);
+  assert.deepEqual(phases.slice(0, 7), ['camera_prepared', 'signaling_open', 'initialized',
+    'rtc_joining', 'rtc_joined', 'camera_preview', 'publishing']);
+  assert.deepEqual(phases.slice(7), ['renderer_online', 'renderer_subscribing', 'renderer_subscribed', 'video_received', 'published']);
+  assert.ok(h.diagnostics.every(entry => Number.isFinite(entry.elapsedMs) && entry.elapsedMs >= 0));
+  await session.disconnect();
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus scopes subscription failures to its renderer and redacts raw SDK errors', async () => {
+  for (const eventName of ['occurError', 'remoteSubscribeError']) {
+    const h = harness();
+    const connected = proxyClient(h).connect(h.input, h.options);
+    const rejection = assert.rejects(connected, error => {
+      assert.match(error.message, /could not receive the renderer video/);
+      assert.equal(error.rtcCode, 16844114);
+      assert.equal(error.startupPhase, 'renderer_subscribing');
+      assert.doesNotMatch(error.message, /rtc-token|encrypted-ticket|signature|other-user/);
+      return true;
+    });
+    await tick();
+    h.socket.open();
+    h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+    await tick();
+    const callback = h.events.get(eventName);
+    const rawError = { code: 16844114, message: `signed-url?token=rtc-token&ticket=${relayTicket}`, extraInfo: 'other-user' };
+    callback(rawError, 'other-user');
+    h.events.get('occurError')({ code: 16844113, message: rawError.message }, 'renderer');
+    h.events.get('occurError')({ code: 16843856, message: rawError.message });
+    h.events.get('occurError')({ code: 'rtc-token', message: rawError.message }, 'renderer');
+    await tick();
+    assert.equal(h.errors.length, 0, 'other user, audio and nonnumeric errors are not fatal');
+    h.events.get('videoSubscribeStateChanged')('renderer', 1, 2);
+    callback(rawError, 'renderer');
+    await rejection;
+    assert.equal(h.sent.at(-1).type, 5);
+    assert.equal(h.timers.size, 0);
+    const logged = JSON.stringify(h.diagnostics);
+    for (const forbidden of ['rtc-token', relayTicket, 'signed-url', 'other-user', 'camera-user', 'live-id', 'trace-id']) {
+      assert.equal(logged.includes(forbidden), false);
+    }
+    for (const entry of h.diagnostics) {
+      for (const [key, value] of Object.entries(entry)) {
+        if (key !== 'phase' && key !== 'event') assert.equal(typeof value, 'number');
+      }
+    }
+  }
+});
+
+test('Plus still handles fatal startup errors when renderer video arrives before publication confirmation', async () => {
+  const h = harness();
+  h.engine.publishLocalVideoStream = async () => {};
+  const connected = h.client.connect(h.input, h.options);
+  const rejection = assert.rejects(connected, /could not publish the camera video/);
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  await tick();
+  assert.equal(h.outputs.length, 1);
+  h.events.get('occurError')({ code: 16843857, message: 'rtc-token' });
+  await rejection;
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus fails explicitly when the renderer subscription provides no video track', async () => {
+  const h = harness();
+  const getVideoTrack = h.engine.getVideoTrack;
+  h.engine.getVideoTrack = options => options.userId ? Promise.resolve(undefined) : getVideoTrack(options);
+  const connected = h.client.connect(h.input, h.options);
+  const rejection = assert.rejects(connected, /subscribed to its renderer but received no usable video track/);
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  await rejection;
+  assert.equal(h.outputs.length, 0);
+  assert.equal(h.destroyed, 1);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus reports camera and terminal RTC startup failures without raw messages', async () => {
+  for (const scenario of [
+    { event: 'localDeviceException', args: [4, 10, 'rtc-token signed-camera-url'], code: 10, message: /lost access to the selected camera/ },
+    { event: 'localDeviceException', args: [6, 13, 'rtc-token signed-camera-url'], code: 13, message: /lost access to the selected camera/ },
+    { event: 'connectionStatusChange', args: [5, 6], code: 6, message: /could not connect to its video room/ },
+    { event: 'connectionStatusChange', args: [1, 8], code: 8, message: /could not connect to its video room/ },
+  ]) {
+    const h = harness();
+    const connected = h.client.connect(h.input, h.options);
+    const rejection = assert.rejects(connected, error => {
+      assert.match(error.message, scenario.message);
+      assert.equal(error.rtcCode, scenario.code);
+      return true;
+    });
+    await tick();
+    h.events.get('localDeviceException')(1, 1, 'rtc-token');
+    h.events.get('localDeviceException')(5, 12, 'rtc-token');
+    h.events.get('connectionStatusChange')(1, 12);
+    h.events.get('connectionStatusChange')(4, 2);
+    assert.equal(h.errors.length, 0, 'audio, screen and recoverable RTC states remain nonfatal');
+    h.events.get(scenario.event)(...scenario.args);
+    await rejection;
+    assert.equal(h.timers.size, 0);
+    assert.equal(JSON.stringify(h.diagnostics).includes('rtc-token'), false);
+  }
+});
+
+test('Plus sanitizes rejected RTC operations instead of returning their credential-bearing message', async () => {
+  const h = harness();
+  h.engine.joinChannel = async () => {
+    throw Object.assign(new Error('join rejected: token=rtc-token ticket=short-lived-secret'), { code: 33620485 });
+  };
+  const connected = h.client.connect(h.input, h.options);
+  const rejection = assert.rejects(connected, error => {
+    assert.match(error.message, /could not join its video room/);
+    assert.equal(error.rtcCode, 33620485);
+    assert.doesNotMatch(error.message, /rtc-token|short-lived-secret|join rejected/);
+    return true;
+  });
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await rejection;
+  assert.equal(h.errors.length, 1);
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus stops media and signaling immediately and bounds a stalled RTC destroy to two seconds', async () => {
+  for (const duringStartup of [true, false]) {
+    const h = harness();
+    let destroyCalls = 0;
+    h.engine.destroy = () => { destroyCalls++; return new Promise(() => {}); };
+    const controller = new AbortController();
+    const connected = h.client.connect(h.input, { ...h.options, signal: controller.signal });
+    const rejection = duringStartup ? assert.rejects(connected, /cancelled/) : null;
+    await tick();
+    h.socket.open();
+    let finished = false;
+    let completion;
+    if (duringStartup) {
+      completion = rejection.then(() => { finished = true; });
+      controller.abort();
+    } else {
+      h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+      await tick();
+      h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+      const session = await connected;
+      completion = session.disconnect().then(() => { finished = true; });
+    }
+    await tick();
+    assert.equal(finished, false);
+    assert.equal(h.clone.stopped, true);
+    assert.equal(h.original.stopped, false);
+    assert.equal(h.socket.readyState, 3);
+    assert.equal(h.sent.at(-1).type, 5);
+    assert.equal(h.events.size, 0);
+    assert.equal(destroyCalls, 1);
+    assert.deepEqual([...h.timers.values()].map(timer => timer.ms), [2000]);
+    [...h.timers.values()][0].fn();
+    await completion;
+    assert.equal(finished, true);
+    assert.equal(h.timers.size, 0);
+  }
 });

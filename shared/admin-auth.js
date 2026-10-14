@@ -21,6 +21,9 @@ export async function authenticateRequestUser(req, supabaseAdmin) {
 
   const { data, error } = await supabaseAdmin.auth.getUser(token);
   if (error || !data?.user) {
+    if (supabaseAdmin.provider === 'firebase' && error?.status === 503) {
+      return { error: 'Account verification is temporarily unavailable. Please try again.', status: 503 };
+    }
     return { error: 'Invalid or expired access token', status: 401 };
   }
 

@@ -3,8 +3,10 @@ import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { FirebaseQuery } from './firebase-store.js';
 import { createFirebaseOperations } from './firebase-operations.js';
+import { createFirebaseUserLookup } from './firebase-user-lookup.js';
 
-export const firebaseAdminConfigError = !process.env.FIREBASE_PROJECT_ID ? 'Missing FIREBASE_PROJECT_ID' : null;
+export const firebaseAdminConfigError = !process.env.FIREBASE_PROJECT_ID ? 'Missing FIREBASE_PROJECT_ID'
+  : process.env.VERCEL && !process.env.FIREBASE_SERVICE_ACCOUNT_JSON ? 'Missing Firebase server credential' : null;
 export let firebaseAdmin = null;
 export let firebaseDb = null;
 if (!firebaseAdminConfigError) {
@@ -31,7 +33,7 @@ if (!firebaseAdminConfigError) {
     rpc:wrapped(async(name,args)=>operations.rpc(name,args)),
     provision:operations.provision,
     auth:{
-      getUser:wrapped(async token=>{const decoded=await auth.verifyIdToken(token,true);return {user:await mapUser(await auth.getUser(decoded.uid))};}),
+      getUser:createFirebaseUserLookup({auth,mapUser}),
       admin:{
         getUserById:wrapped(async id=>({user:await mapUser(await auth.getUser(id))})),
         deleteUser:wrapped(async id=>{await auth.deleteUser(id);return {}; }),
