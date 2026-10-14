@@ -61,11 +61,16 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
     if (destination.username || destination.password || destination.port || destination.pathname !== '/'
       || destination.search || destination.hash) throw new Error();
     relayOrigin = destination.origin;
-    if (origin === 'null') {
-      if (!desktop) throw new Error();
-    } else {
+    if (desktop) {
+      // Desktop clients (Electron) can have origin 'null', file://, or a dev localhost origin.
+      // They authenticate with their Firebase / Supabase bearer token and don't require HTTPS browser origin matching.
+    } else if (origin === 'null') {
+      throw new Error('Null origin not allowed for web');
+    } else if (origin) {
       const source = new URL(origin);
       if (source.protocol !== 'https:' || source.origin !== origin || source.origin !== relayOrigin) throw new Error();
+    } else {
+      throw new Error('Missing origin header');
     }
   } catch {
     return { error: { error: 'INVALID_BROWSER_ORIGIN', details: 'Open Morphly again to start Plus.' } };

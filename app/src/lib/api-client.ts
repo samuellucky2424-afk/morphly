@@ -1,6 +1,6 @@
 import { firebaseSessionClient } from './firebase-auth';
 
-const DEPLOYED_APP_ORIGIN = 'https://live.morphly.fun';
+const DEPLOYED_APP_ORIGIN = import.meta.env.VITE_PUBLIC_APP_URL || 'https://morphly-alpha.vercel.app';
 const LOCAL_API_BASE = '/api';
 
 function normalizeApiBase(value?: string | null): string | null {
@@ -16,9 +16,7 @@ function isFileProtocol(): boolean {
   return typeof window !== 'undefined' && window.location.protocol === 'file:';
 }
 
-// A packaged app is loaded from file://. Treat that as the desktop runtime even
-// if a preload bridge has not been attached yet, so a valid authenticated
-// desktop request never falls through to the web-origin branch.
+// A packaged app is loaded from file:// or runs within Electron.
 export function isMorphlyDesktopRuntime(): boolean {
   return typeof window !== 'undefined' && (
     isFileProtocol() || Boolean(window.electron?.isElectron)
@@ -26,9 +24,8 @@ export function isMorphlyDesktopRuntime(): boolean {
 }
 
 function getApiBase(): string {
-  // Web previews must use the API from the same deployment. A production API
-  // URL here silently connects a new provider UI to an older server contract.
-  if (import.meta.env.DEV || !isFileProtocol()) {
+  // If running in pure web preview (not desktop), use relative /api
+  if (!isMorphlyDesktopRuntime() && (import.meta.env.DEV || !isFileProtocol())) {
     return LOCAL_API_BASE;
   }
 
@@ -36,7 +33,7 @@ function getApiBase(): string {
     import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL,
   );
 
-  if (configuredBase && configuredBase.startsWith('/') && isFileProtocol()) {
+  if (configuredBase && configuredBase.startsWith('/') && isMorphlyDesktopRuntime()) {
     return `${DEPLOYED_APP_ORIGIN}/api`;
   }
 
@@ -47,7 +44,7 @@ export function getTrustedApiOrigin(): string | null {
   if (typeof window === 'undefined') return null;
   const candidate = window.location.protocol === 'https:'
     ? window.location.origin
-    : isMorphlyDesktopRuntime() ? getApiBase() : null;
+    : isMorphlyDesktopRuntime() ? (getApiBase().startsWith('http') ? getApiBase() : DEPLOYED_APP_ORIGIN) : null;
   if (!candidate) return null;
   try {
     const url = new URL(candidate);
