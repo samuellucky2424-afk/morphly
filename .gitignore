@@ -10,6 +10,7 @@ dist-ssr/
 
 # Build outputs
 release/
+release-*/
 *.exe
 !app/build/VBCABLE_Setup_x64.exe
 *.zip

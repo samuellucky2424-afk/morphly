@@ -29,7 +29,7 @@ function getProviderRealtimeUserMessage(error: unknown, label: string, _alternat
   if (/insufficient credits|credit balance|payment required|quota/.test(diagnostic)) return `${label} is temporarily unavailable because its provider capacity is exhausted. Please try again later.`;
   if (/token|auth|unauthor|expired|forbidden/.test(diagnostic)) return `The ${label} session expired. Stop the stream and start it again.`;
   if (isRealtimeNetworkDiagnostic(diagnostic)) return `The ${label} connection was interrupted. Morphly is trying to recover it.`;
-  return (message || fallback).replace(/\bDecart\b/gi, 'Pro').replace(/\bVidu\b/gi, 'Plus');
+  return sanitizeProviderNames(message || fallback);
 }
 
 // Word boundaries matter: a bare /ice/ also matched "device", "service", "price".
@@ -39,7 +39,10 @@ function isRealtimeNetworkDiagnostic(diagnostic: string): boolean {
 }
 
 function sanitizeProviderNames(text: string): string {
-  return text.replace(/\bDecart\b/gi, 'Pro').replace(/\bVidu\b/gi, 'Plus');
+  return text
+    .replace(/\b(?:[a-z0-9-]+\.)?vidu\.(?:com|cn)\b/gi, 'Plus')
+    .replace(/\bvidu(?:[_-][a-z0-9_-]+)?\b/gi, 'Plus')
+    .replace(/\bdecart(?:[_-][a-z0-9_-]+)?\b/gi, 'Pro');
 }
 
 /**

@@ -41,6 +41,9 @@ test('Vidu realtime errors provide actionable user messages', () => {
   assert.match(getViduRealtimeUserMessage({ message: 'Rejected by moderation' }), /Plus did not accept/i);
   assert.match(getViduRealtimeUserMessage({ message: 'Insufficient credits' }), /provider capacity is exhausted/i);
   assert.match(getViduRealtimeUserMessage({ code: 'WEBRTC_ERROR' }), /Plus connection was interrupted/i);
+  const sanitized = getViduRealtimeUserMessage({ message: 'VIDU_API_KEY is missing at service.vidu.com.' });
+  assert.match(sanitized, /Plus is missing at Plus\./);
+  assert.doesNotMatch(sanitized, /vidu/i);
   assert.match(dashboard, /getViduStartErrorMessage\(error, fallback\)/);
 });
 

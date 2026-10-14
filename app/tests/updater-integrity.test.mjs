@@ -112,3 +112,13 @@ test('desktop updater stages downloads and verifies again before launch', () => 
   assert.ok(preLaunchVerification >= 0);
   assert.ok(installerLaunch > preLaunchVerification);
 });
+
+test('desktop updater does not retain or render release-note text', () => {
+  const updater = fs.readFileSync(path.join(appDirectory, 'electron/updater.js'), 'utf8');
+  const client = fs.readFileSync(path.join(appDirectory, 'src/lib/desktop-updater.ts'), 'utf8');
+  const settings = fs.readFileSync(path.join(appDirectory, 'src/pages/Settings.tsx'), 'utf8');
+
+  assert.doesNotMatch(updater, /releaseNotes/);
+  assert.doesNotMatch(client, /releaseNotes/);
+  assert.doesNotMatch(settings, /Release Notes/);
+});

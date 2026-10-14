@@ -16,6 +16,15 @@ function isFileProtocol(): boolean {
   return typeof window !== 'undefined' && window.location.protocol === 'file:';
 }
 
+// A packaged app is loaded from file://. Treat that as the desktop runtime even
+// if a preload bridge has not been attached yet, so a valid authenticated
+// desktop request never falls through to the web-origin branch.
+export function isMorphlyDesktopRuntime(): boolean {
+  return typeof window !== 'undefined' && (
+    isFileProtocol() || Boolean(window.electron?.isElectron)
+  );
+}
+
 function getApiBase(): string {
   // Web previews must use the API from the same deployment. A production API
   // URL here silently connects a new provider UI to an older server contract.
@@ -38,7 +47,7 @@ export function getTrustedApiOrigin(): string | null {
   if (typeof window === 'undefined') return null;
   const candidate = window.location.protocol === 'https:'
     ? window.location.origin
-    : isFileProtocol() && window.electron ? getApiBase() : null;
+    : isMorphlyDesktopRuntime() ? getApiBase() : null;
   if (!candidate) return null;
   try {
     const url = new URL(candidate);

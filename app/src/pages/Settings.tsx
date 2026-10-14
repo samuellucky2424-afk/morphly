@@ -48,7 +48,6 @@ function Settings() {
     downloadUrl: null,
     checksum: null,
     expectedSize: null,
-    releaseNotes: null,
     assetName: null,
     downloadedFileName: null,
     downloadedPath: null,
@@ -611,20 +610,6 @@ function Settings() {
                         : 'Pending verification'
                       : 'Not provided'}
                   </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-4 lg:grid-cols-1">
-              <div className="rounded-2xl border border-border bg-background p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">Release Notes</p>
-                    <p className="text-xs text-muted-foreground">What changed in the latest build.</p>
-                  </div>
-                </div>
-                <div className="mt-4 max-h-48 overflow-auto whitespace-pre-wrap rounded-xl border border-border bg-muted p-3 text-xs leading-6 text-foreground">
-                  {desktopUpdateState.releaseNotes || 'No release notes were provided with this manifest.'}
                 </div>
               </div>
             </div>

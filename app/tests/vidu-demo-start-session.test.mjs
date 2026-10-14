@@ -12,7 +12,8 @@ const secret = randomBytes(32).toString('base64url');
 const environment = { VERCEL_ENV: 'preview', VIDU_DEMO_PROXY: 'true', VIDU_API_BASE_URL: 'https://api.vidu.com',
   VIDU_DEMO_PROXY_SECRET: secret, VERCEL_URL: 'morphly-test.vercel.app' };
 const req = { headers: { origin: 'https://morphly-test.vercel.app', host: 'morphly-test.vercel.app', 'user-agent': 'Test browser' }, body: { platform: 'web' } };
-const context = (request = req, env = environment) => getViduDemoSessionContext(request, { environment: env, supabase: { db: {} } });
+const capableReq = { ...req, body: { ...req.body, signalingTransport: 'morphly-proxy-v1' } };
+const context = (request = capableReq, env = environment) => getViduDemoSessionContext(request, { environment: env, supabase: { db: {} } });
 
 test('Vidu accepts only canonical HTTPS official API base URLs', () => {
   for (const base of ['https://api.vidu.com', 'https://api.vidu.cn/']) {
@@ -38,26 +39,26 @@ test('invalid provider configuration fails before a network request or secret-be
 });
 
 test('proxy context validates deployment configuration and exact browser origin', () => {
-  assert.equal(context().origin, req.headers.origin);
-  assert.equal(context().relayOrigin, req.headers.origin);
+  assert.equal(context().origin, capableReq.headers.origin);
+  assert.equal(context().relayOrigin, capableReq.headers.origin);
   for (const patch of [{ VERCEL_ENV: 'development' }, { VIDU_API_BASE_URL: 'https://api.vidu.cn' },
     { VIDU_DEMO_PROXY_SECRET: '' }, { VERCEL_URL: '' }]) {
-    assert.equal(context(req, { ...environment, ...patch }).error.error, 'AI_SESSION_CONFIG_INVALID');
+    assert.equal(context(capableReq, { ...environment, ...patch }).error.error, 'AI_SESSION_CONFIG_INVALID');
   }
-  for (const origin of ['null', 'https://different.example', 'http://morphly-test.vercel.app', '', 'https://morphly-test.vercel.app/']) {
-    assert.equal(context({ ...req, headers: { ...req.headers, origin } }).error.error, 'INVALID_BROWSER_ORIGIN');
+  for (const origin of ['null', 'file:///app/index.html', 'https://different.example', 'http://morphly-test.vercel.app', '', undefined, 'https://morphly-test.vercel.app/']) {
+    assert.equal(context({ ...capableReq, headers: { ...capableReq.headers, origin } }).error.error, 'INVALID_BROWSER_ORIGIN');
   }
   assert.equal(getViduDemoSessionContext(req, { environment: {} }), null);
   assert.equal(getViduDemoSessionContext(req, { environment, supabase: {} }).error.error, 'AI_SESSION_CONFIG_INVALID');
 });
 
 test('opaque Electron origin is accepted only for desktop and alias destinations keep deployment audience', () => {
-  const desktopReq = { headers: { ...req.headers, origin: 'null', host: 'preview.morphly.example' }, body: { platform: 'desktop' } };
+  const desktopReq = { headers: { ...req.headers, origin: 'null', host: 'preview.morphly.example' }, body: { platform: 'desktop', signalingTransport: 'morphly-proxy-v1' } };
   const result = context(desktopReq);
   assert.equal(result.origin, 'null');
   assert.equal(result.relayOrigin, 'https://preview.morphly.example');
   assert.equal(result.audience, environment.VERCEL_URL);
-  assert.equal(context({ ...desktopReq, body: { platform: 'web' } }).error.error, 'INVALID_BROWSER_ORIGIN');
+  assert.equal(context({ ...desktopReq, body: { ...desktopReq.body, platform: 'web' } }).error.error, 'INVALID_BROWSER_ORIGIN');
 });
 
 test('demo session creation forwards browser headers and uses Token authorization', async t => {
@@ -87,8 +88,7 @@ test('demo session creation forwards browser headers and uses Token authorizatio
   assert.equal(createViduDemoSignalingSession(providerSession, null, {}), providerSession);
 });
 
-test('production retains scoped credentials for legacy clients and issues encrypted tickets only to capable clients', async t => {
-  const production = { ...environment, VERCEL_ENV: 'production' };
+test('hosted deployments retain scoped credentials for legacy clients and issue encrypted tickets only to capable clients', async t => {
   const providerSecret = 'fixture-scoped-provider-secret';
   const rtcToken = 'fixture-rtc-secret';
   let creations = 0;
@@ -97,37 +97,38 @@ test('production retains scoped credentials for legacy clients and issues encryp
     return Response.json({ client_secret: providerSecret, live: { id: 'fixture-live' }, render_uid: 'fixture-renderer',
       rtc: { token: rtcToken, user_id: 'fixture-camera-user', token_expire_at: Math.floor(Date.now() / 1000) + 7200 } });
   });
-  for (const [platform, origin] of [['web', req.headers.origin], ['desktop', 'null']]) {
-    for (const signalingTransport of [undefined, '', 'proxy', 'morphly-proxy-v2', 'morphly-proxy-v1']) {
-      const request = { ...req, headers: { ...req.headers, origin }, body: { platform, signalingTransport } };
-      const sessionContext = context(request, production);
-      const providerSession = await createViduTemporaryKey({ apiKey: 'fixture-server-key', maxSeconds: 60,
-        imageUrl: 'https://example.com/image.png', proxyContext: sessionContext });
-      const response = createViduDemoSignalingSession(providerSession, sessionContext,
-        { userId: 'fixture-owner', sessionId: 'fixture-session' });
-      assert.equal(response.rtc.token, rtcToken);
-      assert.equal(response.liveId, 'fixture-live');
-      assert.equal(response.renderUid, 'fixture-renderer');
-      assert.equal(response.expiresAt, providerSession.expiresAt);
-      if (signalingTransport === 'morphly-proxy-v1') {
-        assert.equal(response.signaling.transport, 'proxy');
-        assert.equal(response.signaling.origin, req.headers.origin);
-        const ticket = validateViduDemoTicket(response.token, { secret, audience: production.VERCEL_URL, origin });
-        assert.equal(ticket.clientSecret, providerSecret);
-        assert.equal(ticket.origin, origin);
-        assert.equal(ticket.userId, 'fixture-owner');
-        assert.equal(ticket.sessionId, 'fixture-session');
-        assert.equal(JSON.stringify(response).includes(providerSecret), false);
-      } else {
-        assert.equal(sessionContext, null);
-        assert.equal(response, providerSession);
-        assert.equal(response.token, providerSecret);
-        assert.equal(response.signaling, undefined);
+  for (const hostedEnvironment of [environment, { ...environment, VERCEL_ENV: 'production' }]) {
+    for (const [platform, origin] of [['web', req.headers.origin], ['desktop', 'null']]) {
+      for (const signalingTransport of [undefined, '', 'proxy', 'morphly-proxy-v2', 'morphly-proxy-v1']) {
+        const request = { ...req, headers: { ...req.headers, origin }, body: { platform, signalingTransport } };
+        const sessionContext = context(request, hostedEnvironment);
+        const providerSession = await createViduTemporaryKey({ apiKey: 'fixture-server-key', maxSeconds: 60,
+          imageUrl: 'https://example.com/image.png', proxyContext: sessionContext });
+        const response = createViduDemoSignalingSession(providerSession, sessionContext,
+          { userId: 'fixture-owner', sessionId: 'fixture-session' });
+        assert.equal(response.rtc.token, rtcToken);
+        assert.equal(response.liveId, 'fixture-live');
+        assert.equal(response.renderUid, 'fixture-renderer');
+        assert.equal(response.expiresAt, providerSession.expiresAt);
+        if (signalingTransport === 'morphly-proxy-v1') {
+          assert.equal(response.signaling.transport, 'proxy');
+          assert.equal(response.signaling.origin, req.headers.origin);
+          const ticket = validateViduDemoTicket(response.token, { secret, audience: hostedEnvironment.VERCEL_URL, origin });
+          assert.equal(ticket.clientSecret, providerSecret);
+          assert.equal(ticket.origin, origin);
+          assert.equal(ticket.userId, 'fixture-owner');
+          assert.equal(ticket.sessionId, 'fixture-session');
+          assert.equal(JSON.stringify(response).includes(providerSecret), false);
+        } else {
+          assert.equal(sessionContext, null);
+          assert.equal(response, providerSession);
+          assert.equal(response.token, providerSecret);
+          assert.equal(response.signaling, undefined);
+        }
       }
     }
   }
-  assert.equal(creations, 10, 'capability checks never add or retry provider creation');
-  assert.ok(context(req), 'the deployed preview remains compatible without a capability field');
+  assert.equal(creations, 20, 'capability checks never add or retry provider creation');
 });
 
 test('enabled production validates relay configuration before allowing legacy compatibility', () => {
@@ -152,7 +153,7 @@ test('production relay requires exact HTTPS web origins and permits opaque origi
   assert.equal(context(alias, production).relayOrigin, 'https://live.morphly.fun');
   assert.equal(context(alias, production).audience, production.VERCEL_URL);
   for (const platform of ['web', 'desktop']) {
-    for (const origin of ['http://localhost:5173', 'https://morphly-test.vercel.app/', '', undefined]) {
+    for (const origin of ['file:///app/index.html', 'http://localhost:5173', 'https://morphly-test.vercel.app/', '', undefined]) {
       assert.equal(context({ ...capable, headers: { ...req.headers, origin }, body: { ...capable.body, platform } }, production)
         .error.error, 'INVALID_BROWSER_ORIGIN');
     }
@@ -162,6 +163,8 @@ test('production relay requires exact HTTPS web origins and permits opaque origi
   }
   const desktop = { ...capable, headers: { ...req.headers, origin: 'null' }, body: { ...capable.body, platform: 'desktop' } };
   assert.equal(context(desktop, production).origin, 'null');
+  assert.equal(context({ ...desktop, headers: { ...desktop.headers, origin: 'https://untrusted.example' } }, production)
+    .error.error, 'INVALID_BROWSER_ORIGIN');
 });
 
 test('production preflight rejects invalid relay configuration and origins before database mutations or provider creation', async () => {
@@ -176,7 +179,7 @@ test('production preflight rejects invalid relay configuration and origins befor
     { origin: 'https://untrusted.example', signalingTransport: 'morphly-proxy-v1', expected: 'INVALID_BROWSER_ORIGIN' },
     { origin: 'http://localhost:5173', platform: 'desktop', signalingTransport: 'morphly-proxy-v1', expected: 'INVALID_BROWSER_ORIGIN' },
     { origin: 'null', signalingTransport: 'morphly-proxy-v1', expectedStatus: 400,
-      expected: 'A canonical browser origin is required to start an AI session.' },
+      expected: 'Open Morphly from the app or a secure web address, then try again.' },
   ]) {
     const exports = {};
     let providerCalls = 0;
@@ -211,6 +214,7 @@ test('production preflight rejects invalid relay configuration and origins befor
 
 test('the released Dashboard advertises its relay capability with the start-session request', () => {
   const dashboard = readFileSync(new URL('../src/pages/Dashboard.tsx', import.meta.url), 'utf8');
+  assert.match(dashboard, /isMorphlyDesktopRuntime\(\) \? 'desktop' : 'web'/);
   const startRequest = dashboard.slice(dashboard.indexOf("apiRequest<AiSessionResponse>('/start-session'"));
   assert.match(startRequest.slice(0, startRequest.indexOf('if (!startResponse.allowed)')),
     /getTrustedApiOrigin\(\) \? \{ signalingTransport: 'morphly-proxy-v1' \}/);

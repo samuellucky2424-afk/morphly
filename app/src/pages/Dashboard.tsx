@@ -20,7 +20,7 @@ import {
 import type { ViduProxySignaling, ViduRealtimeSession } from '@/lib/vidu-realtime';
 import { useAuth } from '@/context/AuthContext';
 import { useApp } from '@/context/AppContext';
-import { apiFetchWithAuth, getTrustedApiOrigin } from '@/lib/api-client';
+import { apiFetchWithAuth, getTrustedApiOrigin, isMorphlyDesktopRuntime } from '@/lib/api-client';
 import {
   getCreditRatePerSecond,
   getBillableUsageUnits,
@@ -2652,7 +2652,7 @@ function Dashboard() {
           body: JSON.stringify({
             userId: user?.id,
             installationId: getInstallationId(),
-            platform: window.electron ? 'desktop' : 'web',
+            platform: isMorphlyDesktopRuntime() ? 'desktop' : 'web',
             provider: requestedProvider,
             ...(getTrustedApiOrigin() ? { signalingTransport: 'morphly-proxy-v1' } : {}),
             billingVersion: 2,

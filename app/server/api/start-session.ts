@@ -38,7 +38,7 @@ export function getViduApiBaseUrl(environment = process.env) {
   } catch { return null; }
 }
 
-const VIDU_CONFIG_ERROR = { error: 'AI_SESSION_CONFIG_INVALID', details: 'Plus server configuration needs to be corrected. Contact support.' };
+const VIDU_CONFIG_ERROR = { error: 'AI_SESSION_CONFIG_INVALID', details: 'Plus is unavailable. Please contact Morphly support.' };
 
 // Match the demo's local proxy while binding each connection to its Morphly
 // account and deployment. Packaged Electron requests have an opaque Origin.
@@ -49,11 +49,10 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
     || !supabase?.db || !/^[A-Za-z0-9][A-Za-z0-9.-]{0,251}[A-Za-z0-9]$/.test(audience)) {
     return { error: VIDU_CONFIG_ERROR };
   }
-  // Installed clients and cached web bundles may ignore signaling metadata.
-  // Keep their scoped provider credential until they advertise relay support.
-  // Preview deployments retain the original opt-in experiment contract.
-  if (environment.VERCEL_ENV === 'production'
-    && req.body?.signalingTransport !== 'morphly-proxy-v1') return null;
+  // Older clients and HTTP local development do not advertise the relay.
+  // Keep their scoped provider credential until they opt in, in every hosted
+  // environment. Current HTTPS web and packaged desktop clients opt in below.
+  if (req.body?.signalingTransport !== 'morphly-proxy-v1') return null;
   const origin = req.headers?.origin;
   const desktop = req.body?.platform === 'desktop';
   let relayOrigin;
@@ -62,12 +61,14 @@ export function getViduDemoSessionContext(req, { environment = process.env, supa
     if (destination.username || destination.password || destination.port || destination.pathname !== '/'
       || destination.search || destination.hash) throw new Error();
     relayOrigin = destination.origin;
-    if (origin !== 'null' || !desktop) {
+    if (origin === 'null') {
+      if (!desktop) throw new Error();
+    } else {
       const source = new URL(origin);
-      if (source.protocol !== 'https:' || source.origin !== origin || (!desktop && origin !== relayOrigin)) throw new Error();
+      if (source.protocol !== 'https:' || source.origin !== origin || source.origin !== relayOrigin) throw new Error();
     }
   } catch {
-    return { error: { error: 'INVALID_BROWSER_ORIGIN', details: 'A valid app origin is required to start Plus.' } };
+    return { error: { error: 'INVALID_BROWSER_ORIGIN', details: 'Open Morphly again to start Plus.' } };
   }
   return { secret: environment.VIDU_DEMO_PROXY_SECRET, audience, origin, relayOrigin,
     userAgent: normalizeClientLabel(req.headers?.['user-agent'], 512) || '' };
@@ -162,7 +163,7 @@ export async function createDecartTemporaryKey({ apiKey, maxSeconds, allowedOrig
   const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 7200));
   // Decart enforces a minimum ten-second duration. Never mint a token whose
   // minimum provider allowance exceeds the account's affordable duration.
-  if (sessionLimit < 10) return { error: { error: 'INSUFFICIENT_CREDITS', details: 'Pro requires at least 25 credits to start a session.' } };
+  if (sessionLimit < 10) return { error: { error: 'INSUFFICIENT_CREDITS', details: 'At least 25 credits are needed to start this session.' } };
   try {
     const response = await fetch(`${DECART_DEFAULT_API_BASE_URL}/v1/client/tokens`, {
       method: 'POST',
@@ -178,11 +179,11 @@ export async function createDecartTemporaryKey({ apiKey, maxSeconds, allowedOrig
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || typeof data?.apiKey !== 'string' || !data.apiKey || data.apiKey === apiKey) {
-      return { error: { error: 'AI_SESSION_CREATION_FAILED', providerStatus: response.status, details: 'Pro could not create a secure session. Check Decart access or try again.' } };
+      return { error: { error: 'AI_SESSION_CREATION_FAILED', providerStatus: response.status, details: 'Morphly could not start a secure session. Please try again.' } };
     }
     return { token: data.apiKey, expiresAt: data.expiresAt, sessionLimit };
   } catch {
-    return { error: { error: 'AI_SESSION_CREATION_FAILED', details: 'Pro could not be reached. Please try again.' } };
+    return { error: { error: 'AI_SESSION_CREATION_FAILED', details: 'Morphly could not connect. Please try again.' } };
   }
 }
 
@@ -255,12 +256,12 @@ export async function createViduTemporaryKey({
         }
 
         const details = providerStatus === 401 || providerStatus === 403
-          ? 'Plus could not authenticate this session. Check VIDU_API_KEY or contact support.'
+          ? 'Plus could not authorize this session. Try again or contact Morphly support.'
           : providerStatus === 429
             ? 'Plus is limiting new sessions right now. Wait a moment, then try again.'
             : unavailable
               ? 'Plus servers are busy or under maintenance right now. Wait a minute, then try again.'
-              : 'Plus rejected this session configuration. Try Pro or contact support.';
+              : 'Plus could not start this session. Try again or contact Morphly support.';
 
         return {
           error: {
@@ -277,13 +278,13 @@ export async function createViduTemporaryKey({
       if (!clientSecret || clientSecret === apiKey) {
         return { error: {
           error: 'VIDU_CLIENT_CREDENTIAL_MISSING',
-          details: 'Vidu did not return browser session credentials. Check S2-Editing access for this API key.',
+          details: 'Plus could not start a secure session. Try again or contact Morphly support.',
         } };
       }
       const renderUid = String(data?.render_uid || data?.data?.render_uid || '');
       const rtc = data?.rtc || data?.data?.rtc || null;
       if (!liveId || !renderUid || typeof rtc?.token !== 'string' || !rtc.token || rtc.token === apiKey || !rtc.user_id) {
-        return { error: { error: 'VIDU_RTC_CREDENTIAL_MISSING', details: 'Vidu returned incomplete RTC connection details.' } };
+        return { error: { error: 'VIDU_RTC_CREDENTIAL_MISSING', details: 'Plus could not prepare the video connection. Please try again.' } };
       }
       // Vidu reports RTC expiry as Unix seconds; the scoped secret shares that deadline.
       const credentialExpiries = [
@@ -294,10 +295,10 @@ export async function createViduTemporaryKey({
         ? Math.min(...credentialExpiries)
         : Date.now() + sessionLimit * 1000;
       if (expiryMs <= Date.now()) {
-        return { error: { error: 'VIDU_SESSION_EXPIRED', details: 'Vidu returned expired session credentials. Start a new session.' } };
+        return { error: { error: 'VIDU_SESSION_EXPIRED', details: 'This Plus session has expired. Start a new session.' } };
       }
       if (['ending', 'ended'].includes(data?.live?.status || data?.data?.live?.status)) {
-        return { error: { error: 'VIDU_SESSION_ENDED', details: 'Vidu returned an ended session. Start a new session.' } };
+        return { error: { error: 'VIDU_SESSION_ENDED', details: 'This Plus session has ended. Start a new session.' } };
       }
       const expiresAt = new Date(expiryMs).toISOString();
 
@@ -619,7 +620,7 @@ export default async function handler(req, res) {
       return res.status(503).json({
         allowed: false,
         error: `${getProviderPublicLabel(provider)} is not configured on this server.`,
-        details: `Missing ${environmentName} in server environment`,
+        details: 'Plus is unavailable. Please contact Morphly support.',
       });
     }
 
@@ -634,7 +635,7 @@ export default async function handler(req, res) {
     if (platform === 'web' && allowedOrigins.length === 0) {
       return res.status(400).json({
         allowed: false,
-        error: 'A canonical browser origin is required to start an AI session.',
+        error: 'Open Morphly from the app or a secure web address, then try again.',
       });
     }
     const proxyContext = getViduDemoSessionContext(req);

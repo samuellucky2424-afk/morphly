@@ -361,7 +361,7 @@ test('Plus proxy rejects invalid metadata and insecure pages before any transpor
     assert.equal(h.supportChecks, 0);
     assert.equal(h.timers.size, 0);
   }
-  for (const pageUrl of ['http://preview.morphly.test', 'file:///app/index.html']) {
+  for (const pageUrl of ['http://preview.morphly.test']) {
     const h = harness('', undefined, pageUrl);
     await assert.rejects(proxyClient(h).connect(h.input, h.options), /Unsupported Plus relay/);
     assert.equal(h.socket, undefined);
@@ -373,6 +373,24 @@ test('Plus proxy rejects invalid metadata and insecure pages before any transpor
     assert.equal(h.socket, undefined);
     assert.equal(h.supportChecks, 0);
   }
+});
+
+test('a packaged file renderer resolves its configured Morphly API origin before its preload bridge is ready', async () => {
+  const h = harness('', undefined, 'file:///app/index.html', {
+    environment: { VITE_API_BASE_URL: 'https://desktop.morphly.test/api' },
+  });
+  const client = h.exports.createViduClient({ apiKey: relayTicket });
+  const controller = new AbortController();
+  const connected = client.connect(h.input, {
+    ...h.options,
+    signaling: { ...proxySignaling, origin: 'https://desktop.morphly.test' },
+    signal: controller.signal,
+  });
+  const rejection = assert.rejects(connected, /cancelled/);
+  await tick();
+  assert.equal(h.socket.url, 'wss://desktop.morphly.test/api/vidu/live');
+  controller.abort();
+  await rejection;
 });
 
 test('Plus accepts encrypted relay tickets larger than scoped secrets through the shared 12000-character bound', async () => {
