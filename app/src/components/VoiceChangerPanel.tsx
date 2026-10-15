@@ -591,7 +591,7 @@ export function VoiceChangerPanel() {
           </Collapsible>
 
           <div className="flex items-center justify-between px-4 py-3 text-[10px] text-muted-foreground">
-            <span className="flex items-center gap-1.5"><Cloud aria-hidden="true" className="size-3" />ElevenLabs speech-to-speech</span>
+            <span className="flex items-center gap-1.5"><Cloud aria-hidden="true" className="size-3" />Cloud voice conversion</span>
           </div>
         </div>
       </div>

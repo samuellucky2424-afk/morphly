@@ -2,7 +2,7 @@
   "name": "morphly-desktop",
   "private": true,
   "version": "2.5.31",
-  "description": "Morphly Desktop with virtual camera support and an ElevenLabs-powered voice changer.",
+  "description": "Morphly Desktop with virtual camera support and a cloud voice changer.",
   "author": "Morphly",
   "repository": {
     "type": "git",

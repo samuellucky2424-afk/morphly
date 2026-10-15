@@ -128,28 +128,37 @@ export function elevenLabsErrorDetail(error) {
 
 // `fatal` errors are account/configuration problems: retrying the next phrase
 // cannot succeed, so the client stops live conversion and shows the reason.
+// User-facing text never names the provider. Every message carries the
+// provider's reason code so support can identify the cause; the full provider
+// message is written to the server log only.
+const brandless = (text) => String(text).replace(/eleven\s*labs/gi, 'voice service');
+
 export function describeElevenLabsError(error) {
   const { status, code, message } = elevenLabsErrorDetail(error);
   const providerCode = code || (status ? `http_${status}` : 'network_error');
-  const result = (httpStatus, text, fatal = false) => ({ status: httpStatus, error: text, code: providerCode, fatal });
-  if (code === 'detected_unusual_activity' || /unusual activity|free tier usage disabled/i.test(message || '')) {
-    return result(503, 'ElevenLabs blocked this request: its free plan cannot be used from a server. Upgrade the ElevenLabs account to a paid plan (Starter or higher).', true);
+  const result = (httpStatus, text, fatal = false) => ({
+    status: httpStatus, error: `${brandless(text)} (code: ${providerCode})`, code: providerCode, fatal,
+  });
+  const text = message || '';
+  if (code === 'detected_unusual_activity' || /unusual activity|free tier/i.test(text)) {
+    return result(503, 'The voice service account is on a free plan, which cannot be used by Morphly. Upgrade the voice service subscription to a paid plan.', true);
   }
-  if (code === 'missing_permissions' || /permission/i.test(message || '')) {
-    return result(503, 'The ElevenLabs API key is missing a permission. In ElevenLabs → API keys, enable "Speech to Speech" and "Voices" (read and write), then try again.', true);
+  if (code === 'missing_permissions' || /permission/i.test(text)) {
+    return result(503, 'The voice service key is missing the Speech to Speech or Voices permission. Update the key permissions, then try again.', true);
   }
-  if (code === 'quota_exceeded' || /quota|credits/i.test(message || '')) {
-    return result(503, 'The ElevenLabs account has no credits left. Add credits or upgrade the plan, then try again.', true);
+  if (code === 'quota_exceeded' || /quota|credits|character limit/i.test(text)) {
+    return result(503, 'The voice service account has no credits left. Add credits or upgrade the subscription, then try again.', true);
   }
-  if (code === 'invalid_api_key' || status === 401) {
-    return result(503, 'ElevenLabs rejected the server API key. Check ELEVENLABS_API_KEY on the server.', true);
+  if (status === 402 || /payment|subscription|paid[ _]plan|upgrade|\bplan\b/i.test(`${code || ''} ${text}`)) {
+    return result(503, 'The voice changer needs a paid voice service subscription. Upgrade the subscription, then try again.', true);
   }
+  if (code === 'invalid_api_key' || code === 'api_key_invalid') {
+    return result(503, 'The voice service key on the server is invalid. Replace it, then try again.', true);
+  }
+  if (status === 401) return result(503, 'The voice service refused this request for the current account.', true);
   if (code === 'voice_limit_reached') return result(409, 'The voice library is full. Delete a voice you uploaded, then try again.');
-  if (status === 402 || code === 'payment_required' || code === 'paid_plan_required') {
-    return result(503, message || 'This ElevenLabs feature needs a paid ElevenLabs plan.', true);
-  }
   if (status === 429) return result(429, 'The voice service is busy. Wait a moment, then try again.');
-  if (status === 403) return result(503, message || 'ElevenLabs refused this request for the current account.', true);
+  if (status === 403) return result(503, 'The voice service refused this request for the current account.', true);
   if (status === 400 || status === 422) return result(400, message || 'The voice service rejected this audio.');
   if (status === 404) return result(404, 'That voice is no longer available. Choose another voice.', true);
   return result(502, 'The voice service could not complete the request. Try again.');

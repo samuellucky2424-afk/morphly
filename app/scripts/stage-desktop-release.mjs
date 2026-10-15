@@ -22,7 +22,7 @@ const existing=await fetch(api+'/releases?per_page=100',{headers});if(!existing.
 let draft=(await existing.json()).find(r=>r.tag_name===`v${version}`);
 if(draft&&!draft.draft)throw new Error('Release already published; do not replace a public installer');
 if(!draft){
-  const response=await fetch(api+'/releases',{method:'POST',headers,body:JSON.stringify({tag_name:`v${version}`,target_commitish:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),name:`Morphly Desktop ${version}`,draft:true,prerelease:false,body:'Firebase authentication and account data, Plus subject replacement at 2 credits/sec using a reference image without text prompts, an ElevenLabs voice changer, and native Windows camera integration. Draft pending package and live backend checks.'})});
+  const response=await fetch(api+'/releases',{method:'POST',headers,body:JSON.stringify({tag_name:`v${version}`,target_commitish:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),name:`Morphly Desktop ${version}`,draft:true,prerelease:false,body:'Firebase authentication and account data, Plus subject replacement at 2 credits/sec using a reference image without text prompts, a cloud voice changer, and native Windows camera integration. Draft pending package and live backend checks.'})});
   if(!response.ok)throw new Error(`Draft release creation failed (${response.status})`);draft=await response.json();
 }
 for(const filename of [name,'latest.yml']){

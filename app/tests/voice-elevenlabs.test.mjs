@@ -108,8 +108,10 @@ test('account problems are explained precisely and marked fatal so live conversi
     [{ statusCode: 401, body: { detail: { status: 'detected_unusual_activity', message: 'Free Tier usage disabled' } } }, /free plan/, 'detected_unusual_activity'],
     [{ statusCode: 401, body: { detail: { status: 'missing_permissions', message: 'The API key is missing the permission speech_to_speech' } } }, /Speech to Speech/, 'missing_permissions'],
     [{ statusCode: 401, body: { detail: { status: 'quota_exceeded', message: 'This request exceeds your quota' } } }, /no credits left/, 'quota_exceeded'],
-    [{ statusCode: 401, body: { detail: { status: 'invalid_api_key' } } }, /ELEVENLABS_API_KEY/, 'invalid_api_key'],
+    [{ statusCode: 401, body: { detail: { status: 'invalid_api_key' } } }, /key on the server is invalid/, 'invalid_api_key'],
     [{ statusCode: 401, body: JSON.stringify({ detail: { status: 'missing_permissions' } }) }, /Speech to Speech/, 'missing_permissions'],
+    [{ statusCode: 401, body: { detail: { status: 'some_new_reason', message: 'ElevenLabs says no' } } }, /refused this request/, 'some_new_reason'],
+    [{ statusCode: 402, body: { detail: { status: 'payment_required', message: 'Upgrade your ElevenLabs plan' } } }, /paid voice service subscription/, 'payment_required'],
   ];
   for (const [error, message, code] of cases) {
     const failure = describeElevenLabsError(error);
@@ -117,7 +119,10 @@ test('account problems are explained precisely and marked fatal so live conversi
     assert.equal(failure.fatal, true);
     assert.equal(failure.code, code);
     assert.match(failure.error, message);
+    assert.ok(failure.error.endsWith(`(code: ${code})`), 'the reason code is shown for support');
+    assert.doesNotMatch(failure.error, /eleven\s*labs/i, 'user-facing text never names the provider');
   }
+  assert.doesNotMatch(describeElevenLabsError({ statusCode: 400, body: { detail: { message: 'ElevenLabs rejected audio' } } }).error, /eleven/i);
   assert.equal(describeElevenLabsError({ statusCode: 429 }).fatal, false);
   assert.equal(describeElevenLabsError(new Error('socket hang up')).code, 'network_error');
 });
