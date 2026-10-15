@@ -80,44 +80,6 @@ jobs:
       working-directory: app
       run: npm test
 
-    - name: Restore MorphlyVC runtime
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        $runtimeDir = "app/.meanvc/runtime-40ms"
-        if (!(Test-Path "$runtimeDir/python.exe")) {
-          Write-Host "Restoring MorphlyVC runtime from v2.5.0 release..."
-          New-Item -ItemType Directory -Path "temp_v250" -Force | Out-Null
-          gh release download v2.5.0 --repo "${{ github.repository }}" --pattern "Morphly-Setup-2.5.0.exe" --dir temp_v250
-          Write-Host "Extracting MorphlyVC runtime from v2.5.0 installer..."
-          7z x temp_v250/Morphly-Setup-2.5.0.exe -otemp_unpacked -y
-          if (Test-Path "temp_unpacked/`$PLUGINSDIR/app-64.7z") {
-            7z x "temp_unpacked/`$PLUGINSDIR/app-64.7z" -otemp_app -y
-            $extractedRuntime = "temp_app/resources/morphlyvc/runtime-40ms"
-          } else {
-            $extractedRuntime = (Get-ChildItem -Path "temp_unpacked" -Filter "runtime-40ms" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-          }
-          if ($extractedRuntime -and (Test-Path "$extractedRuntime/python.exe")) {
-            New-Item -ItemType Directory -Path "app/.meanvc" -Force | Out-Null
-            Move-Item -Path $extractedRuntime -Destination $runtimeDir -Force
-          }
-          Remove-Item -Path "temp_v250", "temp_unpacked", "temp_app" -Recurse -Force -ErrorAction SilentlyContinue
-        }
-
-        if (!(Test-Path "$runtimeDir/python.exe")) {
-          throw "Failed to restore MorphlyVC runtime: $runtimeDir/python.exe not found."
-        }
-        Write-Host "MorphlyVC runtime successfully restored."
-
-    - name: Test bundled voice audio buffering without microphone access
-      shell: pwsh
-      run: |
-        & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-buffer.test.py
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        & ./app/.meanvc/runtime-40ms/python.exe ./app/tests/voice-cpu.test.py
-        if ($LASTEXITCODE -ne 0) { throw "MorphlyVC audio regression tests failed." }
-
     - name: Load verified Firebase production client settings
       shell: pwsh
       run: |
@@ -157,32 +119,6 @@ jobs:
         echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         echo "TAG_NAME=$tagName" >> $env:GITHUB_OUTPUT
 
-    - name: Package optional MorphlyVC voice engine
-      shell: pwsh
-      run: |
-        $runtimeDir = "app/.meanvc/runtime-40ms"
-        if (!(Test-Path "$runtimeDir/python.exe")) {
-          throw "MorphlyVC runtime is missing; cannot package the optional voice engine."
-        }
-
-        $assetPath = Join-Path (Get-Location) "app/release/morphlyvc-runtime-40ms.zip"
-        if (Test-Path $assetPath) { Remove-Item $assetPath -Force }
-
-        # 7-Zip handles the multi-gigabyte archive reliably. Entering the parent
-        # directory keeps "runtime-40ms" as the archive root the app expects.
-        Push-Location "app/.meanvc"
-        try {
-          7z a -tzip -mx5 -bso0 $assetPath "runtime-40ms"
-          if ($LASTEXITCODE -ne 0) { throw "Failed to package the MorphlyVC voice engine." }
-        } finally {
-          Pop-Location
-        }
-
-        # GitHub requires every asset to be strictly smaller than 2 GiB.
-        # Publish 1 GiB parts and a manifest; Morphly rejoins them automatically.
-        node app/scripts/split-voice-engine.mjs $assetPath
-        if ($LASTEXITCODE -ne 0) { throw "Failed to split the MorphlyVC voice engine." }
-
     - name: Verify release artifacts
       shell: pwsh
       run: |
@@ -216,7 +152,7 @@ jobs:
         if (!(Test-Path $asarCli)) { throw "Missing ASAR inspection CLI: $asarCli" }
         $asarEntries = @(& $asarCli list $appAsar)
         if ($LASTEXITCODE -ne 0) { throw "Unable to inspect packaged app archive: $appAsar" }
-        foreach ($requiredEntry in @('\shared\load-environment.js', '\electron\virtual-microphone.js', '\electron\voice-engine-setup.js', '\shared\download-retry.js', '\shared\voice-audio-devices.js', '\server\translation-client.js', '\shared\translation.js', '\shared\translation-audio-queue.js', '\node_modules\ws\index.js')) {
+        foreach ($requiredEntry in @('\shared\load-environment.js', '\electron\virtual-microphone.js')) {
           if ($asarEntries -notcontains $requiredEntry) {
             throw "Packaged app archive is missing required runtime module: $requiredEntry"
           }
@@ -245,32 +181,11 @@ jobs:
           if (!(Test-Path $artifactPath)) { throw "Missing bundled Media Foundation camera artifact: $artifactPath" }
         }
 
-        # The voice engine is now an optional on-demand download, so only the
-        # Python bridge ships inside the installer.
-        $bundledVoiceBridge = Join-Path $dir "win-unpacked/resources/morphlyvc/meanvc-realtime.py"
-        if (!(Test-Path $bundledVoiceBridge)) { throw "Missing bundled MorphlyVC bridge: $bundledVoiceBridge" }
         $cableProbe = Join-Path $dir "win-unpacked/resources/vbcable/detect-vbcable.ps1"
         if (!(Test-Path $cableProbe)) { throw "Missing bundled VB-CABLE driver probe." }
         $probeResult = & powershell.exe -NoProfile -NonInteractive -File $cableProbe | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $probeResult.installed -isnot [bool] -or $probeResult.error) {
           throw "Packaged VB-CABLE probe failed validation."
-        }
-
-        if (Test-Path (Join-Path $dir "win-unpacked/resources/morphlyvc/runtime-40ms")) {
-          throw "The optional voice engine must not be bundled in the desktop installer."
-        }
-        $voiceEngineManifest = Join-Path $dir "morphlyvc-runtime-40ms.zip.json"
-        $manifest = Get-Content $voiceEngineManifest -Raw | ConvertFrom-Json
-        if ($manifest.format -ne 1 -or $manifest.parts.Count -lt 1) { throw "Invalid voice engine manifest." }
-        foreach ($part in $manifest.parts) {
-          $partPath = Join-Path $dir $part.name
-          $partSize = (Get-Item $partPath).Length
-          if ($partSize -ne $part.size -or $partSize -ge $maxReleaseAssetBytes) {
-            throw "Invalid release asset size: $partPath"
-          }
-          if ((Get-FileHash $partPath -Algorithm SHA256).Hash.ToLower() -ne $part.sha256) {
-            throw "Voice engine checksum mismatch: $partPath"
-          }
         }
 
     - name: Publish verified release
@@ -283,14 +198,10 @@ jobs:
         $installer = "app/release/Morphly-Setup-$version.exe"
         $latest = "app/release/latest.yml"
         $blockmaps = @(Get-ChildItem -Path "app/release" -Filter "*.blockmap" | ForEach-Object { $_.FullName })
-        $voiceEngineManifest = "app/release/morphlyvc-runtime-40ms.zip.json"
-        $manifest = Get-Content $voiceEngineManifest -Raw | ConvertFrom-Json
-        $voiceEngineParts = @($manifest.parts | ForEach-Object { (Resolve-Path (Join-Path "app/release" $_.name)).Path })
         $assets = @(
           (Resolve-Path $installer).Path,
-          (Resolve-Path $latest).Path,
-          (Resolve-Path $voiceEngineManifest).Path
-        ) + $blockmaps + $voiceEngineParts
+          (Resolve-Path $latest).Path
+        ) + $blockmaps
         foreach ($asset in $assets) {
           if ((Get-Item $asset).Length -ge 2GB) { throw "Release asset must be smaller than 2 GiB: $asset" }
         }

@@ -629,6 +629,47 @@ test('Plus scopes subscription failures to its renderer and redacts raw SDK erro
   }
 });
 
+test('Plus re-subscribes after early renderer subscription failures instead of ending the session', async () => {
+  const h = harness();
+  const resubscribed = [];
+  h.engine.subscribeRemoteMediaStream = (...args) => resubscribed.push(args);
+  const connected = h.client.connect(h.input, h.options);
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  // AliRTC 16844114 (SubscribeVideoStreamFailed) while the renderer is still starting.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    h.events.get('occurError')({ code: 16844114, message: 'rtc-token' }, 'renderer');
+    await tick();
+    assert.equal(h.errors.length, 0, `failure ${attempt} is retried`);
+    const retry = [...h.timers.values()].find(timer => timer.ms === 1000 * attempt);
+    assert.ok(retry, `retry ${attempt} is scheduled with backoff`);
+    retry.fn();
+  }
+  assert.deepEqual(resubscribed, [['renderer', 1, true, false], ['renderer', 1, true, false], ['renderer', 1, true, false]]);
+  h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
+  const session = await connected;
+  assert.equal(h.outputs.length, 1);
+  await session.disconnect();
+  assert.equal(h.timers.size, 0);
+});
+
+test('Plus ends the session when renderer subscription keeps failing after retries', async () => {
+  const h = harness();
+  h.engine.subscribeRemoteMediaStream = () => {};
+  const connected = h.client.connect(h.input, h.options);
+  const rejection = assert.rejects(connected, error => error.rtcCode === 16844114 && /could not receive the renderer video/.test(error.message));
+  await tick();
+  h.socket.open();
+  h.socket.message({ type: 2, payload: { conn_init_ack: { success: true } } });
+  await tick();
+  for (let attempt = 0; attempt < 4; attempt += 1) h.events.get('occurError')({ code: 16844114 }, 'renderer');
+  await rejection;
+  assert.equal(h.sent.at(-1).type, 5);
+  assert.equal(h.timers.size, 0);
+});
+
 test('Plus still handles fatal startup errors when renderer video arrives before publication confirmation', async () => {
   const h = harness();
   h.engine.publishLocalVideoStream = async () => {};

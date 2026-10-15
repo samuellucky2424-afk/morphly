@@ -9,7 +9,7 @@ test('all pages use semantic light surfaces rather than hard-coded dark panels',
     const code = await source(`../src/pages/${file}`);
     assert.doesNotMatch(code, /\bbg-(?:black|zinc-(?:800|900|950))\b|\bbg-\[#[0-3][0-9a-f]{5}\]/i, file);
   }
-  const voice = await source('../src/components/MeanVcPanel.tsx');
+  const voice = await source('../src/components/VoiceChangerPanel.tsx');
   assert.match(voice, /bg-background text-foreground/);
   assert.match(voice, /disabled:bg-muted disabled:text-muted-foreground/);
 });

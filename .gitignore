@@ -12,7 +12,6 @@ dist-ssr/
 release/
 release-*/
 *.exe
-!app/build/VBCABLE_Setup_x64.exe
 *.zip
 *.dmg
 *.AppImage

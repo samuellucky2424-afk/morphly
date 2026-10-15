@@ -8,18 +8,11 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import os from 'node:os';
 import { createDesktopUpdater } from './updater.js';
-import { createVoiceEngineSetup } from './voice-engine-setup.js';
 import { createVirtualMicrophoneService } from './virtual-microphone.js';
 import { validateCameraSelectionForTrustedProcess } from './camera-validation.js';
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
-import { createMeanVcRuntimeController } from '../server/meanvc-runtime.js';
-import {
-  getVoiceEnginePath,
-  installVoiceEngine,
-  isVoiceEngineInstalled,
-} from './voice-engine-installer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -93,8 +86,6 @@ configureChromiumCachePaths();
 
 let mainWindow = null;
 let desktopUpdater = null;
-let morphlyVcRuntime = null;
-let voiceEngineSetup = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
 let virtualCameraEnabled = process.platform === 'win32';
@@ -1314,122 +1305,18 @@ function registerClipboardHandlers() {
   });
 }
 
-function getVoiceEngineDataRoot() {
-  return isPackagedRuntime
-    ? path.join(app.getPath('userData'), 'morphlyvc')
-    : path.resolve(__dirname, '../.meanvc');
-}
-
-// The voice engine is an optional on-demand download, so prefer a copy the user
-// already installed under userData and fall back to a bundled one when present.
-function resolveVoiceEngineRuntimeRoot(dataRoot) {
-  if (isVoiceEngineInstalled(dataRoot)) {
-    return getVoiceEnginePath(dataRoot);
-  }
-
-  return isPackagedRuntime
-    ? path.join(process.resourcesPath, 'morphlyvc', 'runtime-40ms')
-    : getVoiceEnginePath(dataRoot);
-}
-
-function createMorphlyVcController() {
-  const dataRoot = getVoiceEngineDataRoot();
-  const bundledRuntimeRoot = resolveVoiceEngineRuntimeRoot(dataRoot);
-  const bundledBridge = isPackagedRuntime
-    ? path.join(process.resourcesPath, 'morphlyvc', 'meanvc-realtime.py')
-    : path.resolve(__dirname, '../server/meanvc-realtime.py');
-
-  fs.mkdirSync(dataRoot, { recursive: true });
-  return createMeanVcRuntimeController({
-    repositoryRoot: path.resolve(__dirname, '../../third_party/MeanVC2'),
-    dataRoot,
-    bundledRuntimeRoot,
-    bundledBridge,
-  });
-}
-
-function registerMorphlyVcHandlers() {
+function registerVirtualMicrophoneHandlers() {
   const requireMainRenderer = (event) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender.id !== mainWindow.webContents.id) {
-      throw new Error('MorphlyVC controls are available only from the Morphly dashboard.');
+      throw new Error('Virtual microphone controls are available only from the Morphly dashboard.');
     }
   };
-  const runtime = () => {
-    if (!morphlyVcRuntime) {
-      throw new Error('MorphlyVC is still starting.');
-    }
-    return morphlyVcRuntime;
-  };
-
-  ipcMain.handle('morphlyvc:status', (event) => {
-    requireMainRenderer(event);
-    return runtime().getStatus();
-  });
-  ipcMain.handle('morphlyvc:refresh-devices', (event) => {
-    requireMainRenderer(event);
-    return runtime().refreshDevices();
-  });
-  ipcMain.handle('morphlyvc:reference', (event, payload) => {
-    requireMainRenderer(event);
-    const bytes = payload?.data;
-    const fileName = typeof payload?.fileName === 'string' ? payload.fileName : 'reference.wav';
-    if (!(bytes instanceof Uint8Array) && !ArrayBuffer.isView(bytes) && !(bytes instanceof ArrayBuffer)) {
-      throw new Error('Choose a valid WAV reference recording.');
-    }
-    return runtime().saveReference(Buffer.from(bytes), fileName);
-  });
-  ipcMain.handle('morphlyvc:prepare', (event, payload) => {
-    requireMainRenderer(event);
-    return runtime().prepare(payload ?? {});
-  });
-  ipcMain.handle('morphlyvc:start', (event, payload) => {
-    requireMainRenderer(event);
-    return runtime().start(payload ?? {});
-  });
-  ipcMain.handle('morphlyvc:pitch', (event, payload) => {
-    requireMainRenderer(event);
-    return runtime().setPitch(payload ?? {});
-  });
-  ipcMain.handle('morphlyvc:stop', (event) => {
-    requireMainRenderer(event);
-    return runtime().stop();
-  });
-  const dataRoot = getVoiceEngineDataRoot();
-  voiceEngineSetup = createVoiceEngineSetup({
-    isInstalled: () => isVoiceEngineInstalled(dataRoot) || (isPackagedRuntime && isVoiceEngineInstalled(path.join(process.resourcesPath, 'morphlyvc'))),
-    install: onProgress => installVoiceEngine({
-      installRoot: dataRoot,
-      tempRoot: path.join(dataRoot, 'downloads'),
-      // Voice models have an independent release lifecycle from the desktop.
-      // Reuse the verified model archive instead of requesting missing assets
-      // on every application-only release.
-      version: '2.5.22',
-      onProgress,
-    }),
-    onInstalled: () => {
-      if (isPackagedRuntime) {
-        morphlyVcRuntime?.shutdown?.();
-        morphlyVcRuntime = createMorphlyVcController();
-      }
-    },
-    onState: state => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('morphlyvc:install-progress', state);
-    },
-  });
-  ipcMain.handle('morphlyvc:engine-status', event => {
-    requireMainRenderer(event);
-    return { ...voiceEngineSetup.getState(), installPath: getVoiceEnginePath(dataRoot), available: isPackagedRuntime };
-  });
-  ipcMain.handle('morphlyvc:install-engine', event => {
-    requireMainRenderer(event);
-    return voiceEngineSetup.start();
-  });
   const cableResourcesPath = isPackagedRuntime
     ? path.join(process.resourcesPath, 'vbcable')
     : path.join(__dirname, '..', 'build');
   const virtualMicrophone = createVirtualMicrophoneService({
     probePath: path.join(cableResourcesPath, 'detect-vbcable.ps1'),
-    installerPath: path.join(cableResourcesPath, 'VBCABLE_Setup_x64.exe'),
+    workRoot: path.join(app.getPath('temp'), 'morphly-vbcable'),
   });
   ipcMain.handle('virtual-microphone:detect', async (event) => {
     requireMainRenderer(event);
@@ -1449,16 +1336,14 @@ function registerMorphlyVcHandlers() {
 app.whenReady().then(async () => {
   if (process.platform === 'darwin') {
     await systemPreferences.askForMediaAccess('camera');
+    await systemPreferences.askForMediaAccess('microphone');
   }
 
   registerVirtualCameraHandlers();
   registerCameraHandlers();
   registerWindowHandlers();
   registerClipboardHandlers();
-  if (isPackagedRuntime) {
-    morphlyVcRuntime = createMorphlyVcController();
-  }
-  registerMorphlyVcHandlers();
+  registerVirtualMicrophoneHandlers();
 
   desktopUpdater = createDesktopUpdater({
     manifestUrl: resolveUpdateManifestUrl(),
@@ -1477,8 +1362,6 @@ app.whenReady().then(async () => {
   registerUpdaterHandlers();
   createWindow();
   desktopUpdater.startBackgroundChecks();
-  // Start immediately on launch, independently of sign-in and dashboard mounts.
-  if (isPackagedRuntime) void voiceEngineSetup.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1495,7 +1378,6 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopMorphlyCamPublisher();
-  morphlyVcRuntime?.shutdown();
 
   if (desktopUpdater) {
     desktopUpdater.dispose();

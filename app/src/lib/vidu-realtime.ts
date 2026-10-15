@@ -34,6 +34,7 @@ type ViduStartupPhase = 'camera_preparing' | 'camera_prepared' | 'signaling_open
 const RTC_CAMERA_FAILURES = new Set([17039620, 17039621, 17039622, 17039623]);
 const RTC_VIDEO_PUBLISH_FAILURES = new Set([16843857, 16974597, 16843782]);
 const RTC_VIDEO_SUBSCRIBE_FAILURES = new Set([16844114, 16974852, 16844112]);
+const RENDERER_SUBSCRIBE_RETRIES = 3;
 const RTC_JOIN_FAILURES = new Set([33620481, 33620482, 33620484, 33620483, 33620485,
   16908804, 16974081, 16974338]);
 
@@ -184,6 +185,8 @@ export class ViduRealtimeClient {
     let sessionTimer: ReturnType<typeof setTimeout> | undefined;
     let credentialTimer: ReturnType<typeof setTimeout> | undefined;
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
+    let subscribeRetry: ReturnType<typeof setTimeout> | undefined;
+    let subscribeRetries = 0;
     const listeners = new Set<(error: unknown) => void>();
     let rejectStartup: (error: Error) => void = () => {};
     let resolveInit: () => void = () => {};
@@ -228,6 +231,7 @@ export class ViduRealtimeClient {
       clearTimeout(sessionTimer);
       clearTimeout(credentialTimer);
       clearTimeout(startupTimer);
+      clearTimeout(subscribeRetry);
       window.removeEventListener('pagehide', onPageHide);
       options.signal?.removeEventListener('abort', onAbort);
       // Hang up before any database requests or RTC teardown; this stops provider billing.
@@ -291,11 +295,24 @@ export class ViduRealtimeClient {
         }, Math.max(0, credentialDeadline - Date.now()));
       }
       const rendererError = (error: unknown, uid?: string) => {
-        if (stopped || startupComplete || (uid !== undefined && String(uid) !== renderUid)) return;
+        if (stopped || startupComplete || receivedVideo || (uid !== undefined && String(uid) !== renderUid)) return;
         const code = rtcErrorCode(error);
-        if (code !== undefined && RTC_VIDEO_SUBSCRIBE_FAILURES.has(code)) {
-          fail('Plus could not receive the renderer video. Start a new session.', 'rtc_subscribe_failed', code);
+        if (code === undefined || !RTC_VIDEO_SUBSCRIBE_FAILURES.has(code)) return;
+        // The SDK abandons a subscription when media does not arrive within
+        // ~1.5 s, which is common while the renderer is still starting or on a
+        // slow network. Re-subscribe a few times before ending the session.
+        if (subscribeRetries < RENDERER_SUBSCRIBE_RETRIES && engine?.subscribeRemoteMediaStream) {
+          subscribeRetries += 1;
+          logStartup('renderer_subscription_state', { code, stateCode: subscribeRetries });
+          clearTimeout(subscribeRetry);
+          subscribeRetry = setTimeout(() => {
+            if (stopped || receivedVideo) return;
+            try { engine?.subscribeRemoteMediaStream?.(renderUid, 1, true, false); }
+            catch { /* The renderer may not be online yet; default subscription resumes when it is. */ }
+          }, 1000 * subscribeRetries);
+          return;
         }
+        fail('Plus could not receive the renderer video. Start a new session.', 'rtc_subscribe_failed', code);
       };
       engine.on('occurError', (error, uid) => {
         if (stopped || startupComplete) return;

@@ -33,7 +33,7 @@ import {
   trackSessionCompleted,
 } from '@/lib/telemetry-client';
 import { UpdateBanner } from '@/components/UpdateBanner';
-import { MeanVcPanel } from '@/components/MeanVcPanel';
+import { VoiceChangerPanel } from '@/components/VoiceChangerPanel';
 import { MorphlyDashboardTour } from '@/components/onboarding/MorphlyDashboardTour';
 import {
   claimSignupBonusWelcome,
@@ -433,7 +433,7 @@ const viduSdkReadyPromise = import('@/lib/vidu-realtime').then(async module => {
 function Dashboard() {
   const { user, logout } = useAuth();
   const [onboardingChecked, setOnboardingChecked] = useState(false);
-  const { credits, setCredits, setSessionStatus, translationActive } = useApp();
+  const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
 
   const [isStreaming, setIsStreaming] = useState(false);
@@ -464,7 +464,7 @@ function Dashboard() {
   const [prompt] = useState(BASE_PROMPT);
 
   const isBlendedMode = Boolean(referenceImage) && (activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()));
-  const currentCreditRate = translationActive ? (isStreaming ? 4 : 2.5) : getCreditRatePerSecond(
+  const currentCreditRate = getCreditRatePerSecond(
     Boolean(referenceImage),
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
     selectedProvider,
@@ -2913,7 +2913,7 @@ function Dashboard() {
     <div className="morphly-dashboard flex flex-col bg-background font-sans text-foreground">
       <CustomerEngagement paused={!onboardingChecked || isTourRunning || isStreaming || isLoading || isUpdaterBlocking} />
       <main className="morphly-dashboard-main flex min-w-0 bg-background">
-        <MeanVcPanel />
+        <VoiceChangerPanel />
         <section
           data-tour="dashboard"
           aria-label="Live streaming preview"

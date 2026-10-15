@@ -22,8 +22,6 @@ interface AppContextType {
   deductBalance: (amount: number) => void;
   deductCredits: (amount: number) => void;
   sessionStatus: 'LIVE' | 'IDLE';
-  translationActive: boolean;
-  setTranslationActive: (active: boolean) => void;
   setSessionStatus: (status: 'LIVE' | 'IDLE') => void;
   isLoading: boolean;
   setLoading: (loading: boolean) => void;
@@ -54,7 +52,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [balance, setBalanceState] = useState(isLocalPreview ? 10000 : 0);
   const [credits, setCreditsState] = useState(isLocalPreview ? 999999 : 0);
   const [sessionStatus, setSessionStatus] = useState<'LIVE' | 'IDLE'>('IDLE');
-  const [translationActive, setTranslationActive] = useState(false);
   const [isLoading, setLoading] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -251,8 +248,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     deductBalance,
     deductCredits,
     sessionStatus,
-    translationActive,
-    setTranslationActive,
     setSessionStatus,
     isLoading,
     setLoading,
@@ -261,7 +256,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     notifications,
     addNotification,
     clearNotifications,
-  }), [balance, credits, setBalance, setCredits, addBalance, addCredits, deductBalance, deductCredits, sessionStatus, translationActive, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
+  }), [balance, credits, setBalance, setCredits, addBalance, addCredits, deductBalance, deductCredits, sessionStatus, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
 
   return (
     <AppContext.Provider value={value}>

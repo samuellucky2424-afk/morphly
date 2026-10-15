@@ -23,6 +23,7 @@ import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
 import firebaseRegisterHandler from './api/firebase-register.js';
 import paymentSweepHandler from './api/payment-sweep.js';
+import { createVoiceHandler } from './api/voice.js';
 
 const routeHandlers = {
   'firebase-register': firebaseRegisterHandler,
@@ -63,6 +64,10 @@ const routeHandlers = {
   wallet: walletHandler,
   telemetry: telemetryHandler,
   'error-log': errorLogHandler,
+  'voice-voices': createVoiceHandler('voices'),
+  'voice-clone': createVoiceHandler('clone'),
+  'voice-convert': createVoiceHandler('convert'),
+  'voice-delete': createVoiceHandler('delete'),
 };
 
 function normalizeRouteSegment(value) {

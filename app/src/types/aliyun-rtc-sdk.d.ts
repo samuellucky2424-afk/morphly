@@ -7,6 +7,8 @@ declare module 'aliyun-rtc-sdk' {
     publishLocalVideoStream(enabled: boolean): Promise<void>;
     setDefaultSubscribeAllRemoteAudioStreams(enabled: boolean): void;
     setDefaultSubscribeAllRemoteVideoStreams(enabled: boolean): void;
+    /** track: 0 none, 1 camera, 2 screen, 3 both. Re-requests the remote user's streams. */
+    subscribeRemoteMediaStream?(userId: string, track: number, subscribeVideo: boolean, subscribeAudio: boolean): void;
     switchCamera(deviceId: string | undefined, track: MediaStreamTrack): Promise<void>;
     joinChannel(token: string, displayName: string): Promise<void>;
     getVideoTrack(options: { userId?: string; streamType: number }): Promise<MediaStreamTrack | undefined>;

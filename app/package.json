@@ -1,8 +1,8 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.30",
-  "description": "Morphly Desktop with virtual camera support and automatic, resumable MorphlyVC voice engine setup.",
+  "version": "2.5.31",
+  "description": "Morphly Desktop with virtual camera support and an ElevenLabs-powered voice changer.",
   "author": "Morphly",
   "repository": {
     "type": "git",
@@ -37,8 +37,7 @@
     "virtual-camera:probe": "node scripts/unity-capture-registration.cjs probe && node scripts/media-foundation-camera-registration.cjs probe",
     "electron:build": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish never",
     "electron:build:dir": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win dir",
-    "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always",
-    "translation:server": "tsx server/translation-server.js"
+    "electron:release": "npm run virtual-camera:build && npm run clean:build && npm run build:app && electron-builder --win --publish always"
   },
   "build": {
     "appId": "com.morphly.app",
@@ -54,22 +53,12 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      "server/meanvc-runtime.js",
-      "shared/**/*",
-      "server/translation-client.js"
+      "shared/**/*"
     ],
     "extraResources": [
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
-      },
-      {
-        "from": "server/meanvc-realtime.py",
-        "to": "morphlyvc/meanvc-realtime.py"
-      },
-      {
-        "from": "build/VBCABLE_Setup_x64.exe",
-        "to": "vbcable/VBCABLE_Setup_x64.exe"
       },
       {
         "from": "build/detect-vbcable.ps1",
@@ -107,6 +96,7 @@
   },
   "dependencies": {
     "@decartai/sdk": "^0.2.3",
+    "@elevenlabs/elevenlabs-js": "^2.73.0",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",

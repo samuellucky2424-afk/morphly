@@ -4,127 +4,136 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { buildVirtualMicrophoneInstallCommand, createVirtualMicrophoneService } from '../electron/virtual-microphone.js';
+import os from 'node:os';
+import path from 'node:path';
+import { VBCABLE_PACK_URL, VBCABLE_REQUIRED_FILES, buildVirtualMicrophoneInstallCommand, buildVirtualMicrophonePrepareCommand, createVirtualMicrophoneService, downloadVirtualMicrophonePack } from '../electron/virtual-microphone.js';
 
 const missing = { installed: false, registered: false };
 const working = { installed: true, registered: true };
 
-test('desktop release packages the driver probe and wires verified installation', () => {
+test('VB-CABLE is not embedded in the Morphly installer; the app downloads the official pack', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.ok(pkg.build.extraResources.some(item => item.from === 'build/detect-vbcable.ps1' && item.to === 'vbcable/detect-vbcable.ps1'));
+  assert.equal(pkg.build.extraResources.some(item => /VBCABLE_Setup/i.test(item.from)), false);
+  assert.equal(fs.existsSync(new URL('../build/VBCABLE_Setup_x64.exe', import.meta.url)), false);
   const main = fs.readFileSync(new URL('../electron/main.js', import.meta.url), 'utf8');
   assert.match(main, /return virtualMicrophone\.install\(\)/);
   assert.match(main, /return virtualMicrophone\.detect\(\)/);
-  assert.doesNotMatch(main, /ExpandProperty InstallDir/);
   const installer = fs.readFileSync(new URL('../build/installer.nsh', import.meta.url), 'utf8');
-  assert.match(installer, /detect-vbcable\.ps1/);
-  assert.match(installer, /vbCableVerify:/);
-  assert.doesNotMatch(installer, /ReadRegStr[^\n]*InstallDir/);
+  assert.doesNotMatch(installer, /VBCABLE|vbcable|vbCable/);
+  assert.equal(VBCABLE_PACK_URL, 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack45.zip');
+  assert.ok(VBCABLE_REQUIRED_FILES.includes('vbMmeCable64_win10.inf'));
 });
 
-test('installer timeout gives visible recovery steps', async () => {
-  const result = await service({ install: async () => { throw Object.assign(new Error('Command failed'), { killed: true }); } }).install();
-  assert.equal(result.success, false);
-  assert.match(result.error, /administrator prompt/);
-  assert.match(result.error, /before trying again/);
-});
 function service(options = {}) {
   return createVirtualMicrophoneService({
     detect: async () => missing,
+    download: async () => 'C:\\Temp\\pack.zip',
+    prepare: async () => 'C:\\Temp\\pack\\VBCABLE_Setup_x64.exe',
     install: async () => 0,
-    installerExists: () => true,
+    cleanup: async () => {},
     wait: async () => {},
     verificationAttempts: 3,
     ...options,
   });
 }
 
-test('already installed cable skips elevation even without a bundled installer', async () => {
+test('already installed cable skips download and elevation', async () => {
   const result = await service({
     detect: async () => working,
-    installerExists: () => false,
+    download: () => assert.fail('must not download'),
     install: () => assert.fail('must not reinstall a working driver'),
   }).install();
   assert.deepEqual(result, { success: true, alreadyInstalled: true });
 });
 
-test('successful setup waits for Windows to register the driver and shares concurrent requests', async () => {
-  let probes = 0, installs = 0, waits = 0;
+test('setup runs from the extracted, verified pack and waits for Windows to register the driver', async () => {
+  let probes = 0, installs = 0, waits = 0, cleaned = 0, installedFrom;
   const cable = service({
     detect: async () => ++probes >= 4 ? working : missing,
-    install: async () => { installs++; return 0; },
+    prepare: async zip => { assert.equal(zip, 'C:\\Temp\\pack.zip'); return 'C:\\Temp\\pack\\VBCABLE_Setup_x64.exe'; },
+    install: async setup => { installs++; installedFrom = setup; return 0; },
     wait: async () => { waits++; },
+    cleanup: async () => { cleaned++; },
   });
   const first = cable.install();
-  assert.equal(cable.install(), first);
+  assert.equal(cable.install(), first, 'concurrent requests share one install');
   assert.equal((await first).success, true);
+  assert.equal(installedFrom, 'C:\\Temp\\pack\\VBCABLE_Setup_x64.exe');
   assert.equal(probes, 4);
   assert.equal(waits, 2);
   assert.equal(installs, 1);
-  assert.equal((await cable.install()).alreadyInstalled, true);
-  assert.equal(installs, 1);
+  assert.equal(cleaned, 1);
 });
 
-test('a zero exit code without a working driver never reports success', async () => {
-  for (const status of [missing, { installed: false, registered: true }]) {
-    const result = await service({ detect: async () => status }).install();
-    assert.equal(result.success, false);
-    assert.match(result.error, /not reported a working driver/);
+test('a registered but inactive fresh driver asks for a restart instead of failing', async () => {
+  for (const exitCode of [0, 3010, 1641]) {
+    const result = await service({ detect: async () => ({ installed: false, registered: true }), install: async () => exitCode }).install();
+    assert.equal(result.success, true);
+    assert.equal(result.restartRequired, true);
   }
+  let probes = 0;
+  const pending = await service({ detect: async () => ++probes === 1 ? missing : { ...missing, restartRequired: true, registered: true } }).install();
+  assert.equal(pending.restartRequired, true);
 });
 
-test('installer errors, cancellation and timeouts return failures and allow retry', async () => {
-  for (const message of ['The operation was canceled by the user (1223)', 'Installer timed out']) {
-    const cable = service({ install: async () => { throw new Error(message); } });
+test('setup that never registers a driver reports failure', async () => {
+  const result = await service().install();
+  assert.equal(result.success, false);
+  assert.match(result.error, /has not reported the driver/);
+});
+
+test('download, verification, cancellation, timeout and exit-code failures are explained and retryable', async () => {
+  const cases = [
+    [{ download: async () => { throw Object.assign(new Error('fetch failed'), { stage: 'download' }); } }, /could not download VB-CABLE/],
+    [{ prepare: async () => { throw Object.assign(new Error('VBCABLE_UNSIGNED'), { stage: 'verify' }); } }, /security check/],
+    [{ prepare: async () => { throw Object.assign(new Error('VBCABLE_MISSING x.inf'), { stage: 'verify' }); } }, /incomplete/],
+    [{ install: async () => { throw new Error('The operation was canceled by the user (1223)'); } }, /administrator permission/],
+    [{ install: async () => { throw Object.assign(new Error('Command failed'), { killed: true }); } }, /did not finish/],
+    [{ install: async () => 5 }, /exit code 5/],
+  ];
+  for (const [options, expected] of cases) {
+    const cable = service(options);
     const result = await cable.install();
     assert.equal(result.success, false);
-    assert.equal(result.cancelled, message.includes('1223'));
-    assert.equal((await cable.install()).success, false);
-  }
-  const result = await service({ install: async () => 5 }).install();
-  assert.equal(result.success, false);
-  assert.match(result.error, /exit code 5/);
-});
-
-test('reboot exit codes still require verified registration', async () => {
-  for (const exitCode of [3010, 1641]) {
-    const result = await service({ install: async () => exitCode }).install();
-    assert.equal(result.success, false);
-    assert.equal(result.restartRequired, true);
-    let probes = 0;
-    const verified = await service({
-      detect: async () => ++probes > 1 ? working : missing,
-      install: async () => exitCode,
-    }).install();
-    assert.equal(verified.success, true);
-    assert.equal(verified.restartRequired, true);
+    assert.match(result.error, expected);
+    assert.equal((await cable.install()).success, false, 'a failed attempt can be retried');
   }
 });
 
-test('probe failures, pending reboot and missing installer prevent elevation', async () => {
-  for (const options of [
-    { detect: async () => ({ ...missing, error: 'WMI unavailable' }) },
-    { detect: async () => ({ ...missing, restartRequired: true }) },
-    { installerExists: () => false },
-  ]) {
-    const result = await service({ ...options, install: () => assert.fail('must not elevate') }).install();
-    assert.equal(result.success, false);
-    assert.ok(result.error);
-  }
+test('a pending reboot is reported before downloading again', async () => {
+  const result = await service({ detect: async () => ({ ...missing, restartRequired: true }), download: () => assert.fail('must not download') }).install();
+  assert.equal(result.restartRequired, true);
+  assert.match(result.error, /Restart Windows/);
 });
 
-test('verification errors are preserved instead of claiming the driver is absent', async () => {
-  let probes = 0;
-  const result = await service({ detect: async () => ++probes === 1 ? missing : { ...missing, error: 'WMI unavailable' } }).install();
-  assert.equal(result.success, false);
-  assert.equal(result.error, 'WMI unavailable');
+test('pack preparation extracts every file and requires VB-Audio\'s signature before elevation', () => {
+  const command = buildVirtualMicrophonePrepareCommand("C:\\Users\\O'Neil\\pack.zip", 'C:\\Temp\\pack');
+  const script = Buffer.from(command.args.at(-1), 'base64').toString('utf16le');
+  assert.match(script, /Expand-Archive -LiteralPath 'C:\\Users\\O''Neil\\pack.zip'/);
+  assert.match(script, /vbaudio_cable64_win10\.sys/);
+  assert.match(script, /Get-AuthenticodeSignature/);
+  assert.match(script, /BUREL VINCENT/);
+  assert.throws(() => buildVirtualMicrophonePrepareCommand('pack.zip', 'C:\\Temp'), /absolute/);
+});
+
+test('downloads reject responses that are not a driver pack', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vbcable-test-'));
+  try {
+    await assert.rejects(downloadVirtualMicrophonePack(tmp, { fetchImpl: async () => new Response('<html>', { status: 200 }) }), error => error.stage === 'verify');
+    await assert.rejects(downloadVirtualMicrophonePack(tmp, { fetchImpl: async () => new Response('', { status: 404 }) }), error => error.stage === 'download');
+    const zip = Buffer.alloc(300 * 1024); zip[0] = 0x50; zip[1] = 0x4b;
+    const saved = await downloadVirtualMicrophonePack(tmp, { fetchImpl: async () => new Response(zip) });
+    assert.equal(fs.statSync(saved).size, zip.length);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test('installer runs without a command shell and quotes paths containing shell metacharacters', () => {
   const command = buildVirtualMicrophoneInstallCommand("C:\\Morphly's $app & tools\\VBCABLE_Setup_x64.exe");
   const script = Buffer.from(command.args.at(-1), 'base64').toString('utf16le');
   assert.match(script, /Morphly''s \$app & tools/);
-  assert.match(script, /-Wait -PassThru -WindowStyle Hidden/);
+  assert.match(script, /-ArgumentList '-i' -Verb RunAs -Wait -PassThru/);
+  assert.doesNotMatch(script, /WindowStyle Hidden|-i -h/, 'the VB-CABLE installer is shown to the user');
   assert.match(script, /exitCode = \$installer.ExitCode/);
   assert.match(script, /\$ErrorActionPreference = 'Stop'/);
   assert.throws(() => buildVirtualMicrophoneInstallCommand('relative.exe'), /absolute/);

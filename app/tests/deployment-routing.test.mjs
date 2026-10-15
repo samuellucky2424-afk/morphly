@@ -38,20 +38,10 @@ test('packaged desktop builds retain configured and fallback remote API support'
     'https://live.morphly.fun/api/start-session');
 });
 
-const panel = await readFile(new URL('../src/components/MeanVcPanel.tsx', import.meta.url), 'utf8');
-const requestSource = panel.slice(panel.indexOf('function usesPackagedVoiceBridge()'), panel.indexOf('function isVirtualMicrophonePlaybackDevice'));
-const compiledVoiceRequest = ts.transpileModule(requestSource, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS },
-}).outputText;
-
-test('hosted voice controls explain desktop availability without issuing a local API request', async () => {
-  let requests = 0;
-  const context = vm.createContext({
-    window: { location: { protocol: 'https:', hostname: 'preview.example' } },
-    MORPHLY_VC_ROUTES: { status: { path: '/api/local/meanvc/status', method: 'GET' } },
-    fetch: async () => { requests += 1; },
-  });
-  vm.runInContext(compiledVoiceRequest, context);
-  await assert.rejects(context.requestMorphlyVc('status'), /Open Morphly Desktop/);
-  assert.equal(requests, 0);
+test('the voice changer uses the authenticated hosted API on web and desktop', async () => {
+  const library = await readFile(new URL('../src/lib/voice-changer.ts', import.meta.url), 'utf8');
+  for (const route of ['/voice-voices', '/voice-clone', '/voice-convert', '/voice-delete']) {
+    assert.match(library, new RegExp(`apiFetchWithAuth\\('${route}'`));
+  }
+  assert.doesNotMatch(library, /\/api\/local\/|window\.electron/);
 });

@@ -1,0 +1,130 @@
+// @ts-nocheck
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
+
+// Voices uploaded from Morphly live in the shared ElevenLabs account. Each one
+// is tagged with its owner so a user's cloned voice is never listed for, or
+// usable by, another Morphly account. Voices added in the ElevenLabs dashboard
+// (untagged) and premade voices are available to everyone.
+const OWNER_TAG_PREFIX = 'morphly-owner:';
+const VOICE_CACHE_MS = 60_000;
+export const DEFAULT_STS_MODEL = 'eleven_multilingual_sts_v2';
+export const MAX_CLONE_BYTES = 3 * 1024 * 1024; // keeps base64 JSON under Vercel's 4.5 MB body limit
+export const MAX_CONVERT_BYTES = 16000 * 2 * 15; // 15 s of 16 kHz mono 16-bit PCM
+export const CLONE_AUDIO_TYPES = ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/mpeg', 'audio/mp3',
+  'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/aac', 'audio/ogg', 'audio/webm', 'audio/flac', 'audio/x-flac'];
+
+export function getElevenLabsApiKey(env = process.env) {
+  return env.ELEVENLABS_API_KEY?.trim() || null;
+}
+
+export function getStsModel(env = process.env) {
+  return env.ELEVENLABS_STS_MODEL?.trim() || DEFAULT_STS_MODEL;
+}
+
+let cachedClient = null;
+let cachedKey = null;
+export function getElevenLabsClient(env = process.env) {
+  const apiKey = getElevenLabsApiKey(env);
+  if (!apiKey) return null;
+  if (!cachedClient || cachedKey !== apiKey) {
+    cachedClient = new ElevenLabsClient({ apiKey });
+    cachedKey = apiKey;
+  }
+  return cachedClient;
+}
+
+export function ownerTag(userId) {
+  return `${OWNER_TAG_PREFIX}${userId}`;
+}
+
+export function voiceOwner(voice) {
+  const description = typeof voice?.description === 'string' ? voice.description.trim() : '';
+  return description.startsWith(OWNER_TAG_PREFIX) ? description.slice(OWNER_TAG_PREFIX.length) : null;
+}
+
+export function canUseVoice(voice, userId) {
+  const owner = voiceOwner(voice);
+  return owner === null || owner === userId;
+}
+
+export function toPublicVoice(voice, userId) {
+  const voiceId = voice.voiceId ?? voice.voice_id;
+  return {
+    id: voiceId,
+    name: voice.name || 'Untitled voice',
+    category: voice.category || null,
+    previewUrl: voice.previewUrl ?? voice.preview_url ?? null,
+    own: voiceOwner(voice) === userId,
+  };
+}
+
+let voiceCache = { at: 0, voices: [] };
+export function invalidateVoiceCache() {
+  voiceCache = { at: 0, voices: [] };
+}
+
+export async function listAccountVoices(client, { now = Date.now() } = {}) {
+  if (voiceCache.voices.length && now - voiceCache.at < VOICE_CACHE_MS) return voiceCache.voices;
+  const voices = [];
+  let nextPageToken;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await client.voices.search({ pageSize: 100, ...(nextPageToken ? { nextPageToken } : {}) });
+    voices.push(...(response.voices || []));
+    if (!response.hasMore || !response.nextPageToken) break;
+    nextPageToken = response.nextPageToken;
+  }
+  voiceCache = { at: now, voices };
+  return voices;
+}
+
+export async function findUsableVoice(client, voiceId, userId) {
+  const cached = voiceCache.voices.find(voice => (voice.voiceId ?? voice.voice_id) === voiceId);
+  const voice = cached || await client.voices.get(voiceId).catch(() => null);
+  return voice && canUseVoice(voice, userId) ? voice : null;
+}
+
+export function decodeBase64Audio(value, maxBytes) {
+  if (typeof value !== 'string' || !value) return null;
+  const base64 = value.replace(/^data:[^,]*,/, '');
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(base64)) return null;
+  const buffer = Buffer.from(base64, 'base64');
+  if (!buffer.length || buffer.length > maxBytes) return null;
+  return buffer;
+}
+
+export function normalizeVoiceName(value, fallback = 'My voice') {
+  const name = typeof value === 'string' ? value.replace(/\.[a-z0-9]{2,5}$/i, '').replace(/[\x00-\x1f\x7f]/g, '').trim() : '';
+  return (name || fallback).slice(0, 80);
+}
+
+export async function readStream(stream) {
+  if (Buffer.isBuffer(stream) || stream instanceof Uint8Array) return Buffer.from(stream);
+  if (stream instanceof ArrayBuffer) return Buffer.from(stream);
+  const chunks = [];
+  if (typeof stream?.getReader === 'function') {
+    const reader = stream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value));
+    }
+  } else {
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+// ElevenLabs errors carry a statusCode and a JSON body with detail.message.
+export function describeElevenLabsError(error) {
+  const status = Number(error?.statusCode || error?.status) || null;
+  const detail = error?.body?.detail;
+  const message = typeof detail === 'string' ? detail : detail?.message || null;
+  const code = typeof detail === 'object' ? detail?.status || detail?.code || null : null;
+  if (status === 401) return { status: 503, error: 'The voice service is not authorized. Contact Morphly support.' };
+  if (status === 429) return { status: 429, error: 'The voice service is busy. Wait a moment, then try again.' };
+  if (code === 'quota_exceeded') return { status: 503, error: 'The voice service quota is used up. Contact Morphly support.' };
+  if (code === 'voice_limit_reached') return { status: 409, error: 'The voice library is full. Delete a voice you uploaded, then try again.' };
+  if (status === 400 || status === 422) return { status: 400, error: message || 'The voice service rejected this audio.' };
+  if (status === 404) return { status: 404, error: 'That voice is no longer available. Choose another voice.' };
+  return { status: 502, error: 'The voice service could not complete the request. Try again.' };
+}
