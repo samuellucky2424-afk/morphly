@@ -1,0 +1,62 @@
+name: Backfill voice engine assets
+
+# Installed apps download the voice engine from the release matching their
+# own version. Releases published by hand (without release.yml) lack these
+# assets, so the voice changer download fails with HTTP 404. This copies a
+# verified set of voice engine assets from a complete release onto them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Release tag that already has the voice engine assets
+        required: true
+        default: v2.5.30
+      targets:
+        description: Space-separated release tags missing the voice engine assets
+        required: true
+        default: v2.5.24 v2.5.25 v2.5.28 v2.5.29
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify source assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE: ${{ inputs.source }}
+        run: |
+          set -euo pipefail
+          mkdir -p engine
+          gh release download "$SOURCE" --repo "$GITHUB_REPOSITORY" --dir engine \
+            --pattern 'morphlyvc-runtime-40ms.zip.json' --pattern 'morphlyvc-runtime-40ms.zip.part-*'
+          cd engine
+          manifest=morphlyvc-runtime-40ms.zip.json
+          test "$(jq -r '.format' "$manifest")" = 1
+          test "$(jq -r '.archive' "$manifest")" = morphlyvc-runtime-40ms.zip
+          jq -r '.parts[] | "\(.sha256)  \(.name)"' "$manifest" | sha256sum --check --strict
+          test "$(jq -r '.parts | length' "$manifest")" = "$(ls morphlyvc-runtime-40ms.zip.part-* | wc -l)"
+          cat $(jq -r '.parts[].name' "$manifest") | sha256sum | grep -q "^$(jq -r '.sha256' "$manifest") "
+
+      - name: Upload to releases missing the assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          for tag in $TARGETS; do
+            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid tag: $tag"; exit 1; }
+            existing=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            if grep -qx 'morphlyvc-runtime-40ms.zip.json' <<< "$existing"; then
+              echo "$tag already has voice engine assets; skipping."
+              continue
+            fi
+            # Upload parts first and the manifest last so clients never see a
+            # manifest whose parts are still missing.
+            gh release upload "$tag" engine/morphlyvc-runtime-40ms.zip.part-* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$tag" engine/morphlyvc-runtime-40ms.zip.json --repo "$GITHUB_REPOSITORY" --clobber
+            echo "### $tag: voice engine assets added" >> "$GITHUB_STEP_SUMMARY"
+          done
