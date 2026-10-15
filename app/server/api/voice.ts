@@ -3,7 +3,7 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 import {
   CLONE_AUDIO_TYPES, MAX_CLONE_BYTES, MAX_CONVERT_BYTES,
-  canUseVoice, decodeBase64Audio, describeElevenLabsError, findUsableVoice, getElevenLabsClient,
+  canUseVoice, decodeBase64Audio, describeElevenLabsError, elevenLabsErrorDetail, findUsableVoice, getElevenLabsClient,
   getStsModel, invalidateVoiceCache, listAccountVoices, normalizeVoiceName, ownerTag, readStream,
   toPublicVoice, voiceOwner,
 } from '../elevenlabs-voice.js';
@@ -24,7 +24,7 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
     const supabase = admin();
     if (!supabase) return res.status(503).json({ error: supabaseAdminConfigError || 'Accounts are not configured' });
     const client = getClient();
-    if (!client) return res.status(503).json({ error: 'The voice changer is not configured on this server yet.' });
+    if (!client) return res.status(503).json({ error: 'The voice changer is not configured on this server yet.', code: 'not_configured', fatal: true });
 
     const context = await auth(req, supabase);
     if (context.error) return res.status(context.status).json({ error: context.error });
@@ -89,8 +89,9 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
       return res.end(converted);
     } catch (error) {
       const failure = describeElevenLabsError(error);
-      console.warn('[voice] ElevenLabs request failed', { action, status: error?.statusCode || null });
-      return res.status(failure.status).json({ error: failure.error });
+      const detail = elevenLabsErrorDetail(error);
+      console.warn('[voice] ElevenLabs request failed', { action, status: detail.status, code: detail.code, message: detail.message });
+      return res.status(failure.status).json({ error: failure.error, code: failure.code, fatal: failure.fatal });
     }
   };
 }

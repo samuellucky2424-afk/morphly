@@ -22,9 +22,25 @@ const EXTENSION_TYPES: Record<string, string> = {
 };
 export const VOICE_UPLOAD_ACCEPT = Object.keys(EXTENSION_TYPES).map(extension => `.${extension}`).join(',') + ',audio/*';
 
+export class VoiceServiceError extends Error {
+  status: number;
+  code: string | null;
+  fatal: boolean;
+  constructor(message: string, status: number, code: string | null, fatal: boolean) {
+    super(message);
+    this.name = 'VoiceServiceError';
+    this.status = status;
+    this.code = code;
+    this.fatal = fatal;
+  }
+}
+
 async function readJson<T>(response: Response): Promise<T> {
-  const data = await response.json().catch(() => ({})) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || `Voice request failed (${response.status}).`);
+  const data = await response.json().catch(() => ({})) as T & { error?: string; code?: string; fatal?: boolean };
+  if (!response.ok) {
+    throw new VoiceServiceError(data.error || `Voice request failed (${response.status}).`, response.status,
+      data.code ?? null, Boolean(data.fatal) || response.status === 401 || response.status === 403);
+  }
   return data;
 }
 
@@ -122,6 +138,8 @@ export type LiveVoiceOptions = {
   removeBackgroundNoise: boolean;
   onStats: (stats: LiveVoiceStats) => void;
   onError: (message: string) => void;
+  /** Account or configuration failure: conversion has stopped. */
+  onFatal: (message: string) => void;
 };
 
 type AudioContextWithSink = AudioContext & { setSinkId?: (id: string) => Promise<void> };
@@ -271,7 +289,14 @@ export class LiveVoiceChanger {
       this.stats.phrases += 1;
       this.stats.lastLatencyMs = Math.round(performance.now() - startedAt);
     } catch (error) {
-      if (!this.stopped) this.options.onError(error instanceof Error ? error.message : 'Voice conversion failed.');
+      if (this.stopped) return;
+      const message = error instanceof Error ? error.message : 'Voice conversion failed.';
+      if (error instanceof VoiceServiceError && error.fatal) {
+        void this.stop();
+        this.options.onFatal(message);
+        return;
+      }
+      this.options.onError(message);
     } finally {
       this.inFlight -= 1;
       this.finished.set(id, decoded);

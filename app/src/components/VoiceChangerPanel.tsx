@@ -200,6 +200,12 @@ export function VoiceChangerPanel() {
       removeBackgroundNoise,
       onStats: setStats,
       onError: setError,
+      onFatal: (message) => {
+        changerRef.current = null;
+        setRuntimeState('stopped');
+        setStats(null);
+        setError(`Voice conversion stopped. ${message}`);
+      },
     });
     try {
       await changer.start();
@@ -351,7 +357,7 @@ export function VoiceChangerPanel() {
                 Voice
               </label>
               <div className="flex min-w-0 items-center gap-1.5">
-                <Select value={voiceId ?? undefined} onValueChange={setVoiceId} disabled={runtimeActive || !voices?.length}>
+                <Select value={voiceId ?? ''} onValueChange={setVoiceId} disabled={runtimeActive || !voices?.length}>
                   <SelectTrigger id="voice-changer-voice" className={selectTriggerClass}>
                     <SelectValue placeholder={voices === null ? 'Loading voices...' : voices.length ? 'Select a voice' : 'No voices yet — upload one'}
                       className="block min-w-0 flex-1 truncate text-left" />
@@ -464,7 +470,7 @@ export function VoiceChangerPanel() {
                   <Mic aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   Microphone input
                 </label>
-                <Select value={routing.input ?? undefined} onValueChange={(value) => setRouting(current => ({ ...current, input: value }))} disabled={runtimeActive}>
+                <Select value={routing.input ?? ''} onValueChange={(value) => setRouting(current => ({ ...current, input: value }))} disabled={runtimeActive}>
                   <SelectTrigger id="voice-changer-input-device" className={selectTriggerClass}>
                     <SelectValue placeholder="Select microphone" className="block min-w-0 flex-1 truncate text-left" />
                   </SelectTrigger>
@@ -481,7 +487,7 @@ export function VoiceChangerPanel() {
                   <Volume2 aria-hidden="true" className="size-3.5 text-muted-foreground" />
                   Converted voice output
                 </label>
-                <Select value={routing.output ?? undefined} onValueChange={(value) => setRouting(current => ({ ...current, output: value }))} disabled={runtimeActive}>
+                <Select value={routing.output ?? ''} onValueChange={(value) => setRouting(current => ({ ...current, output: value }))} disabled={runtimeActive}>
                   <SelectTrigger id="voice-changer-output-device" className={selectTriggerClass}>
                     <SelectValue placeholder="Select converted output" className="block min-w-0 flex-1 truncate text-left" />
                   </SelectTrigger>

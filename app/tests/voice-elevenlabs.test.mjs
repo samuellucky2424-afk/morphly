@@ -102,3 +102,38 @@ test('provider failures become safe user messages', () => {
   assert.match(describeElevenLabsError({ statusCode: 400, body: { detail: { status: 'voice_limit_reached' } } }).error, /library is full/);
   assert.equal(normalizeVoiceName('  '), 'My voice');
 });
+
+test('account problems are explained precisely and marked fatal so live conversion stops', () => {
+  const cases = [
+    [{ statusCode: 401, body: { detail: { status: 'detected_unusual_activity', message: 'Free Tier usage disabled' } } }, /free plan/, 'detected_unusual_activity'],
+    [{ statusCode: 401, body: { detail: { status: 'missing_permissions', message: 'The API key is missing the permission speech_to_speech' } } }, /Speech to Speech/, 'missing_permissions'],
+    [{ statusCode: 401, body: { detail: { status: 'quota_exceeded', message: 'This request exceeds your quota' } } }, /no credits left/, 'quota_exceeded'],
+    [{ statusCode: 401, body: { detail: { status: 'invalid_api_key' } } }, /ELEVENLABS_API_KEY/, 'invalid_api_key'],
+    [{ statusCode: 401, body: JSON.stringify({ detail: { status: 'missing_permissions' } }) }, /Speech to Speech/, 'missing_permissions'],
+  ];
+  for (const [error, message, code] of cases) {
+    const failure = describeElevenLabsError(error);
+    assert.equal(failure.status, 503);
+    assert.equal(failure.fatal, true);
+    assert.equal(failure.code, code);
+    assert.match(failure.error, message);
+  }
+  assert.equal(describeElevenLabsError({ statusCode: 429 }).fatal, false);
+  assert.equal(describeElevenLabsError(new Error('socket hang up')).code, 'network_error');
+});
+
+test('conversion failures return the ElevenLabs reason to the app', async () => {
+  const client = fakeClient();
+  client.speechToSpeech.convert = async () => { throw Object.assign(new Error('Status 401'), { statusCode: 401, body: { detail: { status: 'missing_permissions', message: 'missing speech_to_speech' } } }); };
+  const originalWarn = console.warn;
+  const logged = [];
+  console.warn = (...args) => logged.push(args);
+  try {
+    const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', audio: pcm } });
+    assert.equal(response.statusCode, 503);
+    assert.equal(response.body.code, 'missing_permissions');
+    assert.equal(response.body.fatal, true);
+    assert.match(response.body.error, /Speech to Speech/);
+    assert.equal(logged[0][1].code, 'missing_permissions');
+  } finally { console.warn = originalWarn; }
+});

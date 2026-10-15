@@ -114,17 +114,43 @@ export async function readStream(stream) {
   return Buffer.concat(chunks);
 }
 
-// ElevenLabs errors carry a statusCode and a JSON body with detail.message.
-export function describeElevenLabsError(error) {
+// ElevenLabs errors carry a statusCode and a JSON body with detail.status
+// (a machine code such as "missing_permissions") and detail.message.
+export function elevenLabsErrorDetail(error) {
   const status = Number(error?.statusCode || error?.status) || null;
-  const detail = error?.body?.detail;
-  const message = typeof detail === 'string' ? detail : detail?.message || null;
-  const code = typeof detail === 'object' ? detail?.status || detail?.code || null : null;
-  if (status === 401) return { status: 503, error: 'The voice service is not authorized. Contact Morphly support.' };
-  if (status === 429) return { status: 429, error: 'The voice service is busy. Wait a moment, then try again.' };
-  if (code === 'quota_exceeded') return { status: 503, error: 'The voice service quota is used up. Contact Morphly support.' };
-  if (code === 'voice_limit_reached') return { status: 409, error: 'The voice library is full. Delete a voice you uploaded, then try again.' };
-  if (status === 400 || status === 422) return { status: 400, error: message || 'The voice service rejected this audio.' };
-  if (status === 404) return { status: 404, error: 'That voice is no longer available. Choose another voice.' };
-  return { status: 502, error: 'The voice service could not complete the request. Try again.' };
+  let body = error?.body;
+  if (typeof body === 'string') { try { body = JSON.parse(body); } catch { /* plain text */ } }
+  const detail = body?.detail ?? body;
+  const message = typeof detail === 'string' ? detail : typeof detail?.message === 'string' ? detail.message : null;
+  const code = detail && typeof detail === 'object' ? String(detail.status || detail.code || '') || null : null;
+  return { status, code, message: message ? message.slice(0, 300) : null };
+}
+
+// `fatal` errors are account/configuration problems: retrying the next phrase
+// cannot succeed, so the client stops live conversion and shows the reason.
+export function describeElevenLabsError(error) {
+  const { status, code, message } = elevenLabsErrorDetail(error);
+  const providerCode = code || (status ? `http_${status}` : 'network_error');
+  const result = (httpStatus, text, fatal = false) => ({ status: httpStatus, error: text, code: providerCode, fatal });
+  if (code === 'detected_unusual_activity' || /unusual activity|free tier usage disabled/i.test(message || '')) {
+    return result(503, 'ElevenLabs blocked this request: its free plan cannot be used from a server. Upgrade the ElevenLabs account to a paid plan (Starter or higher).', true);
+  }
+  if (code === 'missing_permissions' || /permission/i.test(message || '')) {
+    return result(503, 'The ElevenLabs API key is missing a permission. In ElevenLabs → API keys, enable "Speech to Speech" and "Voices" (read and write), then try again.', true);
+  }
+  if (code === 'quota_exceeded' || /quota|credits/i.test(message || '')) {
+    return result(503, 'The ElevenLabs account has no credits left. Add credits or upgrade the plan, then try again.', true);
+  }
+  if (code === 'invalid_api_key' || status === 401) {
+    return result(503, 'ElevenLabs rejected the server API key. Check ELEVENLABS_API_KEY on the server.', true);
+  }
+  if (code === 'voice_limit_reached') return result(409, 'The voice library is full. Delete a voice you uploaded, then try again.');
+  if (status === 402 || code === 'payment_required' || code === 'paid_plan_required') {
+    return result(503, message || 'This ElevenLabs feature needs a paid ElevenLabs plan.', true);
+  }
+  if (status === 429) return result(429, 'The voice service is busy. Wait a moment, then try again.');
+  if (status === 403) return result(503, message || 'ElevenLabs refused this request for the current account.', true);
+  if (status === 400 || status === 422) return result(400, message || 'The voice service rejected this audio.');
+  if (status === 404) return result(404, 'That voice is no longer available. Choose another voice.', true);
+  return result(502, 'The voice service could not complete the request. Try again.');
 }
