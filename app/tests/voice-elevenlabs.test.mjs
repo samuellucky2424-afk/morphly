@@ -112,6 +112,7 @@ test('account problems are explained precisely and marked fatal so live conversi
     [{ statusCode: 401, body: JSON.stringify({ detail: { status: 'missing_permissions' } }) }, /Speech to Speech/, 'missing_permissions'],
     [{ statusCode: 401, body: { detail: { status: 'some_new_reason', message: 'ElevenLabs says no' } } }, /refused this request/, 'some_new_reason'],
     [{ statusCode: 402, body: { detail: { status: 'payment_required', message: 'Upgrade your ElevenLabs plan' } } }, /paid voice service subscription/, 'payment_required'],
+    [{ statusCode: 401, body: { detail: { status: 'payment_issue' } } }, /failed or unpaid payment/, 'payment_issue'],
   ];
   for (const [error, message, code] of cases) {
     const failure = describeElevenLabsError(error);

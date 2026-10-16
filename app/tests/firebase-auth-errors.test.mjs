@@ -15,3 +15,14 @@ test('recovery promises the Firebase email link rather than an OTP',()=>{
   assert.match(RESET_REQUEST_MESSAGE,/secure password reset link/);
   assert.doesNotMatch(RESET_REQUEST_MESSAGE,/reset code|OTP/);
 });
+
+test('desktop login failures explain how Google-registered users get a desktop password',()=>{
+  for (const code of ['auth/invalid-credential','auth/wrong-password','auth/user-not-found']) {
+    const desktop=getFirebaseAuthErrorMessage({code},true);
+    assert.match(desktop,/created your account with Google/);
+    assert.match(desktop,/Forgot password/);
+    assert.doesNotMatch(desktop,/use Google sign-in/,'desktop has no Google button');
+  }
+  assert.match(getFirebaseAuthErrorMessage({code:'auth/email-already-in-use'},true),/Forgot password to set a desktop password/);
+  assert.match(getFirebaseAuthErrorMessage({code:'auth/invalid-credential'},false),/use Google sign-in/);
+});

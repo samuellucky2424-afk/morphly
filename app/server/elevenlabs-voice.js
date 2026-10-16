@@ -149,6 +149,9 @@ export function describeElevenLabsError(error) {
   if (code === 'quota_exceeded' || /quota|credits|character limit/i.test(text)) {
     return result(503, 'The voice service account has no credits left. Add credits or upgrade the subscription, then try again.', true);
   }
+  if (code === 'payment_issue') {
+    return result(503, 'The voice service subscription has a failed or unpaid payment. Update the payment method or pay the outstanding invoice, then try again.', true);
+  }
   if (status === 402 || /payment|subscription|paid[ _]plan|upgrade|\bplan\b/i.test(`${code || ''} ${text}`)) {
     return result(503, 'The voice changer needs a paid voice service subscription. Upgrade the subscription, then try again.', true);
   }

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { createAdminHandler } from './admin-handler.js';
+import { applyApiCors } from './api-cors.js';
 import { createEngagementHandler } from './api/customer-engagement.js';
 import creditPackagesHandler from './api/credit-packages.js';
 import endSessionHandler from './api/end-session.js';
@@ -140,15 +141,9 @@ export async function handleApiRoute(req, res) {
   const routeName = getRouteName(req);
   const routeHandler = routeHandlers[routeName];
 
+  if (applyApiCors(req, res)) return;
+
   if (!routeHandler) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-    if (req.method === 'OPTIONS') {
-      return res.status(200).end();
-    }
-
     return res.status(404).json({ error: 'API route not found' });
   }
 
