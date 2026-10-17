@@ -24,10 +24,11 @@ function fakeClient(calls = {}) {
   };
 }
 
-function handler(action, { client = fakeClient(), user = 'owner', authError } = {}) {
+function handler(action, { client = fakeClient(), user = 'owner', authError,
+  rpc = async name => name === 'voice_session_active' ? { data: { active: true }, error: null } : { data: {}, error: null } } = {}) {
   return createVoiceHandler(action, {
     getClient: () => client,
-    admin: () => ({}),
+    admin: () => ({ rpc }),
     auth: async () => authError ? { error: authError, status: 401 } : { user: { id: user } },
   });
 }
@@ -78,9 +79,12 @@ test('uploading a voice clones it under the caller\'s ownership', async () => {
 
 test('conversion sends 16 kHz PCM and returns converted audio for an allowed voice', async () => {
   const calls = {};
-  const response = await call('convert', { client: fakeClient(calls), body: { voiceId: 'premadeVoice01', audio: pcm } });
+  const response = await call('convert', { client: fakeClient(calls), body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm },
+    rpc: async (name, args) => { calls.billing = { name, args }; return { data: { active: true }, error: null }; } });
   assert.equal(response.headers['content-type'], 'audio/mpeg');
   assert.deepEqual([...response.ended], [1, 2, 3]);
+  assert.equal(calls.billing.name, 'voice_session_active');
+  assert.equal(calls.billing.args.p_session, 'voice_owner_12345678-1234');
   assert.equal(calls.convert.voiceId, 'premadeVoice01');
   assert.equal(calls.convert.request.fileFormat, 'pcm_s16le_16');
   assert.equal(calls.convert.request.audio.data.length, 3200);
@@ -94,6 +98,15 @@ test('conversion and deletion reject other accounts\' voices and oversized audio
   const calls = {};
   assert.equal((await call('delete', { client: fakeClient(calls), body: { voiceId: 'ownerVoice0001' } })).body.deleted, true);
   assert.equal(calls.deleted, 'ownerVoice0001');
+});
+
+test('conversion requires an active paid voice session', async () => {
+  const client = fakeClient();
+  const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm },
+    rpc: async () => ({ data: { active: false }, error: null }) });
+  assert.equal(response.statusCode, 402);
+  assert.equal(response.body.code, 'billing_required');
+  assert.equal(response.body.fatal, true);
 });
 
 test('provider failures become safe user messages', () => {
@@ -135,7 +148,7 @@ test('conversion failures return the ElevenLabs reason to the app', async () => 
   const logged = [];
   console.warn = (...args) => logged.push(args);
   try {
-    const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', audio: pcm } });
+    const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm } });
     assert.equal(response.statusCode, 503);
     assert.equal(response.body.code, 'missing_permissions');
     assert.equal(response.body.fatal, true);
