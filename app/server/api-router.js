@@ -69,6 +69,7 @@ const routeHandlers = {
   'voice-clone': createVoiceHandler('clone'),
   'voice-convert': createVoiceHandler('convert'),
   'voice-delete': createVoiceHandler('delete'),
+  'voice-session': createVoiceHandler('session'),
 };
 
 function normalizeRouteSegment(value) {

@@ -8,7 +8,16 @@ import {
   toPublicVoice, voiceOwner,
 } from '../elevenlabs-voice.js';
 
-const METHODS = { voices: 'GET', clone: 'POST', convert: 'POST', delete: 'POST' };
+const METHODS = { voices: 'GET', clone: 'POST', convert: 'POST', delete: 'POST', session: 'POST' };
+export const VOICE_CREDITS_PER_SECOND = 2;
+
+// Voice sessions are stored per account so one user's id can never address
+// another user's billing record.
+export function voiceBillingSessionId(userId, clientSessionId) {
+  const id = typeof clientSessionId === 'string' ? clientSessionId.trim() : '';
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return null;
+  return `voice_${userId}_${id}`;
+}
 
 // Morphly voice changer backed by ElevenLabs. The API key stays on the server;
 // every request requires a signed-in, active Morphly account.
@@ -31,6 +40,29 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
     const userId = context.user.id;
 
     try {
+      if (action === 'session') {
+        // Start / keep alive (every few seconds) / stop live voice conversion.
+        // Billing reserves a few seconds ahead at 2 credits per second (4 in
+        // total for seconds that overlap Plus video) and refunds unused time.
+        const sessionId = voiceBillingSessionId(userId, req.body?.sessionId);
+        if (!sessionId) return res.status(400).json({ error: 'Invalid voice session.' });
+        const close = req.body?.close === true;
+        const { data, error } = await supabase.rpc('authorize_voice_usage', { p_user: userId, p_session: sessionId, p_close: close });
+        if (error) {
+          const busy = error.code === '23505';
+          return res.status(busy ? 409 : 503).json({ error: busy ? error.message : 'Voice billing is unavailable right now. Try again shortly.',
+            code: busy ? 'voice_session_active' : 'billing_unavailable', fatal: true });
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        return res.json({
+          closed: Boolean(data.closed),
+          outOfCredits: Boolean(data.outOfCredits),
+          paidUntilMs: Number(data.startedAtMs) + Number(data.authorizedSeconds) * 1000,
+          remainingCredits: data.remainingCredits,
+          creditsPerSecond: VOICE_CREDITS_PER_SECOND,
+        });
+      }
+
       if (action === 'voices') {
         const voices = (await listAccountVoices(client))
           .filter(voice => canUseVoice(voice, userId))
@@ -74,6 +106,12 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
       // convert: 16 kHz mono 16-bit PCM from the microphone → converted MP3.
       const audio = decodeBase64Audio(req.body?.audio, MAX_CONVERT_BYTES);
       if (!audio || audio.length % 2 !== 0) return res.status(400).json({ error: 'Invalid audio segment.' });
+      const sessionId = voiceBillingSessionId(userId, req.body?.sessionId);
+      const paid = sessionId ? await supabase.rpc('voice_session_active', { p_user: userId, p_session: sessionId }) : null;
+      if (!paid?.data?.active) {
+        return res.status(402).json({ error: 'Your voice conversion time is not paid for. Check your credits, then start voice conversion again.',
+          code: 'billing_required', fatal: true });
+      }
       const stream = await client.speechToSpeech.convert(voiceId, {
         audio: { data: audio, filename: 'speech.pcm', contentType: 'application/octet-stream' },
         fileFormat: 'pcm_s16le_16',

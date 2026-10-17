@@ -78,6 +78,8 @@ export function createFirebaseOperations(db,auth,env=process.env){
     if(name==='realtime_wallet_balance')return realtime.balance(p.p_user);
     if(name==='configure_realtime_video')return realtime.configure(p);
     if(name==='authorize_translation_usage')return realtime.translation(p);
+    if(name==='authorize_voice_usage')return realtime.voice(p);
+    if(name==='voice_session_active')return realtime.voiceActive(p);
     if(name==='apply_verified_package_payment'||name==='apply_verified_ivorypay_payment'){
       const result=await payment.applyPayment({userId:p.p_user,packageId:p.p_package,reference:p.p_reference,gateway:name==='apply_verified_package_payment'?'flutterwave':'ivorypay',gatewayId:String(p.p_gateway_id),amount:p.p_amount,fee:p.p_fee??0});
       if(result.transactionId){

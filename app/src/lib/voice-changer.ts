@@ -85,11 +85,27 @@ export async function deleteVoice(voiceId: string): Promise<void> {
   }));
 }
 
-async function convertSegment(voiceId: string, pcm: Int16Array, removeBackgroundNoise: boolean, signal: AbortSignal) {
+export const VOICE_CREDITS_PER_SECOND = 2;
+const VOICE_BILLING_INTERVAL_MS = 2000;
+
+export type VoiceBillingState = { closed: boolean; outOfCredits: boolean; paidUntilMs: number; remainingCredits: number };
+
+// Starts, renews (reserving a few seconds ahead) or closes the paid voice
+// session. The server charges 2 credits per second and refunds unused time.
+export async function updateVoiceSession(sessionId: string, close = false): Promise<VoiceBillingState> {
+  return readJson<VoiceBillingState>(await apiFetchWithAuth('/voice-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, close }),
+    keepalive: close,
+  }));
+}
+
+async function convertSegment(voiceId: string, sessionId: string, pcm: Int16Array, removeBackgroundNoise: boolean, signal: AbortSignal) {
   const response = await apiFetchWithAuth('/voice-convert', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ voiceId, removeBackgroundNoise, audio: toBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)) }),
+    body: JSON.stringify({ voiceId, sessionId, removeBackgroundNoise, audio: toBase64(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength)) }),
     signal,
   });
   if (!response.ok) await readJson(response);
@@ -140,6 +156,8 @@ export type LiveVoiceOptions = {
   onError: (message: string) => void;
   /** Account or configuration failure: conversion has stopped. */
   onFatal: (message: string) => void;
+  /** Latest wallet balance after each billing update. */
+  onCredits?: (credits: number) => void;
 };
 
 type AudioContextWithSink = AudioContext & { setSinkId?: (id: string) => Promise<void> };
@@ -188,12 +206,49 @@ export class LiveVoiceChanger {
   private playAt = 0;
   private stats: LiveVoiceStats = { phrases: 0, lastLatencyMs: null, pending: 0, listening: false };
   private stopped = false;
+  private sessionId = crypto.randomUUID();
+  private billingTimer: ReturnType<typeof setInterval> | null = null;
+  private billingFailures = 0;
+  private sessionOpen = false;
 
   constructor(options: LiveVoiceOptions) {
     this.options = options;
   }
 
+  private applyBilling(state: VoiceBillingState) {
+    if (Number.isFinite(state.remainingCredits)) this.options.onCredits?.(Math.floor(state.remainingCredits));
+    if (state.outOfCredits) {
+      void this.stop();
+      this.options.onFatal(`You have run out of credits. The voice changer costs ${VOICE_CREDITS_PER_SECOND} credits per second; buy more credits to continue.`);
+    }
+  }
+
+  private async renewBilling() {
+    if (this.stopped) return;
+    try {
+      this.applyBilling(await updateVoiceSession(this.sessionId));
+      this.billingFailures = 0;
+    } catch (error) {
+      if (this.stopped) return;
+      this.billingFailures += 1;
+      // A brief network blip is tolerated; paid time covers ~5 seconds.
+      if ((error instanceof VoiceServiceError && error.fatal) || this.billingFailures >= 3) {
+        void this.stop();
+        this.options.onFatal(error instanceof Error ? error.message : 'Voice billing failed.');
+      }
+    }
+  }
+
   async start() {
+    // Pay for the first seconds before the microphone opens.
+    const initial = await updateVoiceSession(this.sessionId);
+    this.sessionOpen = true;
+    if (initial.outOfCredits) {
+      await this.stop();
+      throw new Error(`Not enough credits. The voice changer costs ${VOICE_CREDITS_PER_SECOND} credits per second.`);
+    }
+    this.applyBilling(initial);
+    this.billingTimer = setInterval(() => void this.renewBilling(), VOICE_BILLING_INTERVAL_MS);
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: this.options.inputDeviceId ? { exact: this.options.inputDeviceId } : undefined,
@@ -220,7 +275,17 @@ export class LiveVoiceChanger {
   }
 
   async stop() {
+    const wasStopped = this.stopped;
     this.stopped = true;
+    if (this.billingTimer) clearInterval(this.billingTimer);
+    this.billingTimer = null;
+    // Close the paid session once so unused reserved seconds are refunded.
+    if (!wasStopped && this.sessionOpen) {
+      this.sessionOpen = false;
+      void updateVoiceSession(this.sessionId, true)
+        .then(state => { if (Number.isFinite(state.remainingCredits)) this.options.onCredits?.(Math.floor(state.remainingCredits)); })
+        .catch(() => { /* The server closes abandoned sessions after 30 seconds. */ });
+    }
     this.abort.abort();
     this.processor?.disconnect();
     this.stream?.getTracks().forEach(track => track.stop());
@@ -283,7 +348,7 @@ export class LiveVoiceChanger {
     const startedAt = performance.now();
     let decoded: AudioBuffer | null = null;
     try {
-      const mp3 = await convertSegment(this.options.voiceId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
+      const mp3 = await convertSegment(this.options.voiceId, this.sessionId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
       if (this.stopped || !this.playbackContext) return;
       decoded = await this.playbackContext.decodeAudioData(mp3);
       this.stats.phrases += 1;

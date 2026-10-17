@@ -26,9 +26,11 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
+import { useApp } from '@/context/AppContext';
 import {
   LiveVoiceChanger,
   MAX_VOICE_UPLOAD_BYTES,
+  VOICE_CREDITS_PER_SECOND,
   VOICE_UPLOAD_ACCEPT,
   deleteVoice,
   isVirtualMicrophonePlaybackDevice,
@@ -74,6 +76,7 @@ function ReadinessRow({ item }: { item: ReadinessItem }) {
 }
 
 export function VoiceChangerPanel() {
+  const { setCredits } = useApp();
   const [voices, setVoices] = useState<VoiceOption[] | null>(null);
   const [voicesError, setVoicesError] = useState<string | null>(null);
   const [voiceId, setVoiceId] = useState<string | null>(() => localStorage.getItem(SELECTED_VOICE_KEY));
@@ -200,6 +203,7 @@ export function VoiceChangerPanel() {
       removeBackgroundNoise,
       onStats: setStats,
       onError: setError,
+      onCredits: setCredits,
       onFatal: (message) => {
         changerRef.current = null;
         setRuntimeState('stopped');
@@ -643,6 +647,9 @@ export function VoiceChangerPanel() {
             {runtimeActive ? runtimeMessage : startRequirement}
           </span>
         </div>
+        <p className="mt-1 text-center text-[10px] leading-4 text-muted-foreground">
+          {VOICE_CREDITS_PER_SECOND} credits per second; combined with Plus face streaming, 4 credits per second.
+        </p>
       </footer>
     </aside>
   );

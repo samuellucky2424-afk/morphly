@@ -3,6 +3,8 @@ import {hash} from './firebase-store.js';
 
 const single=rows=>{if(rows.size!==1)throw new Error('Wallet not found or ambiguous');return rows.docs[0];};
 const epochId=(uid,second)=>hash(JSON.stringify([uid,String(second)]));
+export const VOICE_RATE_HALF=4; // 2 credits per second
+const VOICE_GRACE_MS=20000;
 const utc=value=>Date.parse(typeof value==='string'&&/^\d{4}-\d\d-\d\d /.test(value)?value.replace(' ','T')+'Z':value);
 export function createFirebaseRealtimeBilling(db){
   async function balance(uid){
@@ -18,11 +20,14 @@ export function createFirebaseRealtimeBilling(db){
       return {billingVersion:2,serverNow:Date.now()};
     });
   }
+  // Per-second usage buckets record which features ran in each second.
+  // `translation` sessions now meter the voice changer (the collection names
+  // are kept for compatibility with existing records).
   async function meter(kind,p){
-    const uid=p.p_user,sessionId=p.p_session,close=p.p_close===true,time=Math.floor(Date.now()/1000);
+    const uid=p.p_user,sessionId=p.p_session,close=p.p_close===true,time=Math.floor(Date.now()/1000),auto=p.p_auto===true;
     if(!uid||!sessionId)throw new Error('Session ownership required');
     if(kind==='video'&&(!Array.isArray(p.p_epoch_seconds)||p.p_epoch_seconds.length>60||p.p_epoch_seconds.some(s=>!Number.isSafeInteger(s))))throw new Error('Invalid video usage timestamps');
-    if(kind==='translation'&&(!Number.isInteger(p.p_seconds)||p.p_seconds<0||p.p_seconds>7200))throw new Error('Invalid translation duration');
+    if(kind==='translation'&&!auto&&(!Number.isInteger(p.p_seconds)||p.p_seconds<0||p.p_seconds>7200))throw new Error('Invalid voice duration');
     return db.runTransaction(async tx=>{
       const sessionRef=db.collection(kind==='video'?'sessions':'translation_sessions').doc(sessionId),carryRef=db.collection('realtime_credit_carry').doc(uid);
       const [wallets,carry,session,profile,associated,videoSessions,translationSessions]=await Promise.all([
@@ -39,24 +44,28 @@ export function createFirebaseRealtimeBilling(db){
       if(kind==='video'&&(!row||row.billing_version!==2))throw new Error('Session ownership or billing version mismatch');
       if(kind==='video'&&row.status!=='active')return {shouldStop:true,remainingCredits:available/2};
       if(kind==='translation'&&row?.closed_at)return {closed:true,authorizedSeconds:Number(row.authorized_seconds),remainingCredits:available/2};
-      let seconds,target=0;
+      let seconds,target=0,requested=0;
       const stale=[];
       if(kind==='video'){
         seconds=[...new Set(p.p_epoch_seconds)].sort((a,b)=>a-b);
         if(seconds.some(s=>s>time||s<time-120||s<Math.floor(utc(row.start_time)/1000)))throw new Error('Invalid usage timestamp');
       }else{
-        if(!close&&videoSessions.docs.some(d=>d.data().status==='active'&&d.data().billing_version!==2))throw new Error('Restart face streaming in the updated app before translating');
-        for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw Object.assign(new Error('Another translation session is active'),{code:'23505'});}
+        if(!close&&videoSessions.docs.some(d=>d.data().status==='active'&&d.data().billing_version!==2))throw new Error('Restart face streaming in the updated app before using the voice changer');
+        for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw Object.assign(new Error('The voice changer is already running on another device or window. Stop it there first.'),{code:'23505'});}
         row||={id:sessionId,user_id:uid,started_epoch:String(time),authorized_seconds:0,closed_at:null};
         target=Number(row.authorized_seconds);
-        if(close){target=Math.min(p.p_seconds,target);seconds=associated.docs.map(d=>Number(d.data().epoch_second)).filter(s=>s>=Number(row.started_epoch)+target).sort((a,b)=>a-b);}
+        // Auto mode lets the server decide the duration from its own clock:
+        // reserve five seconds ahead while running, and refund the rest on close.
+        const elapsed=Math.max(0,time-Number(row.started_epoch));
+        requested=auto?(close?elapsed+1:elapsed+5):p.p_seconds;
+        if(close){target=Math.min(requested,target);seconds=associated.docs.map(d=>Number(d.data().epoch_second)).filter(s=>s>=Number(row.started_epoch)+target).sort((a,b)=>a-b);}
         else{
-          if(p.p_seconds>time-Number(row.started_epoch)+5)throw new Error('Reservation too far ahead');
-          seconds=Array.from({length:Math.max(0,p.p_seconds-target)},(_,i)=>Number(row.started_epoch)+target+i);
+          if(requested>elapsed+5)throw new Error('Reservation too far ahead');
+          seconds=Array.from({length:Math.max(0,requested-target)},(_,i)=>Number(row.started_epoch)+target+i);
         }
-        // Normal relay reservations are five seconds. Bound a delayed request
-        // so its ledger and bucket writes remain within one Firestore commit.
-        if(seconds.length>120)throw new Error('Translation reservation expired; restart translation');
+        // Normal reservations are a few seconds. Bound a delayed request so its
+        // ledger and bucket writes remain within one Firestore commit.
+        if(seconds.length>120)throw new Error('Voice changer reservation expired; start voice conversion again');
       }
       const refs=seconds.map(s=>db.collection('realtime_usage_seconds').doc(epochId(uid,s)));
       const buckets=refs.length?await tx.getAll(...refs):[];
@@ -67,9 +76,11 @@ export function createFirebaseRealtimeBilling(db){
         if(kind==='video'&&previousVideo&&previousVideo!==sessionId)throw new Error('Overlapping video sessions');
         const video=previousVideo||(kind==='video'?sessionId:null);
         const voice=kind==='translation'&&close&&old.translation_session===sessionId?null:old.translation_session||(kind==='translation'?sessionId:null);
-        // Plus/Pro video prices are fixed; translation with video is 4 total.
+        // Costs are in half-credits. Video uses its fixed rate (Plus: 2 cr/s);
+        // the voice changer adds 2 cr/s, so Plus + voice is 4 cr/s and either
+        // feature alone is 2 cr/s.
         const rate=Math.max(Number(old.video_rate_half||0),kind==='video'?Number(row.video_rate_half):0);
-        const cost=voice?(video?8:5):rate,delta=cost-Number(old.cost_half||0);
+        const cost=voice?(video?rate+VOICE_RATE_HALF:VOICE_RATE_HALF):rate,delta=cost-Number(old.cost_half||0);
         if(kind==='video'&&count>=Math.min(Number(row.provider_max_seconds||7200),7200)&&previousVideo!==sessionId){stopped=true;break;}
         if(delta>available){stopped=true;break;}
         const beforeWallet=Math.floor(available/2);available-=delta;const afterWallet=Math.floor(available/2);
@@ -93,8 +104,19 @@ export function createFirebaseRealtimeBilling(db){
       }
       const updated={...row,authorized_seconds:target,...close?{closed_at:timestamp}:{}};
       session.exists?tx.update(sessionRef,updated):tx.create(sessionRef,updated);
-      return {closed:close,authorizedSeconds:target,startedAtMs:Number(row.started_epoch)*1000,remainingCredits:available/2};
+      return {closed:close,authorizedSeconds:target,requestedSeconds:requested,outOfCredits:!close&&target<requested,
+        startedAtMs:Number(row.started_epoch)*1000,remainingCredits:available/2};
     });
   }
-  return {balance,configure,video:p=>meter('video',p),translation:p=>meter('translation',p)};
+  // A voice conversion is allowed only inside a paid, running voice session.
+  // A short grace keeps phrases that were spoken just before Stop.
+  async function voiceActive(p){
+    const snapshot=await db.collection('translation_sessions').doc(p.p_session).get(),row=snapshot.data();
+    if(!row||row.user_id!==p.p_user)return {active:false};
+    const now=Date.now(),paidUntilMs=(Number(row.started_epoch)+Number(row.authorized_seconds))*1000;
+    if(row.closed_at)return {active:now-Date.parse(row.closed_at)<=VOICE_GRACE_MS&&Number(row.authorized_seconds)>0};
+    return {active:paidUntilMs+VOICE_GRACE_MS>=now};
+  }
+  return {balance,configure,video:p=>meter('video',p),translation:p=>meter('translation',p),
+    voice:p=>meter('translation',{...p,p_auto:true}),voiceActive};
 }
