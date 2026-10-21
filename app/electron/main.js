@@ -1097,6 +1097,7 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      devTools: true,
       // Keep timers, rAF, and requestVideoFrameCallback running when the window
       // is minimized or occluded; otherwise the freeze watchdog and the virtual
       // camera frame pump stall and force unnecessary session restarts.
@@ -1107,6 +1108,23 @@ function createWindow() {
 
   Menu.setApplicationMenu(null);
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const opensDevTools = input.type === 'keyDown'
+      && ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12');
+
+    if (!opensDevTools) {
+      return;
+    }
+
+    event.preventDefault();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.webContents.isDevToolsOpened()) {
+        mainWindow.webContents.closeDevTools();
+      } else {
+        mainWindow.webContents.openDevTools({ mode: 'detach' });
+      }
+    }
+  });
   if (!windowIcon.isEmpty() && process.platform === 'win32') {
     mainWindow.setIcon(windowIcon);
   }
