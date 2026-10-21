@@ -1,13 +1,73 @@
+import { useCallback, useEffect, useRef } from 'react';
 import { ArrowDownLeft, ArrowUpRight, Coins } from 'lucide-react';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import { useAuth } from '@/context/AuthContext';
+import { apiFetchWithAuth } from '@/lib/api-client';
 
 function Wallet() {
-  const { credits, transactions } = useApp();
+  const { credits, transactions, setBalance, setCredits } = useApp();
+  const { user } = useAuth();
   const navigate = useNavigate();
+  const refreshInFlightRef = useRef(false);
+
+  const refreshWallet = useCallback(async () => {
+    if (!user?.id || refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+
+    try {
+      const pendingPayment = (() => {
+        try {
+          return JSON.parse(sessionStorage.getItem('morphly.flutterwave.pending-payment') || 'null') as { reference?: string } | null;
+        } catch {
+          return null;
+        }
+      })();
+
+      if (pendingPayment?.reference) {
+        const verifyResponse = await apiFetchWithAuth('/verify-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reference: pendingPayment.reference, userId: user.id }),
+        });
+        const verification = await verifyResponse.json();
+        if (verifyResponse.ok && verification.status === 'success') {
+          sessionStorage.removeItem('morphly.flutterwave.pending-payment');
+          toast.success(`Payment confirmed. ${Number(verification.creditsAdded || 0).toLocaleString()} credits added.`);
+        } else if (verification.status === 'failed') {
+          sessionStorage.removeItem('morphly.flutterwave.pending-payment');
+          toast.error(verification.message || 'Flutterwave payment was not completed.');
+        }
+      }
+
+      const walletResponse = await apiFetchWithAuth(`/wallet?userId=${encodeURIComponent(user.id)}`);
+      if (!walletResponse.ok) return;
+      const wallet = await walletResponse.json();
+      if (typeof wallet.balance === 'number') setBalance(wallet.balance);
+      if (typeof wallet.credits === 'number') setCredits(wallet.credits);
+    } catch (error) {
+      console.warn('Could not refresh wallet after returning from checkout:', error);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [setBalance, setCredits, user?.id]);
+
+  useEffect(() => {
+    void refreshWallet();
+    const handleReturnToApp = () => {
+      if (document.visibilityState === 'visible') void refreshWallet();
+    };
+    window.addEventListener('focus', handleReturnToApp);
+    document.addEventListener('visibilitychange', handleReturnToApp);
+    return () => {
+      window.removeEventListener('focus', handleReturnToApp);
+      document.removeEventListener('visibilitychange', handleReturnToApp);
+    };
+  }, [refreshWallet]);
 
   // Calculate estimated time from credits
   const estimatedSeconds = credits / 2;

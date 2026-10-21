@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electron', {
       'virtual-microphone:detect',
       'developer-tools:set-enabled',
       'developer-tools:get-state',
+      'payment:open-flutterwave-checkout'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);

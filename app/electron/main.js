@@ -1357,6 +1357,36 @@ function registerDeveloperToolsHandlers() {
   });
 }
 
+function registerPaymentHandlers() {
+  ipcMain.handle('payment:open-flutterwave-checkout', async (event, checkoutUrl) => {
+    if (
+      !mainWindow
+      || mainWindow.isDestroyed()
+      || event.sender.id !== mainWindow.webContents.id
+      || event.senderFrame !== event.sender.mainFrame
+    ) {
+      throw new Error('Payment checkout can only be opened from the Morphly dashboard.');
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(String(checkoutUrl || ''));
+    } catch {
+      return { success: false, error: 'Flutterwave returned an invalid checkout link.' };
+    }
+    if (
+      parsedUrl.protocol !== 'https:'
+      || parsedUrl.hostname !== 'checkout.flutterwave.com'
+      || !parsedUrl.pathname.startsWith('/v3/hosted/pay/')
+    ) {
+      return { success: false, error: 'Flutterwave returned an untrusted checkout link.' };
+    }
+
+    await shell.openExternal(parsedUrl.toString());
+    return { success: true };
+  });
+}
+
 function registerClipboardHandlers() {
   ipcMain.handle('clipboard:write-text', (_event, value) => {
     if (typeof value !== 'string' || value.length === 0 || value.length > 4096) {
@@ -1406,6 +1436,7 @@ app.whenReady().then(async () => {
   registerCameraHandlers();
   registerWindowHandlers();
   registerDeveloperToolsHandlers();
+  registerPaymentHandlers();
   registerClipboardHandlers();
   registerVirtualMicrophoneHandlers();
 

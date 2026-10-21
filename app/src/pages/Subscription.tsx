@@ -563,15 +563,19 @@ function Subscription() {
   const handleFlutterwavePayment = async () => {
     if (!selectedPlan || !user) return;
 
-    const checkoutWindow = window.open(
-      'about:blank',
-      '_blank',
-      'popup=yes,width=520,height=760,resizable=yes,scrollbars=yes',
-    );
-    if (!checkoutWindow) {
-      trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'checkout_popup_blocked' });
-      toast.error('Please allow payment pop-ups for Morphly and try again.');
-      return;
+    const useSystemBrowser = Boolean(window.electron?.isElectron);
+    let checkoutWindow: Window | null = null;
+    if (!useSystemBrowser) {
+      checkoutWindow = window.open(
+        'about:blank',
+        '_blank',
+        'popup=yes,width=520,height=760,resizable=yes,scrollbars=yes',
+      );
+      if (!checkoutWindow) {
+        trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'checkout_popup_blocked' });
+        toast.error('Please allow payment pop-ups for Morphly and try again.');
+        return;
+      }
     }
 
     const priceUSD = Number(getPriceUSD(selectedPlan.priceNGN));
@@ -604,15 +608,26 @@ function Subscription() {
         packageId: selectedPlan.id,
         credits: selectedPlan.credits,
       });
-      checkoutWindow.location.replace(data.checkoutUrl);
+      if (useSystemBrowser) {
+        const opened = await window.electron!.invoke('payment:open-flutterwave-checkout', data.checkoutUrl);
+        if (!opened?.success) throw new Error(opened?.error || 'Could not open Flutterwave checkout.');
+
+        setIsProcessing(false);
+        toast.info('Flutterwave checkout opened in your browser. Complete payment there, then return to Morphly.');
+        navigate('/wallet', { replace: true });
+        return;
+      }
+
+      const openedCheckoutWindow = checkoutWindow!;
+      openedCheckoutWindow.location.replace(data.checkoutUrl);
       flutterwaveCheckoutCloseTimerRef.current = window.setInterval(() => {
-        if (!checkoutWindow.closed) return;
+        if (!openedCheckoutWindow.closed) return;
 
         if (flutterwaveCheckoutCloseTimerRef.current != null) {
           window.clearInterval(flutterwaveCheckoutCloseTimerRef.current);
           flutterwaveCheckoutCloseTimerRef.current = null;
         }
-        if (flutterwaveCheckoutWindowRef.current === checkoutWindow) {
+        if (flutterwaveCheckoutWindowRef.current === openedCheckoutWindow) {
           flutterwaveCheckoutWindowRef.current = null;
         }
         if (flutterwaveReturnReceivedRef.current) return;
@@ -628,7 +643,7 @@ function Subscription() {
         }
       }, 500);
     } catch (error) {
-      if (!checkoutWindow.closed) checkoutWindow.close();
+      if (checkoutWindow && !checkoutWindow.closed) checkoutWindow.close();
       if (flutterwaveCheckoutWindowRef.current === checkoutWindow) {
         flutterwaveCheckoutWindowRef.current = null;
       }
