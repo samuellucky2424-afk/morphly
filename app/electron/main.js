@@ -88,6 +88,7 @@ let mainWindow = null;
 let desktopUpdater = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
+let developerToolsAdminAccess = false;
 let virtualCameraEnabled = process.platform === 'win32';
 let virtualCameraOperationGeneration = 0;
 let virtualCameraLiveSession = false;
@@ -1112,7 +1113,7 @@ function createWindow() {
     const opensDevTools = input.type === 'keyDown'
       && ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12');
 
-    if (!opensDevTools) {
+    if (!opensDevTools || !developerToolsAdminAccess) {
       return;
     }
 
@@ -1124,6 +1125,16 @@ function createWindow() {
         mainWindow.webContents.openDevTools({ mode: 'detach' });
       }
     }
+  });
+  mainWindow.webContents.on('devtools-opened', () => {
+    mainWindow?.webContents.send('developer-tools:state', true);
+  });
+  mainWindow.webContents.on('devtools-closed', () => {
+    mainWindow?.webContents.send('developer-tools:state', false);
+  });
+  mainWindow.on('closed', () => {
+    developerToolsAdminAccess = false;
+    mainWindow = null;
   });
   if (!windowIcon.isEmpty() && process.platform === 'win32') {
     mainWindow.setIcon(windowIcon);
@@ -1312,6 +1323,54 @@ function registerWindowHandlers() {
   });
 }
 
+function registerDeveloperToolsHandlers() {
+  const requireMainRenderer = (event) => {
+    if (
+      !mainWindow
+      || mainWindow.isDestroyed()
+      || event.sender.id !== mainWindow.webContents.id
+      || event.senderFrame !== event.sender.mainFrame
+    ) {
+      throw new Error('Developer tools controls are available only from the Morphly dashboard.');
+    }
+  };
+
+  ipcMain.handle('developer-tools:set-admin-access', (event, enabled) => {
+    requireMainRenderer(event);
+    developerToolsAdminAccess = enabled === true;
+    if (!developerToolsAdminAccess && mainWindow.webContents.isDevToolsOpened()) {
+      mainWindow.webContents.closeDevTools();
+    }
+    return { success: true, open: mainWindow.webContents.isDevToolsOpened() };
+  });
+
+  ipcMain.handle('developer-tools:get-state', (event) => {
+    requireMainRenderer(event);
+    return {
+      success: true,
+      available: developerToolsAdminAccess,
+      open: mainWindow.webContents.isDevToolsOpened(),
+    };
+  });
+
+  ipcMain.handle('developer-tools:set-open', (event, open) => {
+    requireMainRenderer(event);
+    if (!developerToolsAdminAccess) {
+      return { success: false, error: 'Open the admin dashboard to control developer tools.' };
+    }
+    if (typeof open !== 'boolean') {
+      return { success: false, error: 'Developer tools state is invalid.' };
+    }
+
+    if (open) {
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+    } else {
+      mainWindow.webContents.closeDevTools();
+    }
+    return { success: true, open: mainWindow.webContents.isDevToolsOpened() };
+  });
+}
+
 function registerClipboardHandlers() {
   ipcMain.handle('clipboard:write-text', (_event, value) => {
     if (typeof value !== 'string' || value.length === 0 || value.length > 4096) {
@@ -1360,6 +1419,7 @@ app.whenReady().then(async () => {
   registerVirtualCameraHandlers();
   registerCameraHandlers();
   registerWindowHandlers();
+  registerDeveloperToolsHandlers();
   registerClipboardHandlers();
   registerVirtualMicrophoneHandlers();
 

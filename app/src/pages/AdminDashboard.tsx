@@ -14,6 +14,7 @@ import {
   Save,
   Search,
   ShieldCheck,
+  Terminal,
   Trash2,
   Users,
   WalletCards,
@@ -290,6 +291,8 @@ function AdminDashboard() {
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('users');
+  const [developerToolsOpen, setDeveloperToolsOpen] = useState(false);
+  const [developerToolsBusy, setDeveloperToolsBusy] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [savingPackages, setSavingPackages] = useState(false);
@@ -351,6 +354,55 @@ function AdminDashboard() {
   useEffect(() => {
     void loadDashboardData();
   }, []);
+
+  useEffect(() => {
+    const electron = window.electron;
+    if (!electron?.isElectron || !user?.isAdmin) {
+      setDeveloperToolsBusy(false);
+      return;
+    }
+
+    let active = true;
+    const unsubscribe = electron.on('developer-tools:state', (open: boolean) => {
+      if (active) setDeveloperToolsOpen(Boolean(open));
+    });
+
+    void (async () => {
+      try {
+        await electron.invoke('developer-tools:set-admin-access', true);
+        const state = await electron.invoke('developer-tools:get-state');
+        if (active && state?.success) setDeveloperToolsOpen(Boolean(state.open));
+      } catch (error) {
+        if (active) {
+          toast.error(error instanceof Error ? error.message : 'Could not enable developer tools controls.');
+        }
+      } finally {
+        if (active) setDeveloperToolsBusy(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+      unsubscribe();
+      void electron.invoke('developer-tools:set-admin-access', false);
+    };
+  }, [user?.isAdmin]);
+
+  const setDeveloperToolsState = async (open: boolean) => {
+    const electron = window.electron;
+    if (!electron?.isElectron) return;
+
+    setDeveloperToolsBusy(true);
+    try {
+      const result = await electron.invoke('developer-tools:set-open', open);
+      if (!result?.success) throw new Error(result?.error || 'Could not change developer tools state.');
+      setDeveloperToolsOpen(Boolean(result.open));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not change developer tools state.');
+    } finally {
+      setDeveloperToolsBusy(false);
+    }
+  };
 
   const filteredUsers = useMemo(() => {
     const query = appliedSearch.trim().toLowerCase();
@@ -745,6 +797,14 @@ function AdminDashboard() {
                   >
                     Audit Log
                   </TabsTrigger>
+                  {window.electron?.isElectron && user?.isAdmin && (
+                    <TabsTrigger
+                      value="diagnostics"
+                      className="rounded-full px-4 py-2.5 text-sm text-muted-foreground data-[state=active]:border-transparent data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-none"
+                    >
+                      Developer Tools
+                    </TabsTrigger>
+                  )}
                 </TabsList>
               </div>
             </div>
@@ -1277,6 +1337,38 @@ function AdminDashboard() {
                 </Table>
               </div>
             </TabsContent>
+            {window.electron?.isElectron && user?.isAdmin && (
+              <TabsContent value="diagnostics" className="m-0 p-6 sm:p-8">
+                <section className="rounded-[24px] border border-border bg-muted p-5 sm:p-6" aria-labelledby="developer-tools-title">
+                  <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-start gap-4">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-accent text-primary">
+                        <Terminal className="h-5 w-5" aria-hidden="true" />
+                      </div>
+                      <div>
+                        <h4 id="developer-tools-title" className="text-lg font-semibold text-foreground">Desktop developer console</h4>
+                        <p id="developer-tools-description" className="mt-1 max-w-2xl text-sm text-muted-foreground">
+                          Open the console on this computer to inspect errors and app logs. The F12 and Ctrl+Shift+I shortcuts are also enabled while this admin dashboard is open.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 rounded-2xl border border-border bg-background px-4 py-3">
+                      <span className="min-w-14 text-sm font-medium text-foreground" aria-live="polite">
+                        {developerToolsBusy ? 'Loading' : developerToolsOpen ? 'Open' : 'Closed'}
+                      </span>
+                      <Switch
+                        checked={developerToolsOpen}
+                        onCheckedChange={(checked) => void setDeveloperToolsState(checked)}
+                        disabled={developerToolsBusy}
+                        aria-label="Enable desktop developer console"
+                        aria-describedby="developer-tools-description"
+                      />
+                    </div>
+                  </div>
+                </section>
+              </TabsContent>
+            )}
           </Tabs>
         </section>
       </main>

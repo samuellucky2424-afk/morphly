@@ -18,7 +18,10 @@ contextBridge.exposeInMainWorld('electron', {
       'clipboard:write-text',
       'virtual-microphone:open-setup',
       'virtual-microphone:install',
-      'virtual-microphone:detect'
+      'virtual-microphone:detect',
+      'developer-tools:set-admin-access',
+      'developer-tools:get-state',
+      'developer-tools:set-open'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);
@@ -29,7 +32,8 @@ contextBridge.exposeInMainWorld('electron', {
     const validChannels = [
       'desktop-updater:state',
       'virtual-camera:receiver-state',
-      'window:full-screen-changed'
+      'window:full-screen-changed',
+      'developer-tools:state'
     ];
     if (!validChannels.includes(channel) || typeof listener !== 'function') {
       return () => {};
