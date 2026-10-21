@@ -32,7 +32,7 @@ function harness(userAgent = '', supportCheck = async () => ({ support: true }),
     removeAllListeners: () => events.clear(),
     publishLocalAudioStream: async value => { audio = value; },
     setDefaultSubscribeAllRemoteAudioStreams: value => assert.equal(value, false),
-    setDefaultSubscribeAllRemoteVideoStreams: value => assert.equal(value, true),
+    setDefaultSubscribeAllRemoteVideoStreams: value => assert.equal(value, false),
     switchCamera: async (_id, track) => { selected = track; },
     getVideoTrack: async ({ userId, streamType }) => { assert.equal(streamType, 0); return userId ? generated : selected; },
     joinChannel: async (token, uid) => { assert.equal(token, 'rtc-token'); assert.equal(uid, 'camera-user'); },
@@ -551,6 +551,8 @@ test('Plus handles an SDK publication error even when joinChannel resolves', asy
 
 test('Plus joins, previews its selected camera, then waits for confirmed publication', async () => {
   const h = harness();
+  const subscriptions = [];
+  h.engine.subscribeRemoteMediaStream = (...args) => subscriptions.push(args);
   const order = [];
   h.engine.joinChannel = async () => { order.push('join'); };
   h.engine.startPreview = async () => { order.push('preview'); };
@@ -568,6 +570,7 @@ test('Plus joins, previews its selected camera, then waits for confirmed publica
   h.events.get('remoteUserOnLineNotify')('unrelated-user');
   h.events.get('videoSubscribeStateChanged')('unrelated-user', 2, 3);
   h.events.get('remoteUserOnLineNotify')('renderer');
+  assert.deepEqual(subscriptions, [['renderer', 1, true, false]]);
   h.events.get('videoSubscribeStateChanged')('renderer', 1, 2);
   h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
   await tick();

@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.36",
+  "version": "2.5.37",
   "description": "Morphly Desktop with virtual camera support and a cloud voice changer.",
   "author": "Morphly",
   "repository": {
