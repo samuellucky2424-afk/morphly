@@ -19,9 +19,8 @@ contextBridge.exposeInMainWorld('electron', {
       'virtual-microphone:open-setup',
       'virtual-microphone:install',
       'virtual-microphone:detect',
-      'developer-tools:set-admin-access',
+      'developer-tools:set-enabled',
       'developer-tools:get-state',
-      'developer-tools:set-open'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, ...args);

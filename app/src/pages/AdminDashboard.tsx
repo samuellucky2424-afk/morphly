@@ -291,6 +291,7 @@ function AdminDashboard() {
   const [searchInput, setSearchInput] = useState('');
   const [appliedSearch, setAppliedSearch] = useState('');
   const [activeTab, setActiveTab] = useState('users');
+  const [developerToolsEnabled, setDeveloperToolsEnabled] = useState(false);
   const [developerToolsOpen, setDeveloperToolsOpen] = useState(false);
   const [developerToolsBusy, setDeveloperToolsBusy] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
@@ -363,15 +364,20 @@ function AdminDashboard() {
     }
 
     let active = true;
-    const unsubscribe = electron.on('developer-tools:state', (open: boolean) => {
-      if (active) setDeveloperToolsOpen(Boolean(open));
+    const unsubscribe = electron.on('developer-tools:state', (state: { enabled: boolean; open: boolean }) => {
+      if (active) {
+        setDeveloperToolsEnabled(Boolean(state?.enabled));
+        setDeveloperToolsOpen(Boolean(state?.open));
+      }
     });
 
     void (async () => {
       try {
-        await electron.invoke('developer-tools:set-admin-access', true);
         const state = await electron.invoke('developer-tools:get-state');
-        if (active && state?.success) setDeveloperToolsOpen(Boolean(state.open));
+        if (active && state?.success) {
+          setDeveloperToolsEnabled(Boolean(state.enabled));
+          setDeveloperToolsOpen(Boolean(state.open));
+        }
       } catch (error) {
         if (active) {
           toast.error(error instanceof Error ? error.message : 'Could not enable developer tools controls.');
@@ -384,21 +390,21 @@ function AdminDashboard() {
     return () => {
       active = false;
       unsubscribe();
-      void electron.invoke('developer-tools:set-admin-access', false);
     };
   }, [user?.isAdmin]);
 
-  const setDeveloperToolsState = async (open: boolean) => {
+  const setDeveloperToolsAvailability = async (enabled: boolean) => {
     const electron = window.electron;
     if (!electron?.isElectron) return;
 
     setDeveloperToolsBusy(true);
     try {
-      const result = await electron.invoke('developer-tools:set-open', open);
-      if (!result?.success) throw new Error(result?.error || 'Could not change developer tools state.');
+      const result = await electron.invoke('developer-tools:set-enabled', enabled);
+      if (!result?.success) throw new Error(result?.error || 'Could not change developer tools setting.');
+      setDeveloperToolsEnabled(Boolean(result.enabled));
       setDeveloperToolsOpen(Boolean(result.open));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Could not change developer tools state.');
+      toast.error(error instanceof Error ? error.message : 'Could not change developer tools setting.');
     } finally {
       setDeveloperToolsBusy(false);
     }
@@ -1348,20 +1354,20 @@ function AdminDashboard() {
                       <div>
                         <h4 id="developer-tools-title" className="text-lg font-semibold text-foreground">Desktop developer console</h4>
                         <p id="developer-tools-description" className="mt-1 max-w-2xl text-sm text-muted-foreground">
-                          Open the console on this computer to inspect errors and app logs. The F12 and Ctrl+Shift+I shortcuts are also enabled while this admin dashboard is open.
+                          Allow F12 and Ctrl+Shift+I to open or close the console on this computer. Turning this off closes the console and blocks both shortcuts.
                         </p>
                       </div>
                     </div>
 
                     <div className="flex items-center gap-3 rounded-2xl border border-border bg-background px-4 py-3">
                       <span className="min-w-14 text-sm font-medium text-foreground" aria-live="polite">
-                        {developerToolsBusy ? 'Loading' : developerToolsOpen ? 'Open' : 'Closed'}
+                        {developerToolsBusy ? 'Loading' : developerToolsEnabled ? (developerToolsOpen ? 'Enabled · open' : 'Enabled') : 'Disabled'}
                       </span>
                       <Switch
-                        checked={developerToolsOpen}
-                        onCheckedChange={(checked) => void setDeveloperToolsState(checked)}
+                        checked={developerToolsEnabled}
+                        onCheckedChange={(checked) => void setDeveloperToolsAvailability(checked)}
                         disabled={developerToolsBusy}
-                        aria-label="Enable desktop developer console"
+                        aria-label="Allow desktop developer tools shortcuts"
                         aria-describedby="developer-tools-description"
                       />
                     </div>

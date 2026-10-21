@@ -88,7 +88,7 @@ let mainWindow = null;
 let desktopUpdater = null;
 let morphlyCamWindow = null;
 let morphlyCamPublisher = null;
-let developerToolsAdminAccess = false;
+let developerToolsEnabled = false;
 let virtualCameraEnabled = process.platform === 'win32';
 let virtualCameraOperationGeneration = 0;
 let virtualCameraLiveSession = false;
@@ -1113,7 +1113,7 @@ function createWindow() {
     const opensDevTools = input.type === 'keyDown'
       && ((input.control && input.shift && input.key.toLowerCase() === 'i') || input.key === 'F12');
 
-    if (!opensDevTools || !developerToolsAdminAccess) {
+    if (!opensDevTools || !developerToolsEnabled) {
       return;
     }
 
@@ -1127,13 +1127,13 @@ function createWindow() {
     }
   });
   mainWindow.webContents.on('devtools-opened', () => {
-    mainWindow?.webContents.send('developer-tools:state', true);
+    mainWindow?.webContents.send('developer-tools:state', { enabled: developerToolsEnabled, open: true });
   });
   mainWindow.webContents.on('devtools-closed', () => {
-    mainWindow?.webContents.send('developer-tools:state', false);
+    mainWindow?.webContents.send('developer-tools:state', { enabled: developerToolsEnabled, open: false });
   });
   mainWindow.on('closed', () => {
-    developerToolsAdminAccess = false;
+    developerToolsEnabled = false;
     mainWindow = null;
   });
   if (!windowIcon.isEmpty() && process.platform === 'win32') {
@@ -1335,39 +1335,25 @@ function registerDeveloperToolsHandlers() {
     }
   };
 
-  ipcMain.handle('developer-tools:set-admin-access', (event, enabled) => {
+  ipcMain.handle('developer-tools:set-enabled', (event, enabled) => {
     requireMainRenderer(event);
-    developerToolsAdminAccess = enabled === true;
-    if (!developerToolsAdminAccess && mainWindow.webContents.isDevToolsOpened()) {
+    if (typeof enabled !== 'boolean') {
+      return { success: false, error: 'Developer tools setting is invalid.' };
+    }
+    developerToolsEnabled = enabled;
+    if (!developerToolsEnabled && mainWindow.webContents.isDevToolsOpened()) {
       mainWindow.webContents.closeDevTools();
     }
-    return { success: true, open: mainWindow.webContents.isDevToolsOpened() };
+    return { success: true, enabled: developerToolsEnabled, open: mainWindow.webContents.isDevToolsOpened() };
   });
 
   ipcMain.handle('developer-tools:get-state', (event) => {
     requireMainRenderer(event);
     return {
       success: true,
-      available: developerToolsAdminAccess,
+      enabled: developerToolsEnabled,
       open: mainWindow.webContents.isDevToolsOpened(),
     };
-  });
-
-  ipcMain.handle('developer-tools:set-open', (event, open) => {
-    requireMainRenderer(event);
-    if (!developerToolsAdminAccess) {
-      return { success: false, error: 'Open the admin dashboard to control developer tools.' };
-    }
-    if (typeof open !== 'boolean') {
-      return { success: false, error: 'Developer tools state is invalid.' };
-    }
-
-    if (open) {
-      mainWindow.webContents.openDevTools({ mode: 'detach' });
-    } else {
-      mainWindow.webContents.closeDevTools();
-    }
-    return { success: true, open: mainWindow.webContents.isDevToolsOpened() };
   });
 }
 
