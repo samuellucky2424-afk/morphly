@@ -174,6 +174,7 @@ export class ViduRealtimeClient {
     let cleanupPromise: Promise<void> | null = null;
     let published = false;
     let receivedVideo = false;
+    let rendererSubscriptionRequested = false;
     let startupComplete = false;
     const startupStartedAt = Date.now();
     let lastPhase: ViduStartupPhase = 'camera_preparing';
@@ -303,12 +304,14 @@ export class ViduRealtimeClient {
         // slow network. Re-subscribe a few times before ending the session.
         if (subscribeRetries < RENDERER_SUBSCRIBE_RETRIES && engine?.subscribeRemoteMediaStream) {
           subscribeRetries += 1;
+          rendererSubscriptionRequested = false;
           logStartup('renderer_subscription_state', { code, stateCode: subscribeRetries });
           clearTimeout(subscribeRetry);
           subscribeRetry = setTimeout(() => {
             if (stopped || receivedVideo) return;
+            rendererSubscriptionRequested = true;
             try { engine?.subscribeRemoteMediaStream?.(renderUid, 1, true, false); }
-            catch { /* The renderer may not be online yet; default subscription resumes when it is. */ }
+            catch { rendererSubscriptionRequested = false; }
           }, 1000 * subscribeRetries);
           return;
         }
@@ -356,7 +359,12 @@ export class ViduRealtimeClient {
         }
       });
       engine.on('remoteUserOnLineNotify', uid => {
-        if (!stopped && !receivedVideo && String(uid) === renderUid) recordPhase('renderer_online');
+        if (stopped || receivedVideo || String(uid) !== renderUid) return;
+        recordPhase('renderer_online');
+        if (rendererSubscriptionRequested || !engine?.subscribeRemoteMediaStream) return;
+        rendererSubscriptionRequested = true;
+        try { engine.subscribeRemoteMediaStream(renderUid, 1, true, false); }
+        catch { rendererSubscriptionRequested = false; }
       });
       engine.on('videoSubscribeStateChanged', (userId: string, _old: number, next: number) => {
         if (String(userId) !== renderUid || stopped || receivedVideo) return;
@@ -386,7 +394,7 @@ export class ViduRealtimeClient {
       await Promise.race([engine.publishLocalAudioStream(false), failurePromise]);
       assertActive();
       engine.setDefaultSubscribeAllRemoteAudioStreams(false);
-      engine.setDefaultSubscribeAllRemoteVideoStreams(true);
+      engine.setDefaultSubscribeAllRemoteVideoStreams(false);
       await Promise.race([engine.switchCamera(undefined, cameraTrack), failurePromise]);
       assertActive();
       const preparedTrack = await Promise.race([engine.getVideoTrack({ streamType: 0 }), failurePromise]);
