@@ -205,7 +205,7 @@ export async function createViduTemporaryKey({
   imageUrl,
   proxyContext,
 }) {
-  const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 120));
+  const sessionLimit = Math.max(1, Math.min(Math.floor(Number(maxSeconds) || 1), 7200));
   const baseUrl = getViduApiBaseUrl();
   if (!baseUrl) return { error: VIDU_CONFIG_ERROR };
 

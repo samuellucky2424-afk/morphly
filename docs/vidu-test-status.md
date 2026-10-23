@@ -8,14 +8,14 @@ Version 2.5.11 includes Pro using Vidu S2-Editing and Plus using Xmax. Users mus
 - Browser signaling uses Vidu's short-lived `client_secret`. The permanent API key never goes to the browser. Responses missing scoped credentials fail explicitly.
 - The pinned AliRTC 7.1.9 SDK publishes a clone of the selected camera track, disables microphone publishing and plays only the generated stream from `render_uid`.
 - Initialization, NOT_READY retries, reference-image updates, provider disconnects, startup cancellation and hangup are implemented. Stop sends hangup before waiting on wallet requests.
-- The client ends quality-test sessions after at most 120 seconds (or the shorter returned provider/session limit). This browser timer is not server-enforced credit protection. Provider lifetime also depends on Vidu's returned `live_duration`.
+- The client and server no longer impose a fixed two-minute quality-test cap. Sessions are bounded by the starting credit balance, configured session maximum, Vidu's returned `live_duration`, and provider credential expiry. Vidu controls `live_duration`; Morphly cannot extend a stream beyond the value Vidu returns.
 - Session creation retries explicit rate limits only. Ambiguous server failures/timeouts are not automatically retried because creation is not documented as idempotent.
 
 Protocol reference: [Vidu S2-Editing parameters](https://platform.vidu.com/vidu-stream/doc/s2-editing/parameters) and [official browser demo](https://platform.vidu.com/live-doc/files/s2-editing/quick-start/index.html).
 
 ## Testing quality
 
-Sign in, choose Pro in the engine dialog, upload a PNG/JPEG/WebP reference under 2 MB, and start the camera. Pro currently uses image-based subject replacement; text/background prompt controls do not change Vidu output. Stop the session after comparing the generated output. Start a new session after the test timer expires.
+Sign in, choose Pro in the engine dialog, upload a PNG/JPEG/WebP reference under 2 MB, and start the camera. Pro currently uses image-based subject replacement; text/background prompt controls do not change Vidu output. Stop the session after comparing the generated output.
 
 The server environment needs a Vidu API key with S2-Editing access and working Supabase credentials. The downloaded source's local `.env` files contained placeholder Supabase browser credentials. Keep all real credentials outside Git. Mock credentials cannot evaluate Vidu quality and are rejected by the RTC client.
 

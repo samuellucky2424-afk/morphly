@@ -317,7 +317,7 @@ const proxySignaling = { transport: 'proxy', path: '/api/vidu/live', connectionI
 const relayTicket = 'v1.encrypted-ticket.fixture-signature';
 const proxyClient = h => h.exports.createViduClient({ apiKey: relayTicket, signaling: proxySignaling });
 
-test('Plus proxy uses the page origin, subprotocol ticket and server-issued connection ID', async () => {
+test('Plus proxy uses the page origin, server ticket and full server-selected stream duration', async () => {
   const h = harness('', undefined, 'https://preview.morphly.test:8443/#/dashboard');
   const connected = proxyClient(h).connect(h.input, { ...h.options, baseUrl: 'https://untrusted.example', maxSeconds: 1000 });
   await tick();
@@ -334,7 +334,7 @@ test('Plus proxy uses the page origin, subprotocol ticket and server-issued conn
   h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
   const session = await connected;
   assert.equal(h.outputs[0].getVideoTracks()[0], h.generated);
-  assert.equal([...h.timers.values()].filter(timer => timer.ms === 120000).length, 1, 'active sessions retain the 120s cap');
+  assert.equal([...h.timers.values()].filter(timer => timer.ms === 1000000).length, 1, 'active sessions use the server-provided duration');
   await session.set({ image: 'https://example.com/replacement.png' });
   await session.disconnect();
   await session.disconnect();

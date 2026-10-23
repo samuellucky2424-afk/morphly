@@ -8,14 +8,14 @@ const now = Date.now();
 const input = { secret, userId: 'owner', sessionId: 'morphly-session', liveId: 'provider-live', clientSecret: 'scoped-provider-secret',
   origin: 'https://preview.example', audience: 'immutable-preview.vercel.app', maxSeconds: 999, providerExpiresAt: now + 3600000, now };
 
-test('proxy ticket authenticates and encrypts scoped credentials with bounded acquisition and session duration', () => {
+test('proxy ticket authenticates and encrypts scoped credentials with bounded acquisition and requested session duration', () => {
   const issued = issueViduDemoTicket(input);
   assert.equal(Date.parse(issued.expiresAt), now + 120000);
   assert.doesNotMatch(issued.ticket, /scoped-provider-secret|provider-live|owner/);
   const payload = validateViduDemoTicket(issued.ticket, { secret, audience: input.audience, origin: input.origin, now });
   assert.equal(payload.connectionId, issued.connectionId);
   assert.equal(payload.clientSecret, input.clientSecret);
-  assert.equal(payload.maxSeconds, 120);
+  assert.equal(payload.maxSeconds, 999);
   assert.equal(payload.providerExpiresAt, input.providerExpiresAt);
   assert.notEqual(issueViduDemoTicket(input).ticket, issued.ticket);
 });

@@ -33,7 +33,7 @@ export async function claimViduDemoLease(db, ticket, { now = Date.now(), startup
     if (wallets.size !== 1) fail('WALLET_UNAVAILABLE');
     const wallet = wallets.docs[0], credits = Number(wallet.data().credits);
     if (!Number.isFinite(credits) || credits < 2) fail('INSUFFICIENT_CREDITS');
-    const maxSeconds = Math.min(ticket.maxSeconds, Math.floor(credits / 2), Number(row.provider_max_seconds) || 120, 120);
+    const maxSeconds = Math.min(ticket.maxSeconds, Math.floor(credits / 2), Number(row.provider_max_seconds) || 7200, 7200);
     const startedAt = Number.isSafeInteger(row.vidu_demo_started_at) ? row.vidu_demo_started_at : now;
     const startupDeadline = Math.min(startedAt + startupMs, ticket.providerExpiresAt);
     if (startupDeadline <= now || maxSeconds < 1) fail('EXPIRED_TICKET');
@@ -232,7 +232,7 @@ export function createViduDemoProxyServer({
     });
 
     startupTimer = setTimeout(() => finish('STARTUP_TIMEOUT', 1011), Math.max(1, lease.startupDeadline - now()));
-    expiryTimer = setTimeout(() => finish('PROVIDER_EXPIRED', 1008), Math.max(1, Math.min(240000, payload.providerExpiresAt - now())));
+    expiryTimer = setTimeout(() => finish('PROVIDER_EXPIRED', 1008), Math.max(1, payload.providerExpiresAt - now()));
     try {
       const url = new URL(UPSTREAM);
       url.search = new URLSearchParams({ live_id: payload.liveId, conn_id: payload.connectionId, client_secret: payload.clientSecret }).toString();

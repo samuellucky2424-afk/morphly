@@ -289,8 +289,7 @@ export class ViduRealtimeClient {
       window.addEventListener('pagehide', onPageHide);
       options.signal?.addEventListener('abort', onAbort, { once: true });
       startupTimer = setTimeout(() => fail('Plus connection timed out before receiving generated video.'), startupTimeoutMs);
-      if (credentialDeadline - Date.now() <= startupTimeoutMs + 120000) {
-        // Later deadlines cannot be reached within the startup + session duration caps.
+      if (Number.isFinite(credentialDeadline)) {
         credentialTimer = setTimeout(() => {
           if (credentialsExpired()) fail(expiredMessage, 'credentials_expired');
         }, Math.max(0, credentialDeadline - Date.now()));
@@ -449,8 +448,10 @@ export class ViduRealtimeClient {
               ready = true;
               recordPhase('initialized');
               changeState('connected');
-              sessionTimer = setTimeout(() => fail('Plus quality-test session finished. Start again to continue.'),
-                Math.max(1, Math.min(options.maxSeconds || 120, 120)) * 1000);
+              const maxSeconds = Number(options.maxSeconds);
+              if (Number.isFinite(maxSeconds) && maxSeconds > 0) {
+                sessionTimer = setTimeout(() => fail('Plus session time limit reached. Start a new session.'), maxSeconds * 1000);
+              }
               resolveInit();
             }
           } else if (ack?.error_code === 'NOT_READY') {

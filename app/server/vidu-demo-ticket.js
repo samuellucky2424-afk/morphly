@@ -66,7 +66,7 @@ function validPayload(p) {
     && Number.isSafeInteger(p.expiresAt) && Number.isSafeInteger(p.providerExpiresAt)
     && p.expiresAt > p.issuedAt && p.expiresAt <= p.issuedAt + ACQUISITION_MS
     && p.providerExpiresAt >= p.expiresAt && p.providerExpiresAt <= 8.64e15
-    && Number.isInteger(p.maxSeconds) && p.maxSeconds >= 1 && p.maxSeconds <= 120;
+    && Number.isInteger(p.maxSeconds) && p.maxSeconds >= 1 && p.maxSeconds <= 7200;
 }
 
 export function issueViduDemoTicket({ secret, userId, sessionId, liveId, clientSecret,
@@ -78,7 +78,7 @@ export function issueViduDemoTicket({ secret, userId, sessionId, liveId, clientS
     connectionId: randomUUID(), issuedAt: now,
     expiresAt: Math.min(now + ACQUISITION_MS, providerExpiry),
     providerExpiresAt: providerExpiry,
-    maxSeconds: Math.max(1, Math.min(120, Math.floor(Number(maxSeconds)))),
+    maxSeconds: Math.max(1, Math.min(7200, Math.floor(Number(maxSeconds)))),
   };
   if (!validPayload(payload)) throw new ViduDemoTicketError();
   const nonce = randomBytes(12);
