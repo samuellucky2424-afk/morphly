@@ -2955,7 +2955,7 @@ function Dashboard() {
           title="Upload image"
           ref={fileInputRef}
           onChange={handleFileChange}
-          accept="image/*"
+          accept="image/jpeg,image/png,image/webp"
           className="hidden"
           id="image-upload"
         />
@@ -3097,6 +3097,10 @@ function Dashboard() {
               <Upload aria-hidden="true" className="size-3.5 text-muted-foreground" />
               <span>{referenceImage ? 'Change Image' : 'Upload Image'}</span>
             </button>
+
+            <span className="max-w-[220px] text-[10px] leading-tight text-muted-foreground" data-testid="reference-photo-hint">
+              JPG/PNG/WEBP · one clear adult face · no celebrities, nudity or minors
+            </span>
 
             <span className="flex min-h-11 items-center rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground" data-testid="realtime-provider-selector">Plus · 2 cr/sec</span>
 
