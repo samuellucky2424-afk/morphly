@@ -12,6 +12,7 @@ const CREDITS_PER_SECOND = 2;
 const DECART_DEFAULT_API_BASE_URL = 'https://api.decart.ai';
 const DECART_REALTIME_MODEL = 'lucy-2.5';
 const VIDU_REALTIME_MODEL = 's2-editing';
+export const REFERENCE_IMAGE_REJECTED_MESSAGE = 'This reference photo was rejected by the Plus safety check. Please upload a different photo: one clear, well-lit adult face, not a celebrity or public figure, no nudity and no minors.';
 const VIDU_DEFAULT_API_BASE_URL = 'https://api.vidu.com';
 const DEFAULT_REALTIME_PROVIDER = 'vidu';
 const TEMPORARY_KEY_GRACE_SECONDS = 120;
@@ -220,8 +221,11 @@ export async function createViduTemporaryKey({
   }
 
   const effectiveImageUrl = typeof imageUrl === 'string' ? imageUrl.trim() : '';
-  if (!/^(https?:\/\/|data:image\/(png|jpeg|webp);base64,|ssupload:)/i.test(effectiveImageUrl) || effectiveImageUrl.length > 3_000_000) {
-    return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'Choose a reference image under 2 MB for Plus.' } };
+  if (!/^(https?:\/\/|data:image\/(png|jpeg|webp);base64,|ssupload:)/i.test(effectiveImageUrl)) {
+    return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'Unsupported reference image format. Upload a JPG, PNG or WEBP photo.' } };
+  }
+  if (effectiveImageUrl.length > 3_500_000) {
+    return { error: { error: 'INVALID_REFERENCE_IMAGE', details: 'The reference image is too large. Upload a smaller photo (under 2 MB).' } };
   }
 
   const requestTimeoutMs = getViduSessionRequestTimeoutMs();
@@ -250,6 +254,8 @@ export async function createViduTemporaryKey({
         const message = data?.message || data?.error || response.statusText;
         const retryable = providerStatus === 429;
         const unavailable = providerStatus >= 500;
+        const moderationRejected = /submit is illegal|audit|policy violation/i.test(String(message || ''))
+          || /AuditSubmitIllegal|PhotoAuditNotPass|AuditFailed|CreationPolicyViolation/i.test(String(providerCode || ''));
 
         console.warn('[Vidu] realtime session request failed', {
           attempt,
@@ -262,6 +268,17 @@ export async function createViduTemporaryKey({
         if (retryable && attempt < VIDU_TOKEN_MAX_ATTEMPTS) {
           await new Promise((resolve) => setTimeout(resolve, VIDU_TOKEN_RETRY_DELAY_MS));
           continue;
+        }
+
+        if (moderationRejected) {
+          return {
+            error: {
+              error: 'REFERENCE_IMAGE_REJECTED',
+              providerStatus,
+              providerCode,
+              details: REFERENCE_IMAGE_REJECTED_MESSAGE,
+            },
+          };
         }
 
         const details = providerStatus === 401 || providerStatus === 403

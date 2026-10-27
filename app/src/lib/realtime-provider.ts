@@ -57,6 +57,9 @@ export function getViduStartErrorMessage(error: unknown, fallback: string): stri
   const diagnostic = `${code} ${message}`.toLowerCase();
   const detail = sanitizeProviderNames(message || fallback).slice(0, 180);
 
+  if (code === 'REFERENCE_IMAGE_REJECTED' || code === 'INVALID_REFERENCE_IMAGE') {
+    return sanitizeProviderNames(message || fallback);
+  }
   if (code === 'AI_SESSION_CREATION_FAILED') {
     if (['TIMEOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(String(candidate?.providerCode))) {
       return 'Plus timed out while creating its video session. Try again shortly.';
