@@ -227,7 +227,7 @@ test('session/account/wallet watches stop active signaling while preserving clie
 });
 
 test('active duration is enforced by the server and initialization cannot be replayed afterwards', async t => {
-  const f = await fixture(t, { ticket: { maxSeconds: 1 } }), client = f.connect(); await once(client, 'open');
+  const f = await fixture(t, { ticket: { maxSeconds: 1 }, proxy: { startupMs: 150 } }), client = f.connect(); await once(client, 'open');
   client.send(f.message(1, 1)); await once(client, 'close');
   await waitFor(() => !f.db.row('sessions/session').vidu_demo_lease_id);
   assert.equal(f.received.filter(frame => JSON.parse(frame.data).type === 5).length, 1);

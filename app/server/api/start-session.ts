@@ -9,6 +9,7 @@ import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 import { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, issueViduDemoTicket } from '../vidu-demo-ticket.js';
 
 const CREDITS_PER_SECOND = 2;
+const VIDU_MIN_START_SECONDS = 15;
 const DECART_DEFAULT_API_BASE_URL = 'https://api.decart.ai';
 const DECART_REALTIME_MODEL = 'lucy-2.5';
 const VIDU_REALTIME_MODEL = 's2-editing';
@@ -733,12 +734,12 @@ export default async function handler(req, res) {
     }
 
     userCredits = await realtimeWalletBalance(supabaseAdmin, userId, userCredits);
-    if (userCredits < (provider === 'decart' ? 25 : minimumCreditRate)) {
+    if (userCredits < (provider === 'decart' ? 25 : minimumCreditRate * VIDU_MIN_START_SECONDS)) {
       await logRequestEvent('start-session.insufficient_credits', {
         userId,
         credits: userCredits,
       });
-      return res.json({ allowed: false, error: provider === 'decart' ? 'Pro requires at least 25 credits to start (2.5 cr/sec).' : 'Insufficient credits' });
+      return res.json({ allowed: false, error: provider === 'decart' ? 'Pro requires at least 25 credits to start (2.5 cr/sec).' : `Plus needs at least ${minimumCreditRate * VIDU_MIN_START_SECONDS} credits to start (${minimumCreditRate} cr/sec). Top up and try again.` });
     }
 
     const unverifiedWalletLimit = getUnverifiedWalletLimit();

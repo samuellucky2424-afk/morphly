@@ -221,7 +221,7 @@ test('Vidu retries NOT_READY initialization and releases camera/RTC after startu
   assert.equal(h.clone.stopped, true);
 });
 
-test('Vidu quality-test deadline hangs up an active session', async () => {
+test('Vidu does not run a client-side countdown that can end startup or an active session', async () => {
   const h = harness();
   const connected = h.client.connect(h.input, h.options);
   await tick();
@@ -230,11 +230,9 @@ test('Vidu quality-test deadline hangs up an active session', async () => {
   await tick();
   h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
   const session = await connected;
-  [...h.timers.values()].find(timer => timer.ms === 60000).fn();
-  await tick();
-  assert.equal(session.getConnectionState(), 'disconnected');
-  assert.equal(h.sent.at(-1).type, 5);
-  assert.equal(h.destroyed, 1);
+  assert.equal([...h.timers.values()].filter(timer => timer.ms === 60000).length, 0, 'credits are enforced by the server heartbeat');
+  assert.notEqual(session.getConnectionState(), 'disconnected');
+  await session.disconnect();
 });
 
 test('Vidu rejects master keys, mock credentials and unrelated signaling hosts', async () => {
@@ -334,7 +332,7 @@ test('Plus proxy uses the page origin, server ticket and full server-selected st
   h.events.get('videoSubscribeStateChanged')('renderer', 2, 3);
   const session = await connected;
   assert.equal(h.outputs[0].getVideoTracks()[0], h.generated);
-  assert.equal([...h.timers.values()].filter(timer => timer.ms === 1000000).length, 1, 'active sessions use the server-provided duration');
+  assert.equal([...h.timers.values()].filter(timer => timer.ms === 1000000).length, 0, 'no client countdown; the server relay and heartbeat enforce duration');
   await session.set({ image: 'https://example.com/replacement.png' });
   await session.disconnect();
   await session.disconnect();
