@@ -269,7 +269,8 @@ export function createViduDemoProxyServer({
             if (closed) return;
             ready = true; clearTimeout(startupTimer);
             diagnostic('initialized');
-            activeTimer = setTimeout(() => finish('SESSION_LIMIT'), lease.maxSeconds * 1000);
+            // Allow the RTC/renderer startup window on top of the paid seconds; billing itself is enforced by /api/heartbeat.
+            activeTimer = setTimeout(() => finish('SESSION_LIMIT'), lease.maxSeconds * 1000 + startupMs);
           }
           if (client.readyState !== WebSocket.OPEN) { finish('CLIENT_CLOSED'); return; }
           if (client.bufferedAmount > MAX_BUFFER) { finish('BUFFER_LIMIT', 1009); return; }

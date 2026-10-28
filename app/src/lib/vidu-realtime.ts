@@ -183,7 +183,6 @@ export class ViduRealtimeClient {
     let socketRetry: ReturnType<typeof setTimeout> | undefined;
     let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
     let socketAttempts = 0;
-    let sessionTimer: ReturnType<typeof setTimeout> | undefined;
     let credentialTimer: ReturnType<typeof setTimeout> | undefined;
     let startupTimer: ReturnType<typeof setTimeout> | undefined;
     let subscribeRetry: ReturnType<typeof setTimeout> | undefined;
@@ -229,7 +228,6 @@ export class ViduRealtimeClient {
       clearTimeout(initRetry);
       clearTimeout(socketRetry);
       clearTimeout(handshakeTimer);
-      clearTimeout(sessionTimer);
       clearTimeout(credentialTimer);
       clearTimeout(startupTimer);
       clearTimeout(subscribeRetry);
@@ -448,10 +446,9 @@ export class ViduRealtimeClient {
               ready = true;
               recordPhase('initialized');
               changeState('connected');
-              const maxSeconds = Number(options.maxSeconds);
-              if (Number.isFinite(maxSeconds) && maxSeconds > 0) {
-                sessionTimer = setTimeout(() => fail('Plus session time limit reached. Start a new session.'), maxSeconds * 1000);
-              }
+              // No client-side countdown here: it started before video startup finished and
+              // killed low-credit sessions mid-startup. Credits are enforced by /api/heartbeat
+              // (shouldStop: no_credits) and by the relay's server-side active limit.
               resolveInit();
             }
           } else if (ack?.error_code === 'NOT_READY') {
