@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
+import {createXmaxAndroidKey} from '../xmax-android-token.js';
 import { createDecartTemporaryKey as createScopedDecartKey } from '../decart-token.js';
 import { realtimeWalletBalance } from '../realtime-billing.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
@@ -115,23 +116,23 @@ function getViduRequestErrorCode(error) {
 }
 
 export function normalizeRealtimeProvider(value) {
-  return value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
+  return value === 'xmax' ? 'xmax' : value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
 }
 
 function getProviderModel(provider) {
-  return provider === 'decart' ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
+  return provider === 'xmax' ? 'x2.1' : provider === 'decart' ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
 }
 
 function getProviderApiKey(provider) {
-  return provider === 'decart' ? getDecartApiKey() : getViduApiKey();
+  return provider === 'xmax' ? process.env.XMAX_ANDROID_API_KEY?.trim() : provider === 'decart' ? getDecartApiKey() : getViduApiKey();
 }
 
 function getProviderPublicLabel(provider) {
-  return provider === 'decart' ? 'Pro' : 'Plus';
+  return provider === 'xmax' ? 'XMax' : provider === 'decart' ? 'Pro' : 'Plus';
 }
 
 function getProviderSessionLimitSeconds(provider) {
-  const configured = Number(provider === 'decart' ? process.env.DECART_MAX_SESSION_SECONDS : process.env.VIDU_MAX_SESSION_SECONDS);
+  const configured = Number(provider === 'xmax' ? 1800 : provider === 'decart' ? process.env.DECART_MAX_SESSION_SECONDS : process.env.VIDU_MAX_SESSION_SECONDS);
   if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_PROVIDER_SESSION_LIMIT_SECONDS;
   return Math.min(7200, Math.max(10, Math.floor(configured)));
 }
@@ -380,6 +381,7 @@ async function createProviderTemporaryCredential({
   imageUrl,
   proxyContext,
 }) {
+  if (provider === 'xmax') return createXmaxAndroidKey({apiKey, maxSeconds});
   if (provider === 'decart') return createScopedDecartKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
   if (provider === 'vidu' || provider === 'decart') {
     return createViduTemporaryKey({
@@ -594,7 +596,7 @@ export default async function handler(req, res) {
   try {
     const isLocalPreview = isLocalPreviewRequest(req);
 
-    if (req.body?.provider !== 'vidu') {
+    if (req.body?.provider !== 'vidu' && !(req.body?.provider === 'xmax' && req.body?.platform === 'android')) {
       return res.status(400).json({ allowed: false, error: 'Only Plus subject replacement is available. Update Morphly and try again.' });
     }
 
@@ -664,9 +666,9 @@ export default async function handler(req, res) {
         error: 'Open Morphly from the app or a secure web address, then try again.',
       });
     }
-    const proxyContext = getViduDemoSessionContext(req);
+    const proxyContext = provider === 'vidu' ? getViduDemoSessionContext(req) : null;
     if (proxyContext?.error) return res.status(503).json({ allowed: false, ...proxyContext.error });
-    if (!getViduApiBaseUrl()) return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
+    if (provider === 'vidu' && !getViduApiBaseUrl()) return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
 
     // Fire-and-forget: request logging must not delay session startup.
     void logRequestEvent('start-session.request', {
