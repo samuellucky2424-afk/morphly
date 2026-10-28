@@ -206,6 +206,7 @@ test('production preflight rejects invalid relay configuration and origins befor
         if (name === '../../../shared/backend-logger.js') return { logErrorEvent() {}, logRequestEvent() {} };
         if (name === '../realtime-billing.js') return { realtimeWalletBalance: Number };
         if (name === '../decart-token.js') return {};
+        if (name === '../xmax-android-token.js') return {};
         throw new Error(`Unexpected import ${name}`);
       },
     });
