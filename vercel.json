@@ -5,6 +5,7 @@
   "installCommand": "npm ci",
   "functions": {
     "api/engagement-cron.ts": { "maxDuration": 300 },
+    "api/admin.ts": { "memory": 1024, "maxDuration": 300 },
     "api/**/*.ts": {
       "memory": 1024,
       "maxDuration": 30
@@ -17,6 +18,7 @@
     { "source": "/api/admin-me", "destination": "/api/admin?name=me" },
     { "source": "/api/admin-overview", "destination": "/api/admin?name=overview" },
     { "source": "/api/admin-referrals", "destination": "/api/admin?name=referrals" },
+    { "source": "/api/admin-users-export", "destination": "/api/admin?name=users-export" },
     { "source": "/api/admin-users", "destination": "/api/admin?name=users" },
     { "source": "/api/admin-credit-packages", "destination": "/api/admin?name=credit-packages" },
     { "source": "/api/admin-audit-log", "destination": "/api/admin?name=audit-log" },
