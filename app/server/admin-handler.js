@@ -16,6 +16,7 @@ import {
   listCreditPackages,
   updateCreditPackages,
 } from '../../shared/admin-service.js';
+import { handleAdminUsersExport } from '../../shared/admin-users-export.js';
 import { createCreditPackage } from '../../shared/credit-packages.js';
 import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
 import { supabaseAdmin, supabaseAdminConfigError } from './supabase-admin.js';
@@ -45,6 +46,7 @@ const ADMIN_ROUTE_CONFIG = {
     event: 'admin-users',
     handler: handleAdminUsers,
   },
+  'users-export': { path: '/api/admin-users-export', methods: ['GET'], event: 'admin-users-export', handler: handleAdminUsersExportRoute },
   transactions: { path: '/api/admin-transactions', methods: ['GET', 'POST'], event: 'admin-transactions', handler: handleAdminTransactions },
   usage: { path: '/api/admin-usage', methods: ['GET'], event: 'admin-usage', handler: handleAdminUsage },
   logs: { path: '/api/admin-logs', methods: ['GET'], event: 'admin-logs', handler: handleAdminLogs },
@@ -417,4 +419,14 @@ async function handleAdminLogs(req, res) {
     });
   }
   catch (error) { await logErrorEvent('admin-logs.exception', error); return res.status(500).json({ error: 'Failed to load logs' }); }
+}
+
+async function handleAdminUsersExportRoute(req, res, routeConfig) {
+  try {
+    await logRequestEvent(`${routeConfig.event}.request`, { method: req.method, path: routeConfig.path });
+    return await handleAdminUsersExport(req, res, supabaseAdmin);
+  } catch (error) {
+    await logErrorEvent(`${routeConfig.event}.exception`, error);
+    return res.status(500).json({ error: 'Failed to export users' });
+  }
 }

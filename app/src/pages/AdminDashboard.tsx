@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Coins,
   DollarSign,
+  Download,
   Gift,
   Loader2,
   LogOut,
@@ -296,6 +297,35 @@ function AdminDashboard() {
   const [developerToolsBusy, setDeveloperToolsBusy] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isExportingUsers, setIsExportingUsers] = useState(false);
+
+  const downloadUsersCsv = async () => {
+    setIsExportingUsers(true);
+    try {
+      const response = await apiFetchWithAuth('/admin-users-export', { method: 'GET' });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Export failed with status ${response.status}`);
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1]
+        || `morphly-users-${new Date().toISOString().slice(0, 10)}.csv`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.success('Users CSV downloaded');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Could not download the users CSV');
+    } finally {
+      setIsExportingUsers(false);
+    }
+  };
   const [savingPackages, setSavingPackages] = useState(false);
   const [creditDialogUser, setCreditDialogUser] = useState<AdminUserRecord | null>(null);
   const [creditAdjustmentMode, setCreditAdjustmentMode] = useState<CreditAdjustmentMode>('add');
@@ -731,6 +761,16 @@ function AdminDashboard() {
                 >
                   {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                   Refresh data
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void downloadUsersCsv()}
+                  disabled={isExportingUsers}
+                  className="h-11 rounded-full px-5"
+                  data-testid="admin-download-users-csv"
+                >
+                  {isExportingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {isExportingUsers ? 'Preparing CSV...' : 'Download users CSV'}
                 </Button>
               </div>
             </div>

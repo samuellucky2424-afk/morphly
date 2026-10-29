@@ -40,6 +40,7 @@ const routeHandlers = {
   'admin-overview': createAdminHandler('overview'),
   'admin-referrals': createAdminHandler('referrals'),
   'admin-users': createAdminHandler('users'),
+  'admin-users-export': createAdminHandler('users-export'),
   'admin-transactions': createAdminHandler('transactions'),
   'admin-usage': createAdminHandler('usage'),
   'admin-logs': createAdminHandler('logs'),
