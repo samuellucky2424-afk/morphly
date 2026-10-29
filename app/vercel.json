@@ -7,6 +7,7 @@
     "api/[...route].ts": { "memory": 1024, "maxDuration": 90 },
     "api/vidu/live.ts": { "memory": 1024, "maxDuration": 300 },
     "api/engagement-cron.ts": { "maxDuration": 300 },
+    "api/admin.ts": { "memory": 1024, "maxDuration": 300 },
     "api/admin-payment-reconcile.ts": { "maxDuration": 300 },
     "api/**/*.ts": {
       "memory": 1024,

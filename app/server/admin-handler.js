@@ -427,6 +427,7 @@ async function handleAdminUsersExportRoute(req, res, routeConfig) {
     return await handleAdminUsersExport(req, res, supabaseAdmin);
   } catch (error) {
     await logErrorEvent(`${routeConfig.event}.exception`, error);
+    if (res.headersSent) { res.end(); return; }
     return res.status(500).json({ error: 'Failed to export users' });
   }
 }

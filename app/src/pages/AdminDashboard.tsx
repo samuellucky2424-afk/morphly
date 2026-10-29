@@ -33,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -297,12 +298,12 @@ function AdminDashboard() {
   const [developerToolsBusy, setDeveloperToolsBusy] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isExportingUsers, setIsExportingUsers] = useState(false);
+  const [isExportingUsers, setIsExportingUsers] = useState<string | null>(null);
 
-  const downloadUsersCsv = async () => {
-    setIsExportingUsers(true);
+  const downloadUsersCsv = async (type: 'summary' | 'transactions' | 'sessions' | 'wallet-ledger' = 'summary') => {
+    setIsExportingUsers(type);
     try {
-      const response = await apiFetchWithAuth('/admin-users-export', { method: 'GET' });
+      const response = await apiFetchWithAuth(`/admin-users-export?type=${type}`, { method: 'GET' });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || `Export failed with status ${response.status}`);
@@ -310,7 +311,7 @@ function AdminDashboard() {
       const blob = await response.blob();
       const disposition = response.headers.get('Content-Disposition') || '';
       const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1]
-        || `morphly-users-${new Date().toISOString().slice(0, 10)}.csv`;
+        || `morphly-${type === 'summary' ? 'users' : type}-${new Date().toISOString().slice(0, 10)}.csv`;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -319,11 +320,11 @@ function AdminDashboard() {
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      toast.success('Users CSV downloaded');
+      toast.success('CSV downloaded');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Could not download the users CSV');
     } finally {
-      setIsExportingUsers(false);
+      setIsExportingUsers(null);
     }
   };
   const [savingPackages, setSavingPackages] = useState(false);
@@ -762,16 +763,25 @@ function AdminDashboard() {
                   {isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                   Refresh data
                 </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => void downloadUsersCsv()}
-                  disabled={isExportingUsers}
-                  className="h-11 rounded-full px-5"
-                  data-testid="admin-download-users-csv"
-                >
-                  {isExportingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-                  {isExportingUsers ? 'Preparing CSV...' : 'Download users CSV'}
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      disabled={Boolean(isExportingUsers)}
+                      className="h-11 rounded-full px-5"
+                      data-testid="admin-download-users-csv"
+                    >
+                      {isExportingUsers ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                      {isExportingUsers ? 'Preparing CSV...' : 'Download CSV'}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void downloadUsersCsv('summary')}>Users (summary)</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void downloadUsersCsv('transactions')}>All transactions</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void downloadUsersCsv('sessions')}>All sessions</DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void downloadUsersCsv('wallet-ledger')}>Credit ledger</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </div>
 
