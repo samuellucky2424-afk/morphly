@@ -939,6 +939,7 @@ export default async function handler(req, res) {
       sessionId: newSession.id,
       credits: userCredits,
       billingVersion,
+      ...(provider === 'xmax' ? { referenceSoftening: readXmaxReferenceSoftening() } : {}),
       serverNow: Date.now(),
       maxSeconds: providerSession.sessionLimit || maxSeconds,
       baseUrl: providerSession.baseUrl,
@@ -958,4 +959,19 @@ export default async function handler(req, res) {
     await logErrorEvent('start-session.exception', error);
     res.status(500).json({ allowed: false, error: 'Internal server error' });
   }
+}
+
+// Plus-only reference softening, tunable without a rebuild via Vercel env vars:
+//   XMAX_REFERENCE_BLUR_PERCENT (default 1.5 = blur radius as % of shorter side; 0 disables)
+//   XMAX_REFERENCE_MAX_SIDE     (default 512 px)
+export function readXmaxReferenceSoftening(env: Record<string, string | undefined> = process.env) {
+  const num = (v: string | undefined, d: number, min: number, max: number) => {
+    const n = Number(v);
+    return v !== undefined && v.trim() !== '' && Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d;
+  };
+  return {
+    blurPercent: num(env.XMAX_REFERENCE_BLUR_PERCENT, 1.5, 0, 10),
+    maxSide: Math.round(num(env.XMAX_REFERENCE_MAX_SIDE, 512, 128, 2048)),
+    quality: 0.9,
+  };
 }

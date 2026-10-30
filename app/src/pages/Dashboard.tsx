@@ -108,6 +108,7 @@ type AiSessionResponse = {
   maxSeconds?: number;
   sessionId?: string;
   billingVersion?: number;
+  referenceSoftening?: { blurPercent: number; maxSide: number; quality: number };
   serverNow?: number;
   expiresAt?: string | null;
   model?: string;
@@ -516,6 +517,7 @@ function Dashboard() {
   const pendingBillableSecondsRef = useRef(0);
   const pendingVideoSecondsRef = useRef(new Map<number, boolean>());
   const usageFlushInFlightRef = useRef<Promise<void> | null>(null);
+  const xmaxReferenceSofteningRef = useRef<AiSessionResponse['referenceSoftening'] | null>(null);
   const billingVersionRef = useRef(1);
   const billingClockOffsetRef = useRef(0);
   const lastGenerationMeterAtRef = useRef(0);
@@ -1929,7 +1931,12 @@ function Dashboard() {
   ): Promise<RealtimeClient> => {
     if (!initialTransform.image) throw new Error('Upload a reference image for Plus.');
     const { encodeViduReference } = await import('@/lib/vidu-realtime');
-    const reference = await encodeViduReference(initialTransform.image);
+    const { softenXmaxReference } = await import('@/lib/xmax-reference-softening');
+    const softenReference = async (image: Blob | File | string | null | undefined) => {
+      const encoded = await encodeViduReference(image as any);
+      return encoded ? softenXmaxReference(encoded, xmaxReferenceSofteningRef.current) : encoded;
+    };
+    const reference = await softenReference(initialTransform.image);
     const controller = new AbortController();
     cancelRemoteFrameMonitor();
     hasRemoteFrameRef.current = false;
@@ -2018,7 +2025,7 @@ function Dashboard() {
       const active = session;
       const realtimeClient: RealtimeClient = {
         disconnect: () => active.disconnect(),
-        setTransform: async (transform) => { if (transform.image) await active.setReference(await encodeViduReference(transform.image)); },
+        setTransform: async (transform) => { if (transform.image) await active.setReference(await softenReference(transform.image)); },
         getConnectionState: () => active.getConnectionState(),
         getSessionUid: () => active.sessionId,
       };
@@ -2806,6 +2813,7 @@ function Dashboard() {
         sessionTokenExpiresAtRef.current = Date.parse(startResponse.expiresAt || '') || 0;
         sessionIdRef.current = startResponse.sessionId || '';
         billingVersionRef.current = startResponse.billingVersion || 1;
+        xmaxReferenceSofteningRef.current = startResponse.referenceSoftening || null;
         billingClockOffsetRef.current = typeof startResponse.serverNow === 'number' ? startResponse.serverNow - Date.now() : 0;
 
         const responseProvider = resolveRealtimeProvider(startResponse.provider);
