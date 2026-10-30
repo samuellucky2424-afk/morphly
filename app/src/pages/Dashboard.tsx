@@ -177,6 +177,7 @@ const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
   xmax: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
+const XMAX_FIRST_FRAME_TIMEOUT_MS = 30000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
   vidu: 1,
   xmax: 1,
@@ -2003,8 +2004,8 @@ function Dashboard() {
       sessionEverConnectedRef.current = true;
       lastAppliedTransformRef.current = initialTransform;
       setUiStatus('Preparing Plus output...');
-      await withTimeout(firstFramePromise, AI_FIRST_FRAME_TIMEOUT_MS,
-        `Plus connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`);
+      await withTimeout(firstFramePromise, XMAX_FIRST_FRAME_TIMEOUT_MS,
+        `Plus connected but no video output arrived within ${XMAX_FIRST_FRAME_TIMEOUT_MS / 1000}s.`);
       if (!firstFrameTrackedRef.current) {
         firstFrameTrackedRef.current = true;
         trackFirstFrameReceived(sessionIdRef.current || undefined);

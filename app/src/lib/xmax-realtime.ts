@@ -128,8 +128,22 @@ export async function connectXmaxRealtime(options: XmaxConnectOptions): Promise<
       context: new sdk.RealtimeContext({ prompt: options.prompt || XMAX_DEFAULT_PROMPT, referencePath }),
     });
     if (view) view.remoteTrack = remoteStream.videoTrack;
-    const track = remoteStream.videoTrack?.mediaStreamTrack;
-    if (track) options.onRemoteStream?.(new MediaStream([track]));
+    // The remote track can be attached after startGeneration resolves; poll briefly.
+    let delivered: MediaStreamTrack | null = null;
+    const deliver = () => {
+      const track = remoteStream.videoTrack?.mediaStreamTrack ?? null;
+      if (!track || track === delivered || closed) return !!delivered;
+      delivered = track;
+      if (view) view.remoteTrack = remoteStream.videoTrack;
+      options.onRemoteStream?.(new MediaStream([track]));
+      return true;
+    };
+    if (!deliver()) {
+      const started = Date.now();
+      const poll = window.setInterval(() => {
+        if (deliver() || closed || Date.now() - started > 45000) window.clearInterval(poll);
+      }, 250);
+    }
   } catch (error) {
     await close();
     throw error instanceof Error ? error : new Error('Plus could not start generation.');
