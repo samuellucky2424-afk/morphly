@@ -161,3 +161,14 @@ test('client minimum-credit check matches the server (30 credits for Plus)', asy
   const server = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../server/api/start-session.ts'), 'utf8');
   assert.match(server, /VIDU_MIN_START_SECONDS = 15/);
 });
+
+test('Xmax provider-side endings are not reported as an internet problem', () => {
+  const msg = getViduStartErrorMessage(new Error('Plus video service ended the session before video started. You were not charged; please try again.'), 'fallback');
+  assert.doesNotMatch(msg, /internet connection/i);
+  assert.match(msg, /not charged/i);
+});
+
+test('Xmax adapter does not treat the initial Idle state as a disconnect', () => {
+  const src = fs.readFileSync(path.join(appDirectory, 'src/lib/xmax-realtime.ts'), 'utf8');
+  assert.match(src, /!hasProgressed && !closed\) next = 'connecting'/);
+});
