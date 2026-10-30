@@ -1,4 +1,4 @@
-import { VIDU_REALTIME_PROVIDER } from './realtime-provider';
+import { REALTIME_PROVIDER_CREDITS_PER_SECOND, isRealtimeProvider } from './realtime-provider';
 
 export const CREDITS_PER_SECOND_STANDARD = 2;
 export const CREDITS_PER_SECOND_AVATAR = 2;
@@ -10,7 +10,7 @@ export const CREDITS_PER_SECOND_PRO = 2.5;
 export const PRO_PROVIDER_CREDIT_MULTIPLIER = CREDITS_PER_SECOND_PRO / CREDITS_PER_SECOND_STANDARD;
 
 export function getProviderCreditMultiplier(provider: string | null | undefined): number {
-  return provider === 'decart'
+  return provider === 'decart' || provider === 'vidu'
     ? PRO_PROVIDER_CREDIT_MULTIPLIER
     : 1;
 }
@@ -21,7 +21,7 @@ export function getCreditRatePerSecond(
   provider?: string | null | undefined,
 ): number {
   if (provider === 'decart') return CREDITS_PER_SECOND_PRO;
-  if (provider === VIDU_REALTIME_PROVIDER) return CREDITS_PER_SECOND_STANDARD;
+  if (isRealtimeProvider(provider)) return REALTIME_PROVIDER_CREDITS_PER_SECOND[provider];
   const baseRate = hasAvatar && hasBackground
     ? CREDITS_PER_SECOND_BLENDED
     : CREDITS_PER_SECOND_STANDARD;

@@ -20,15 +20,15 @@ const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.t
 const appShell = fs.readFileSync(path.join(appDirectory, 'src/App.tsx'), 'utf8');
 const startSessionApi = fs.readFileSync(path.join(appDirectory, 'server/api/start-session.ts'), 'utf8');
 
-test('Vidu is the only available realtime provider', () => {
-  assert.equal(DEFAULT_REALTIME_PROVIDER, 'vidu');
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['vidu']);
-  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ label }) => label), ['Plus']);
-  assert.equal(getRealtimeProviderLabel('vidu'), 'Plus');
-  assert.equal(getRealtimeProviderLabel('decart'), 'Pro');
-  assert.equal(resolveRealtimeProvider(undefined), 'vidu');
+test('Plus (Xmax) and Pro (Vidu) are the two realtime engines', () => {
+  assert.equal(DEFAULT_REALTIME_PROVIDER, 'xmax');
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ value }) => value), ['xmax', 'vidu']);
+  assert.deepEqual(REALTIME_PROVIDER_OPTIONS.map(({ short }) => short), ['Plus · 2 cr/s', 'Pro · 2.5 cr/s']);
+  assert.equal(getRealtimeProviderLabel('xmax'), 'Plus');
+  assert.equal(getRealtimeProviderLabel('vidu'), 'Pro');
+  assert.equal(resolveRealtimeProvider(undefined), 'xmax');
   assert.equal(resolveRealtimeProvider('vidu'), 'vidu');
-  assert.equal(resolveRealtimeProvider('decart'), 'vidu');
+  assert.equal(resolveRealtimeProvider('decart'), 'xmax');
 });
 
 test('Vidu uses the native S2-Editing character model', () => {

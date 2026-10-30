@@ -33,7 +33,7 @@ export async function claimViduDemoLease(db, ticket, { now = Date.now(), startup
     if (wallets.size !== 1) fail('WALLET_UNAVAILABLE');
     const wallet = wallets.docs[0], credits = Number(wallet.data().credits);
     if (!Number.isFinite(credits) || credits < 2) fail('INSUFFICIENT_CREDITS');
-    const maxSeconds = Math.min(ticket.maxSeconds, Math.floor(credits / 2), Number(row.provider_max_seconds) || 7200, 7200);
+    const maxSeconds = Math.min(ticket.maxSeconds, Math.floor(credits / 2.5), Number(row.provider_max_seconds) || 7200, 7200);
     const startedAt = Number.isSafeInteger(row.vidu_demo_started_at) ? row.vidu_demo_started_at : now;
     const startupDeadline = Math.min(startedAt + startupMs, ticket.providerExpiresAt);
     if (startupDeadline <= now || maxSeconds < 1) fail('EXPIRED_TICKET');

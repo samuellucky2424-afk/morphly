@@ -65,6 +65,10 @@ import {
 import { prepareRealtimeReferenceImage } from '@/lib/reference-image';
 import {
   VIDU_REALTIME_PROVIDER,
+  XMAX_REALTIME_PROVIDER,
+  REALTIME_PROVIDER_OPTIONS,
+  isReferenceImageProvider,
+  relabelProviderMessage,
   VIDU_REALTIME_MODEL,
   DEFAULT_REALTIME_PROVIDER,
   getViduRealtimeUserMessage,
@@ -170,10 +174,12 @@ const MAX_RETRY_DELAY_MS = 10000;
 const AI_CONNECT_TIMEOUT_MS: Record<RealtimeProvider, number> = {
   decart: 45000,
   vidu: 45000,
+  xmax: 45000,
 };
 const AI_FIRST_FRAME_TIMEOUT_MS = 15000;
 const AI_CONNECT_MAX_ATTEMPTS: Record<RealtimeProvider, number> = {
   vidu: 1,
+  xmax: 1,
   decart: 2,
 };
 // After this many consecutive failed restarts, surface a retryable error
@@ -197,7 +203,7 @@ function buildProviderVideoTrackConstraints(
 ): MediaTrackConstraints {
   const constraints = buildVideoTrackConstraints(mode);
 
-  if (provider === VIDU_REALTIME_PROVIDER || provider === 'decart') {
+  if (isReferenceImageProvider(provider) || provider === 'decart') {
     constraints.width = { ideal: 1280 };
     constraints.height = { ideal: 720 };
     constraints.frameRate = {
@@ -362,8 +368,8 @@ function getStartSessionErrorMessage(error: unknown, provider: RealtimeProvider)
         .replace(/\bXmax\b/gi, 'Plus')
         .replace(/\bDecart\b/gi, 'Pro')
         .replace(/\bVidu\b/gi, 'Plus');
-      return (provider === VIDU_REALTIME_PROVIDER)
-        ? getViduStartErrorMessage(error, fallback)
+      return isReferenceImageProvider(provider)
+        ? relabelProviderMessage(getViduStartErrorMessage(error, fallback), provider)
         : fallback;
     }
   }
@@ -448,14 +454,16 @@ function Dashboard() {
   const [cameraPermission, setCameraPermission] = useState<PermissionState | 'unsupported' | 'unknown'>('unknown');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isRefreshingCameras, setIsRefreshingCameras] = useState(false);
-  const [selectedProvider] = useState<RealtimeProvider>(DEFAULT_REALTIME_PROVIDER);
+  const [selectedProvider, setSelectedProvider] = useState<RealtimeProvider>(DEFAULT_REALTIME_PROVIDER);
   const [engineReadiness, setEngineReadiness] = useState<Record<RealtimeProvider, boolean>>({
     decart: true,
     vidu: true,
+    xmax: true,
   });
   const [engineLoadErrors, setEngineLoadErrors] = useState<Record<RealtimeProvider, string | null>>({
     decart: null,
     vidu: null,
+    xmax: null,
   });
   const [isUpdaterBlocking, setIsUpdaterBlocking] = useState(false);
   const [isTourRunning, setIsTourRunning] = useState(false);
@@ -559,7 +567,7 @@ function Dashboard() {
   const isEngineReady = selectedProvider ? engineReadiness[selectedProvider] : false;
   const engineLoadError = selectedProvider ? engineLoadErrors[selectedProvider] : null;
   const activeProviderLabel = selectedProvider ? getRealtimeProviderLabel(selectedProvider) : 'Choose engine';
-  const activeMode = (selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart')
+  const activeMode = (isReferenceImageProvider(selectedProvider) || (selectedProvider as string) === 'decart')
     ? 'hd'
     : clampQualityMode(preferredMode, runtimeModeCap);
   useEffect(() => {
@@ -1913,6 +1921,86 @@ function Dashboard() {
     updateMorphlyCamStatus,
   ]);
 
+  // Plus (Xmax X2.1). apiToken is a short-lived tk- key minted by /api/start-session.
+  const connectToXmax = useCallback(async (
+    apiToken: string,
+    initialTransform: TransformState,
+  ): Promise<RealtimeClient> => {
+    if (!initialTransform.image) throw new Error('Upload a reference image for Plus.');
+    const { encodeViduReference } = await import('@/lib/vidu-realtime');
+    const reference = await encodeViduReference(initialTransform.image);
+    const controller = new AbortController();
+    cancelRemoteFrameMonitor();
+    hasRemoteFrameRef.current = false;
+    setHasRemoteFrame(false);
+    lastRemoteFrameAtRef.current = 0;
+    setUiStatus('Connecting to Plus...');
+    let resolveFirst: (() => void) | null = null;
+    let rejectFirst: ((error: Error) => void) | null = null;
+    const firstFramePromise = new Promise<void>((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject; });
+    void firstFramePromise.catch(() => {});
+    let firstDelivered = false;
+    const { connectXmaxRealtime } = await import('@/lib/xmax-realtime');
+    let session: Awaited<ReturnType<typeof connectXmaxRealtime>> | null = null;
+    try {
+      session = await connectXmaxRealtime({
+        temporaryKey: apiToken,
+        referenceImage: reference,
+        signal: controller.signal,
+        onConnectionChange: (nextState) => {
+          connectionStateRef.current = nextState;
+          setConnectionState(nextState);
+          if (nextState === 'disconnected') {
+            void flushBillableUsage();
+            if (!firstDelivered) rejectFirst?.(new Error('Plus disconnected before delivering video output.'));
+            else if (!restartInFlightRef.current && isStreamingRef.current) void handleStopRef.current?.({ silent: true });
+          }
+        },
+        onRemoteStream: (editedStream) => {
+          const video = outputVideoRef.current;
+          if (video && video.srcObject !== editedStream) {
+            video.srcObject = editedStream;
+            void video.play().catch(() => {});
+          }
+          syncMorphlyCamStream(editedStream, 'Connecting Morphly cam...');
+        },
+        onFirstFrame: () => {
+          firstDelivered = true;
+          markRemoteFrameFresh();
+          startRemoteFrameMonitor();
+          resolveFirst?.();
+        },
+        onError: (error) => {
+          if (!firstDelivered) { rejectFirst?.(error); return; }
+          setDashboardError({ title: 'Plus stream interrupted', message: getViduRealtimeUserMessage(error) });
+        },
+      });
+      const active = session;
+      const realtimeClient: RealtimeClient = {
+        disconnect: () => active.disconnect(),
+        setTransform: async (transform) => { if (transform.image) await active.setReference(await encodeViduReference(transform.image)); },
+        getConnectionState: () => active.getConnectionState(),
+        getSessionUid: () => active.sessionId,
+      };
+      realtimeClientRef.current = realtimeClient;
+      sessionEverConnectedRef.current = true;
+      lastAppliedTransformRef.current = initialTransform;
+      setUiStatus('Preparing Plus output...');
+      await withTimeout(firstFramePromise, AI_FIRST_FRAME_TIMEOUT_MS,
+        `Plus connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`);
+      if (!firstFrameTrackedRef.current) {
+        firstFrameTrackedRef.current = true;
+        trackFirstFrameReceived(sessionIdRef.current || undefined);
+      }
+      return realtimeClient;
+    } catch (error) {
+      controller.abort();
+      await session?.disconnect().catch(() => {});
+      realtimeClientRef.current = null;
+      throw error instanceof Error ? error : new Error('Plus could not start.');
+    }
+  }, [cancelRemoteFrameMonitor, flushBillableUsage, markRemoteFrameFresh, startRemoteFrameMonitor, syncMorphlyCamStream]);
+
   const connectToRealtimeProvider = useCallback(async (
     provider: RealtimeProvider,
     stream: MediaStream,
@@ -1949,14 +2037,18 @@ function Dashboard() {
       });
     }
 
-    throw new Error('Only Plus subject replacement is available.');
-  }, [connectToVidu]);
+    if (provider === XMAX_REALTIME_PROVIDER) {
+      return connectToXmax(apiToken, initialTransform);
+    }
+
+    throw new Error('This engine is not available. Update Morphly and try again.');
+  }, [connectToVidu, connectToXmax]);
 
   const restartRealtimeSession = useCallback(async (
     reason: string,
     options?: { immediate?: boolean },
   ) => {
-    if (sessionProviderRef.current === VIDU_REALTIME_PROVIDER) {
+    if (isReferenceImageProvider(sessionProviderRef.current)) {
       await handleStopRef.current?.({ silent: true });
       setDashboardError({ title: 'Plus session ended', message: 'Start a new Plus session to continue.', canRetry: true });
       return;
@@ -2496,7 +2588,7 @@ function Dashboard() {
     if (cameraPermission === 'denied') {
       return 'Camera permission is required. Allow access, then refresh the camera list.';
     }
-    if (selectedProvider === VIDU_REALTIME_PROVIDER && !referenceImage) return 'Upload a reference image for Plus.';
+    if (isReferenceImageProvider(selectedProvider) && !referenceImage) return `Upload a reference image for ${getRealtimeProviderLabel(selectedProvider)}.`;
     if (!referenceImage && activeBgPreset === 'original' && !customBgPrompt.trim()) {
       return 'Upload a reference image before starting.';
     }
@@ -2636,9 +2728,9 @@ function Dashboard() {
       }
 
       let viduReference: string | undefined;
-      if (requestedProvider === VIDU_REALTIME_PROVIDER) {
+      if (isReferenceImageProvider(requestedProvider)) {
         const reference = getDesiredTransformState().image;
-        if (!reference) throw new Error('Upload a reference image for Plus.');
+        if (!reference) throw new Error(`Upload a reference image for ${requestedProviderLabel}.`);
         const { encodeViduReference } = await import('@/lib/vidu-realtime');
         viduReference = await encodeViduReference(reference);
       }
@@ -2659,7 +2751,7 @@ function Dashboard() {
             provider: requestedProvider,
             ...(getTrustedApiOrigin() ? { signalingTransport: 'morphly-proxy-v1' } : {}),
             billingVersion: 2,
-            ...(viduReference ? { referenceImage: viduReference, editingType: 'subject_replacement' } : {}),
+            ...(viduReference && requestedProvider === VIDU_REALTIME_PROVIDER ? { referenceImage: viduReference, editingType: 'subject_replacement' } : {}),
           }),
         });
 
@@ -3105,13 +3197,27 @@ function Dashboard() {
               JPG/PNG/WEBP · one clear adult face · no celebrities, nudity or minors
             </span>
 
-            <span className="flex min-h-11 items-center rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground" data-testid="realtime-provider-selector">Plus · 2 cr/sec</span>
+            <div className="flex min-h-11 items-center gap-1 rounded-md border border-border bg-background p-1" role="group" aria-label="Realtime engine" data-testid="realtime-provider-selector">
+              {REALTIME_PROVIDER_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={selectedProvider === option.value}
+                  disabled={isStreaming || isLoading}
+                  onClick={() => setSelectedProvider(option.value)}
+                  title={`${option.label}: ${option.detail}`}
+                  className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:opacity-60 ${selectedProvider === option.value ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-muted'}`}
+                >
+                  {option.short}
+                </button>
+              ))}
+            </div>
 
             <select
-              value={(selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart') ? 'hd' : preferredMode}
+              value={(isReferenceImageProvider(selectedProvider) || (selectedProvider as string) === 'decart') ? 'hd' : preferredMode}
               onChange={(event) => handleModeChange(event.target.value)}
-              disabled={selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart'}
-              title={(selectedProvider === VIDU_REALTIME_PROVIDER || (selectedProvider as string) === 'decart')
+              disabled={isReferenceImageProvider(selectedProvider) || (selectedProvider as string) === 'decart'}
+              title={(isReferenceImageProvider(selectedProvider) || (selectedProvider as string) === 'decart')
                 ? 'This engine uses its optimized 720p profile'
                 : 'Select performance mode'}
               aria-label="Select performance mode"

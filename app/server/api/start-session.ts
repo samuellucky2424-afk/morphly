@@ -116,19 +116,72 @@ function getViduRequestErrorCode(error) {
 }
 
 export function normalizeRealtimeProvider(value) {
+  if (value === 'xmax') return 'xmax';
   return value === 'decart' ? 'decart' : DEFAULT_REALTIME_PROVIDER;
 }
 
+// Plus = Xmax (2 cr/s), Pro = Vidu (2.5 cr/s). Rates are stored in half-credits.
+export const REALTIME_ENGINE_RATE_HALF = { xmax: 4, vidu: 5, decart: 5 };
+export function getEngineCreditRate(provider) {
+  return (REALTIME_ENGINE_RATE_HALF[provider] || 4) / 2;
+}
+export function getEngineMinimumCredits(provider) {
+  return getEngineCreditRate(provider) * VIDU_MIN_START_SECONDS;
+}
+
+const XMAX_API_BASE_URL = 'https://api.xmax.ai/open/api/v1';
+const XMAX_REALTIME_MODEL = 'x2.1';
+
+function getXmaxApiKey() {
+  const key = String(process.env.XMAX_API_KEY || '').trim();
+  return key || null;
+}
+
+/**
+ * Mint a short-lived Xmax temporary key (tk-...) for one browser session.
+ * The permanent key never leaves the server.
+ */
+export async function createXmaxTemporaryKey({ apiKey, maxSeconds, fetchImpl = fetch }) {
+  const expireSeconds = Math.max(60, Math.min(Math.ceil(Number(maxSeconds) || 0) + 120, 4 * 3600));
+  const pointsLimit = Math.max(1, Number(process.env.XMAX_TEMP_KEY_POINTS_LIMIT) || 100000);
+  let response;
+  try {
+    response = await fetchImpl(`${XMAX_API_BASE_URL}/temporary-api-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
+      body: JSON.stringify({ expireSeconds, pointsLimit, temporaryApiKeySessionLimit: 1 }),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    return { error: { error: 'Plus could not reach its video service. Please try again.', providerStatus: 0 } };
+  }
+  const payload = await response.json().catch(() => null);
+  const token = payload?.data?.temporaryApiKey;
+  if (!response.ok || !payload?.success || typeof token !== 'string' || !token.startsWith('tk-')) {
+    return { error: { error: 'Plus could not start a session right now. Please try again.', providerStatus: response.status, providerCode: payload?.code ?? null } };
+  }
+  const expireTimestamp = Number(payload.data.expireTimestamp);
+  return {
+    token,
+    expiresAt: new Date(Number.isFinite(expireTimestamp) && expireTimestamp > 0
+      ? (expireTimestamp < 1e12 ? expireTimestamp * 1000 : expireTimestamp)
+      : Date.now() + expireSeconds * 1000).toISOString(),
+    sessionLimit: maxSeconds,
+  };
+}
+
 function getProviderModel(provider) {
+  if (provider === 'xmax') return XMAX_REALTIME_MODEL;
   return provider === 'decart' ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
 }
 
 function getProviderApiKey(provider) {
+  if (provider === 'xmax') return getXmaxApiKey();
   return provider === 'decart' ? getDecartApiKey() : getViduApiKey();
 }
 
 function getProviderPublicLabel(provider) {
-  return provider === 'decart' ? 'Pro' : 'Plus';
+  return provider === 'xmax' ? 'Plus' : 'Pro';
 }
 
 function getProviderSessionLimitSeconds(provider) {
@@ -381,6 +434,7 @@ async function createProviderTemporaryCredential({
   imageUrl,
   proxyContext,
 }) {
+  if (provider === 'xmax') return createXmaxTemporaryKey({ apiKey, maxSeconds });
   if (provider === 'decart') return createScopedDecartKey({apiKey,maxSeconds,allowedOrigins,userId,sessionId});
   if (provider === 'vidu' || provider === 'decart') {
     return createViduTemporaryKey({
@@ -595,12 +649,13 @@ export default async function handler(req, res) {
   try {
     const isLocalPreview = isLocalPreviewRequest(req);
 
-    if (req.body?.provider !== 'vidu') {
-      return res.status(400).json({ allowed: false, error: 'Only Plus subject replacement is available. Update Morphly and try again.' });
+    if (req.body?.provider !== 'vidu' && req.body?.provider !== 'xmax') {
+      return res.status(400).json({ allowed: false, error: 'Choose Plus or Pro. Update Morphly and try again.' });
     }
 
     const provider = normalizeRealtimeProvider(req.body?.provider);
-    const minimumCreditRate = provider === 'decart' ? 2.5 : CREDITS_PER_SECOND;
+    const isXmax = provider === 'xmax';
+    const minimumCreditRate = getEngineCreditRate(provider);
     const providerModel = getProviderModel(provider);
     const providerApiKey = getProviderApiKey(provider);
 
@@ -643,11 +698,11 @@ export default async function handler(req, res) {
     }
 
     if (!providerApiKey) {
-      const environmentName = provider === 'decart' ? 'DECART_API_KEY' : 'VIDU_API_KEY';
+      const environmentName = isXmax ? 'XMAX_API_KEY' : provider === 'decart' ? 'DECART_API_KEY' : 'VIDU_API_KEY';
       return res.status(503).json({
         allowed: false,
         error: `${getProviderPublicLabel(provider)} is not configured on this server.`,
-        details: 'Plus is unavailable. Please contact Morphly support.',
+        details: `${getProviderPublicLabel(provider)} is unavailable (${environmentName} missing). Please contact Morphly support.`,
       });
     }
 
@@ -665,9 +720,9 @@ export default async function handler(req, res) {
         error: 'Open Morphly from the app or a secure web address, then try again.',
       });
     }
-    const proxyContext = getViduDemoSessionContext(req);
+    const proxyContext = isXmax ? null : getViduDemoSessionContext(req);
     if (proxyContext?.error) return res.status(503).json({ allowed: false, ...proxyContext.error });
-    if (!getViduApiBaseUrl()) return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
+    if (!isXmax && !getViduApiBaseUrl()) return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
 
     // Fire-and-forget: request logging must not delay session startup.
     void logRequestEvent('start-session.request', {
@@ -734,12 +789,12 @@ export default async function handler(req, res) {
     }
 
     userCredits = await realtimeWalletBalance(supabaseAdmin, userId, userCredits);
-    if (userCredits < (provider === 'decart' ? 25 : minimumCreditRate * VIDU_MIN_START_SECONDS)) {
+    if (userCredits < getEngineMinimumCredits(provider)) {
       await logRequestEvent('start-session.insufficient_credits', {
         userId,
         credits: userCredits,
       });
-      return res.json({ allowed: false, error: provider === 'decart' ? 'Pro requires at least 25 credits to start (2.5 cr/sec).' : `Plus needs at least ${minimumCreditRate * VIDU_MIN_START_SECONDS} credits to start (${minimumCreditRate} cr/sec). Top up and try again.` });
+      return res.json({ allowed: false, error: `${getProviderPublicLabel(provider)} needs at least ${getEngineMinimumCredits(provider)} credits to start (${minimumCreditRate} cr/sec). Top up and try again.` });
     }
 
     const unverifiedWalletLimit = getUnverifiedWalletLimit();
@@ -778,7 +833,7 @@ export default async function handler(req, res) {
 
     // New clients require timestamp billing; never silently use a legacy rate.
     const billingSetup = await supabaseAdmin.rpc('configure_realtime_video', {
-      p_user: userId, p_session: newSession.id, p_rate_half: provider === 'decart' ? 5 : 4,
+      p_user: userId, p_session: newSession.id, p_rate_half: REALTIME_ENGINE_RATE_HALF[provider] || 4,
     });
     if (billingSetup.error) {
       await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
@@ -824,7 +879,7 @@ export default async function handler(req, res) {
       return res.status(502).json({ allowed: false, ...providerSession.error });
     }
 
-    try {
+    if (!isXmax) try {
       providerSession = createViduDemoSignalingSession(providerSession, proxyContext, { userId, sessionId: newSession.id });
     } catch {
       await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });

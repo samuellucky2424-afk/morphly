@@ -95,7 +95,7 @@ export function buildDecartTransformPrompt(hasReferenceImage: boolean, presetId:
   return background || 'Preserve the original camera appearance.';
 }
 export function buildRealtimeTransformPrompt(provider: RealtimeProvider, hasReferenceImage: boolean, presetId: string, customText = ''): string {
-  return provider === VIDU_REALTIME_PROVIDER
+  return provider === VIDU_REALTIME_PROVIDER || provider === 'xmax'
     ? buildViduTransformPrompt(hasReferenceImage, presetId, customText)
     : buildDecartTransformPrompt(hasReferenceImage, presetId, customText);
 }
