@@ -1944,6 +1944,10 @@ function Dashboard() {
     const deliverFirstFrame = () => {
       if (firstDelivered) return;
       firstDelivered = true;
+      // Billing meters only while 'generating'. Xmax may never report Generating,
+      // so visible output is the authoritative start of generation (and billing).
+      connectionStateRef.current = 'generating';
+      setConnectionState('generating');
       markRemoteFrameFresh();
       startRemoteFrameMonitor();
       resolveFirst?.();
@@ -1955,7 +1959,8 @@ function Dashboard() {
         temporaryKey: apiToken,
         referenceImage: reference,
         signal: controller.signal,
-        onConnectionChange: (nextState) => {
+        onConnectionChange: (reportedState) => {
+          const nextState = firstDelivered && reportedState !== 'disconnected' ? 'generating' : reportedState;
           connectionStateRef.current = nextState;
           setConnectionState(nextState);
           if (nextState === 'disconnected') {
