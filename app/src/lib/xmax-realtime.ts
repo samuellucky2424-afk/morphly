@@ -38,6 +38,13 @@ const mapState = (value: string): XmaxConnectionState => {
   }
 };
 
+function describeReason(reason: unknown): string {
+  if (!reason) return '';
+  if (typeof reason === 'string') return reason.slice(0, 120);
+  const r = reason as { kind?: unknown; message?: unknown; code?: unknown };
+  return [r.kind, r.code, r.message].filter(v => v !== undefined && v !== null && v !== '').map(String).join(': ').slice(0, 160);
+}
+
 async function dataUrlToBlob(value: string): Promise<Blob> {
   const response = await fetch(value);
   return response.blob();
@@ -59,6 +66,8 @@ export async function connectXmaxRealtime(options: XmaxConnectOptions): Promise<
   let sessionId: string | null = null;
   let closed = false;
   let firstFrame = false;
+  let hasProgressed = false;
+  let lastReason = '';
   let localStream: RealtimeMediaStream | null = null;
   let view: InstanceType<typeof sdk.XmaxRealtimeDualVideoView> | null = null;
   const setState = (next: XmaxConnectionState) => {
@@ -90,10 +99,15 @@ export async function connectXmaxRealtime(options: XmaxConnectOptions): Promise<
   try {
     await realtime.setStateListener((snapshot) => {
       if (snapshot.sessionID) sessionId = snapshot.sessionID;
-      const next = mapState(String(snapshot.connectionState));
+      let next = mapState(String(snapshot.connectionState));
+      // The SDK reports Idle before connecting; only treat Idle/Disconnecting as an
+      // end once the session has actually progressed past connecting.
+      if (next === 'disconnected' && !hasProgressed && !closed) next = 'connecting';
+      if (next === 'connected' || next === 'generating') hasProgressed = true;
+      if (next === 'disconnected' && snapshot.reason) lastReason = describeReason(snapshot.reason);
       if (next === 'generating' && !firstFrame) { firstFrame = true; options.onFirstFrame?.(); }
-      if (next === 'disconnected' && state !== 'connecting' && !closed) {
-        options.onError?.(new Error(`Plus ended this session${snapshot.reason ? ` (${String((snapshot.reason as { kind?: string }).kind ?? 'unknown')})` : ''}. Please try again.`));
+      if (next === 'disconnected' && !closed) {
+        options.onError?.(new Error(`Plus video service ended the session${lastReason ? ` (${lastReason})` : ''}. You were not charged; please try again.`));
       }
       setState(next);
     });

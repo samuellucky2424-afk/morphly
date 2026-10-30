@@ -1952,7 +1952,7 @@ function Dashboard() {
           setConnectionState(nextState);
           if (nextState === 'disconnected') {
             void flushBillableUsage();
-            if (!firstDelivered) rejectFirst?.(new Error('Plus disconnected before delivering video output.'));
+            if (!firstDelivered) rejectFirst?.(new Error('Plus video service ended the session before video started. You were not charged; please try again.'));
             else if (!restartInFlightRef.current && isStreamingRef.current) void handleStopRef.current?.({ silent: true });
           }
         },

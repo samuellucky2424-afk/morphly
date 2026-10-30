@@ -99,7 +99,7 @@ export function getViduStartErrorMessage(error: unknown, fallback: string): stri
   }
   // The provider ended the session (hangup, renderer left, sip_close). This is not the
   // user's internet, so never tell them to check their connection for it.
-  if (/sip_close|ended this session|rendering ended|rendering connection closed|rtc session ended|renderer but received no usable|could not receive its generated video|could not initialize this session/.test(diagnostic)) {
+  if (/sip_close|ended this session|video service ended|rendering ended|rendering connection closed|rtc session ended|renderer but received no usable|could not receive its generated video|could not initialize this session/.test(diagnostic)) {
     return `Plus's video server ended the session before it finished starting. You were not charged for this attempt. Please try again. (${detail})`;
   }
   if (code === 'VIDU_SIGNALING_UNREACHABLE') {
