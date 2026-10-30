@@ -172,3 +172,10 @@ test('Xmax adapter does not treat the initial Idle state as a disconnect', () =>
   const src = fs.readFileSync(path.join(appDirectory, 'src/lib/xmax-realtime.ts'), 'utf8');
   assert.match(src, /!hasProgressed && !closed\) next = 'connecting'/);
 });
+
+test('Plus first frame is detected from the rendered remote video, not only SDK state', () => {
+  const xmaxBlock = dashboard.slice(dashboard.indexOf('const connectToXmax'), dashboard.indexOf('const connectToRealtimeProvider'));
+  assert.match(xmaxBlock, /requestVideoFrameCallback/);
+  assert.match(xmaxBlock, /'loadeddata'/);
+  assert.match(xmaxBlock, /deliverFirstFrame/);
+});

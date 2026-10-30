@@ -1940,6 +1940,13 @@ function Dashboard() {
     const firstFramePromise = new Promise<void>((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject; });
     void firstFramePromise.catch(() => {});
     let firstDelivered = false;
+    const deliverFirstFrame = () => {
+      if (firstDelivered) return;
+      firstDelivered = true;
+      markRemoteFrameFresh();
+      startRemoteFrameMonitor();
+      resolveFirst?.();
+    };
     const { connectXmaxRealtime } = await import('@/lib/xmax-realtime');
     let session: Awaited<ReturnType<typeof connectXmaxRealtime>> | null = null;
     try {
@@ -1963,13 +1970,23 @@ function Dashboard() {
             void video.play().catch(() => {});
           }
           syncMorphlyCamStream(editedStream, 'Connecting Morphly cam...');
+          // The SDK state listener may never report Generating; treat the first
+          // decoded remote frame on the output element as video received.
+          if (video) {
+            const onFrame = () => deliverFirstFrame();
+            const withFrameCallback = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+            if (typeof withFrameCallback.requestVideoFrameCallback === 'function') withFrameCallback.requestVideoFrameCallback(onFrame);
+            video.addEventListener('loadeddata', onFrame, { once: true });
+            video.addEventListener('playing', onFrame, { once: true });
+            if (video.readyState >= 2) onFrame();
+          }
+          const track = editedStream.getVideoTracks()[0];
+          if (track) {
+            if (!track.muted && track.readyState === 'live') window.setTimeout(() => { if (outputVideoRef.current?.videoWidth) deliverFirstFrame(); }, 500);
+            track.addEventListener('unmute', () => window.setTimeout(() => { if (outputVideoRef.current?.videoWidth) deliverFirstFrame(); }, 200), { once: true });
+          }
         },
-        onFirstFrame: () => {
-          firstDelivered = true;
-          markRemoteFrameFresh();
-          startRemoteFrameMonitor();
-          resolveFirst?.();
-        },
+        onFirstFrame: () => deliverFirstFrame(),
         onError: (error) => {
           if (!firstDelivered) { rejectFirst?.(error); return; }
           setDashboardError({ title: 'Plus stream interrupted', message: getViduRealtimeUserMessage(error) });
