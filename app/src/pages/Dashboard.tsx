@@ -1928,6 +1928,7 @@ function Dashboard() {
   const connectToXmax = useCallback(async (
     apiToken: string,
     initialTransform: TransformState,
+    inputStream?: MediaStream | null,
   ): Promise<RealtimeClient> => {
     if (!initialTransform.image) throw new Error('Upload a reference image for Plus.');
     const { encodeViduReference } = await import('@/lib/vidu-realtime');
@@ -1968,6 +1969,7 @@ function Dashboard() {
       session = await connectXmaxRealtime({
         temporaryKey: apiToken,
         referenceImage: reference,
+        inputStream,
         signal: controller.signal,
         onConnectionChange: (reportedState) => {
           const nextState = firstDelivered && reportedState !== 'disconnected' ? 'generating' : reportedState;
@@ -2085,7 +2087,7 @@ function Dashboard() {
     }
 
     if (provider === XMAX_REALTIME_PROVIDER) {
-      return connectToXmax(apiToken, initialTransform);
+      return connectToXmax(apiToken, initialTransform, stream);
     }
 
     throw new Error('This engine is not available. Update Morphly and try again.');

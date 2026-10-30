@@ -15,6 +15,9 @@ export interface XmaxConnectOptions {
   referenceImage: string;
   prompt?: string;
   container?: HTMLElement | null;
+  /** The app's already-open camera stream (the user's selected device). Required on desktop:
+   * letting the SDK open the default camera can pick the Morphly virtual cam (black/feedback). */
+  inputStream?: MediaStream | null;
   onConnectionChange?: (state: XmaxConnectionState) => void;
   onRemoteStream?: (stream: MediaStream) => void;
   onFirstFrame?: () => void;
@@ -113,11 +116,27 @@ export async function connectXmaxRealtime(options: XmaxConnectOptions): Promise<
     });
 
     const referencePath = await resolveReference(options.referenceImage);
-    localStream = await realtime.createLocalCameraStream({
-      preset: sdk.RealtimeCameraPreset.resolution1920x1080,
-      position: sdk.CameraPosition.front,
-      useMicrophone: false,
-    });
+    const inputTrack = options.inputStream?.getVideoTracks().find((t) => t.readyState === 'live') ?? null;
+    if (inputTrack) {
+      const settings = inputTrack.getSettings();
+      const width = settings.width || 1280;
+      const height = settings.height || 720;
+      console.info('[AI_INPUT]', { engine: 'xmax', source: 'app-camera', label: inputTrack.label, width, height, fps: settings.frameRate });
+      if (await isTrackBlack(inputTrack)) {
+        throw new Error('Your camera is sending a black picture. Check the selected camera, close other apps using it, and try again. You were not charged.');
+      }
+      localStream = await realtime.createExternalVideoStream({
+        videoTrack: inputTrack,
+        videoFormat: new sdk.RealtimeVideoFormat({ width, height, fps: Math.min(30, Math.round(settings.frameRate || 30)) }),
+      });
+    } else {
+      console.info('[AI_INPUT]', { engine: 'xmax', source: 'sdk-camera' });
+      localStream = await realtime.createLocalCameraStream({
+        preset: sdk.RealtimeCameraPreset.resolution1920x1080,
+        position: sdk.CameraPosition.front,
+        useMicrophone: false,
+      });
+    }
     if (options.container) {
       view = new sdk.XmaxRealtimeDualVideoView();
       view.attach(options.container);
@@ -163,4 +182,37 @@ export async function connectXmaxRealtime(options: XmaxConnectOptions): Promise<
     },
     disconnect: close,
   };
+}
+
+/** Samples the camera for ~1.5s; true when every sample is (near) black. */
+export async function isTrackBlack(track: MediaStreamTrack, samples = 5, intervalMs = 300): Promise<boolean> {
+  if (typeof document === 'undefined') return false;
+  const video = document.createElement('video');
+  video.muted = true; video.playsInline = true;
+  video.srcObject = new MediaStream([track]);
+  try {
+    await video.play().catch(() => {});
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 18;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    let maxLuma = 0;
+    for (let i = 0; i < samples; i += 1) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+      if (video.readyState < 2) continue;
+      ctx.drawImage(video, 0, 0, 32, 18);
+      maxLuma = Math.max(maxLuma, meanLuma(ctx.getImageData(0, 0, 32, 18).data));
+      if (maxLuma > 12) return false;
+    }
+    console.warn('[AI_INPUT] camera frames look black', { maxLuma, label: track.label });
+    return video.readyState >= 2;
+  } finally {
+    video.pause(); video.srcObject = null;
+  }
+}
+
+export function meanLuma(data: ArrayLike<number>): number {
+  let sum = 0; const n = data.length / 4;
+  for (let i = 0; i < data.length; i += 4) sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+  return n ? sum / n : 0;
 }
