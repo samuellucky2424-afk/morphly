@@ -179,3 +179,11 @@ test('Plus first frame is detected from the rendered remote video, not only SDK 
   assert.match(xmaxBlock, /'loadeddata'/);
   assert.match(xmaxBlock, /deliverFirstFrame/);
 });
+
+test('Plus enters the billable generating state when its first frame is visible', () => {
+  const xmaxBlock = dashboard.slice(dashboard.indexOf('const connectToXmax'), dashboard.indexOf('const connectToRealtimeProvider'));
+  const deliver = xmaxBlock.slice(xmaxBlock.indexOf('const deliverFirstFrame'));
+  assert.match(deliver.slice(0, 600), /setConnectionState\('generating'\)/);
+  assert.match(xmaxBlock, /firstDelivered && reportedState !== 'disconnected' \? 'generating'/);
+  assert.match(dashboard, /connectionState !== 'generating'\) \{\s*clearGenerationMeterInterval/);
+});
