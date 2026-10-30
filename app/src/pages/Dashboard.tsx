@@ -1955,6 +1955,9 @@ function Dashboard() {
     const { connectXmaxRealtime } = await import('@/lib/xmax-realtime');
     let session: Awaited<ReturnType<typeof connectXmaxRealtime>> | null = null;
     try {
+      const XMAX_CONNECT_ATTEMPTS = 3;
+      for (let attempt = 1; ; attempt++) {
+      try {
       session = await connectXmaxRealtime({
         temporaryKey: apiToken,
         referenceImage: reference,
@@ -1964,6 +1967,8 @@ function Dashboard() {
           connectionStateRef.current = nextState;
           setConnectionState(nextState);
           if (nextState === 'disconnected') {
+            // A failed attempt closing during the retry loop is not the session ending.
+            if (!session && !firstDelivered) return;
             void flushBillableUsage();
             if (!firstDelivered) rejectFirst?.(new Error('Plus video service ended the session before video started. You were not charged; please try again.'));
             else if (!restartInFlightRef.current && isStreamingRef.current) void handleStopRef.current?.({ silent: true });
@@ -1994,10 +1999,22 @@ function Dashboard() {
         },
         onFirstFrame: () => deliverFirstFrame(),
         onError: (error) => {
-          if (!firstDelivered) { rejectFirst?.(error); return; }
+          if (!firstDelivered) { if (session) rejectFirst?.(error); return; }
           setDashboardError({ title: 'Plus stream interrupted', message: getViduRealtimeUserMessage(error) });
         },
       });
+      break;
+      } catch (attemptError) {
+        // Agora gateway/publish hiccups (WS_ABORT, "Agora operation failed (11)") are
+        // transient. Nothing is billed before the first visible frame, so retry.
+        const text = attemptError instanceof Error ? `${attemptError.name} ${attemptError.message}` : String(attemptError);
+        const transient = /agora operation failed|ws_abort|rtc_error|network|timeout|websocket/i.test(text);
+        if (!transient || attempt >= XMAX_CONNECT_ATTEMPTS || controller.signal.aborted) throw attemptError;
+        console.warn(`[AI_WS] Plus attempt ${attempt}/${XMAX_CONNECT_ATTEMPTS} failed (${text}); retrying`);
+        setUiStatus(`Reconnecting to Plus (attempt ${attempt + 1}/${XMAX_CONNECT_ATTEMPTS})...`);
+        await new Promise(resolve => window.setTimeout(resolve, 1000 * 2 ** (attempt - 1)));
+      }
+      }
       const active = session;
       const realtimeClient: RealtimeClient = {
         disconnect: () => active.disconnect(),

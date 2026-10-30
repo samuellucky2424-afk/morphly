@@ -50,7 +50,7 @@ test('Xmax temporary key is minted server-side with the permanent key only in th
   assert.equal(seen.url, 'https://api.xmax.ai/open/api/v1/temporary-api-key');
   assert.equal(seen.init.headers['X-Api-Key'], 'uk-secret');
   const body = JSON.parse(seen.init.body);
-  assert.equal(body.temporaryApiKeySessionLimit, 1);
+  assert.equal(body.temporaryApiKeySessionLimit, 3);
   assert.equal(body.expireSeconds, 220);
   assert.ok(!JSON.stringify(result).includes('uk-secret'));
   const failed = await mod.createXmaxTemporaryKey({ apiKey: 'uk-secret', maxSeconds: 100, fetchImpl: async () => Response.json({ success: false, code: 46019 }, { status: 200 }) });

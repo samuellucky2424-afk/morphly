@@ -187,3 +187,10 @@ test('Plus enters the billable generating state when its first frame is visible'
   assert.match(xmaxBlock, /firstDelivered && reportedState !== 'disconnected' \? 'generating'/);
   assert.match(dashboard, /connectionState !== 'generating'\) \{\s*clearGenerationMeterInterval/);
 });
+
+test('Plus retries transient Agora publish failures up to 3 times before any billing', () => {
+  const xmaxBlock = dashboard.slice(dashboard.indexOf('const connectToXmax'), dashboard.indexOf('const connectToRealtimeProvider'));
+  assert.match(xmaxBlock, /XMAX_CONNECT_ATTEMPTS = 3/);
+  assert.match(xmaxBlock, /agora operation failed\|ws_abort/);
+  assert.match(xmaxBlock, /if \(!session && !firstDelivered\) return;/);
+});
