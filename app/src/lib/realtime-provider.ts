@@ -20,6 +20,16 @@ export function resolveRealtimeModel(provider: RealtimeProvider, _value: unknown
   return provider === DECART_REALTIME_PROVIDER ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
 }
 
+/** Seconds of Plus credit required before a start is allowed (mirrors app/server/api/start-session.ts). */
+export const VIDU_MIN_START_SECONDS = 15;
+export function getMinimumCreditsToStart(provider: RealtimeProvider, ratePerSecond: number): number {
+  if (provider === DECART_REALTIME_PROVIDER) return 25;
+  return ratePerSecond * VIDU_MIN_START_SECONDS;
+}
+export function getNotEnoughCreditsMessage(provider: RealtimeProvider, minimum: number): string {
+  return `Not enough credits. ${getRealtimeProviderLabel(provider)} needs at least ${Math.ceil(minimum)} credits to start. Buy credits to continue.`;
+}
+
 function getProviderRealtimeUserMessage(error: unknown, label: string, _alternative: string, fallback: string): string {
   const candidate = error as { code?: unknown; message?: unknown } | null;
   const code = typeof candidate?.code === 'string' ? candidate.code : '';
@@ -65,6 +75,20 @@ export function getViduStartErrorMessage(error: unknown, fallback: string): stri
       return 'Plus timed out while creating its video session. Try again shortly.';
     }
     return detail;
+  }
+  // Our own wallet check (server: "Plus needs at least 30 credits" / legacy "Insufficient credits").
+  if (/needs at least \d+ credits|insufficient credits|not enough credits/.test(diagnostic) && !/provider/.test(diagnostic)) {
+    return /needs at least|not enough credits/.test(diagnostic)
+      ? sanitizeProviderNames(message)
+      : 'Not enough credits. Plus needs at least 30 credits to start. Buy credits to continue.';
+  }
+  if (code === 'credits_exhausted' || /credit balance ran out/.test(diagnostic)) {
+    return 'Plus stopped because your credit balance ran out. Buy credits to continue.';
+  }
+  // The provider ended the session (hangup, renderer left, sip_close). This is not the
+  // user's internet, so never tell them to check their connection for it.
+  if (/sip_close|ended this session|rendering ended|rendering connection closed|rtc session ended|renderer but received no usable|could not receive its generated video|could not initialize this session/.test(diagnostic)) {
+    return `Plus's video server ended the session before it finished starting. You were not charged for this attempt. Please try again. (${detail})`;
   }
   if (code === 'VIDU_SIGNALING_UNREACHABLE') {
     return 'Plus could not connect to its video server. Start a new session and try again.';

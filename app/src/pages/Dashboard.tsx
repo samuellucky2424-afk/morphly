@@ -69,6 +69,8 @@ import {
   DEFAULT_REALTIME_PROVIDER,
   getViduRealtimeUserMessage,
   getViduStartErrorMessage,
+  getMinimumCreditsToStart,
+  getNotEnoughCreditsMessage,
   getRealtimeProviderLabel,
   resolveRealtimeModel,
   resolveRealtimeProvider,
@@ -469,7 +471,8 @@ function Dashboard() {
     activeBgPreset !== 'original' || Boolean(customBgPrompt.trim()),
     selectedProvider,
   );
-  const minCreditsToStart = getCreditRatePerSecond(false, false, selectedProvider);
+  // Must match the server's minimum (start-session.ts): Plus needs 15 seconds of credit to start.
+  const minCreditsToStart = getMinimumCreditsToStart(selectedProvider, getCreditRatePerSecond(false, false, selectedProvider));
 
   const activePrompt = '';
   const [preferredMode, setPreferredMode] = useState<QualityMode>('hd');
@@ -2499,7 +2502,7 @@ function Dashboard() {
     }
     if (isValidatingImage) return 'Morphly is checking the reference image.';
     if (!isDevOrPreview && credits < minCreditsToStart) {
-      return 'You do not have enough credits. Buy credits to continue.';
+      return getNotEnoughCreditsMessage(selectedProvider, minCreditsToStart);
     }
     if (!isEngineReady) return engineLoadError || 'The Morphly engine is not ready yet.';
     if (!isDevOrPreview && isUpdaterBlocking) return 'Wait for the application update process to finish.';
@@ -2524,7 +2527,7 @@ function Dashboard() {
       throw new Error(engineLoadError || 'The Morphly engine is not ready yet.');
     }
     if (!isDevOrPreview && credits < minCreditsToStart) {
-      throw new Error('You do not have enough credits. Buy credits to continue.');
+      throw new Error(getNotEnoughCreditsMessage(selectedProvider, minCreditsToStart));
     }
     if (!isDevOrPreview && isUpdaterBlocking) {
       throw new Error('Wait for the application update process to finish.');
@@ -2774,7 +2777,7 @@ function Dashboard() {
         : getStartSessionErrorMessage(error, requestedProvider);
       setDashboardError({
         title: `${requestedProviderLabel} could not start`,
-        message: errorMessage || `${requestedProviderLabel} could not establish the realtime connection. Check your connection, then try again.`,
+        message: errorMessage || `${requestedProviderLabel} could not start its realtime session. You were not charged for this attempt. Please try again.`,
         canRetry: !sessionExpired,
       });
 
