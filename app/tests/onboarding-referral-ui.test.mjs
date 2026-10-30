@@ -107,7 +107,7 @@ test('tour skip and finish states are persisted explicitly', () => {
 test('start helper text covers missing image, credits, engine and updater state', () => {
   const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
   assert.match(dashboard, /Upload a reference image before starting\./);
-  assert.match(dashboard, /You do not have enough credits\. Buy credits to continue\./);
+  assert.match(dashboard, /getNotEnoughCreditsMessage\(selectedProvider, minCreditsToStart\)/);
   assert.match(dashboard, /The Morphly engine is not ready yet\./);
   assert.match(dashboard, /Wait for the application update process to finish\./);
 });

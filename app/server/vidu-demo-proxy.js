@@ -270,12 +270,17 @@ export function createViduDemoProxyServer({
             ready = true; clearTimeout(startupTimer);
             diagnostic('initialized');
             // Allow the RTC/renderer startup window on top of the paid seconds; billing itself is enforced by /api/heartbeat.
-            activeTimer = setTimeout(() => finish('SESSION_LIMIT'), lease.maxSeconds * 1000 + startupMs);
+            // 4002 tells the client this was the paid-time budget, not a network failure.
+            activeTimer = setTimeout(() => finish('SESSION_LIMIT', 4002), lease.maxSeconds * 1000 + startupMs);
           }
           if (client.readyState !== WebSocket.OPEN) { finish('CLIENT_CLOSED'); return; }
           if (client.bufferedAmount > MAX_BUFFER) { finish('BUFFER_LIMIT', 1009); return; }
           client.send(data, { binary: Boolean(isBinary) }, error => { if (error) finish('CLIENT_SEND', 1011); });
-          if (message?.type === 6) { hangupSent = true; finish('PROVIDER_HANGUP'); }
+          if (message?.type === 6) {
+            const rawReason = message.payload?.hangup?.hangup_reason;
+            diagnostic('provider_hangup', { hangupReason: typeof rawReason === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(rawReason) ? rawReason : 'unknown' });
+            hangupSent = true; finish('PROVIDER_HANGUP');
+          }
         }).catch(() => finish('SESSION_UNAVAILABLE', 1008)).finally(() => { incomingBytes -= data.length; });
       });
       const watch = (ref, check) => {

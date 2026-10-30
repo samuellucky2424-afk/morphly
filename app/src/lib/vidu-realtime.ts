@@ -414,7 +414,10 @@ export class ViduRealtimeClient {
         clearTimeout(initRetry);
         // Retry only before initialization: reuse the live ID and connection ID,
         // never create another paid stream or replay initialization after success.
-        if (ready) { fail('Vidu signaling disconnected. Start a new session.', 'ws_disconnected'); return; }
+        if (ready) {
+          if (closeCode === 4002) { fail('Plus stopped because your credit balance ran out. Buy credits to continue.', 'credits_exhausted'); return; }
+          fail('Vidu signaling disconnected. Start a new session.', 'ws_disconnected'); return;
+        }
         retryScheduled = true;
         currentSocket.onopen = null; currentSocket.onmessage = null;
         currentSocket.onerror = null; currentSocket.onclose = null;

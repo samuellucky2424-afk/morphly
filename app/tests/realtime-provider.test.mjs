@@ -60,7 +60,9 @@ test('start failures keep the real reason and never claim auto-recovery', () => 
   assert.match(timeout, /timed out after 45s/);
 
   const rtc = getViduStartErrorMessage(new Error('Vidu RTC session ended. Start a new session.'), 'x');
-  assert.match(rtc, /Plus could not connect/);
+  // The provider ending the RTC session is not the user's internet connection.
+  assert.match(rtc, /video server ended the session/);
+  assert.doesNotMatch(rtc, /internet connection/);
   assert.match(rtc, /Plus RTC session ended/);
 
   for (const message of [signaling, timeout, rtc]) {
@@ -128,4 +130,34 @@ test('dashboard feedback uses a persistent accessible error panel without corner
   assert.match(appShell, /function RouteAwareToaster/);
   assert.match(appShell, /pathname === ROUTES\.PROTECTED\.DASHBOARD/);
   assert.match(appShell, /<RouteAwareToaster \/>/);
+});
+
+test('provider-side hangups and credit limits are not reported as connection problems', () => {
+  for (const raw of [
+    'Plus’s rendering connection closed before the session finished (sip_close). Please try again. Stage: renderer_online.',
+    'Vidu ended this session (renderer_timeout). Please try again. Stage: published.',
+    'Plus rendering ended. Start a new session. Stage: renderer_subscribed.',
+  ]) {
+    const message = getViduStartErrorMessage(new Error(raw), 'x');
+    assert.match(message, /video server ended the session/);
+    assert.doesNotMatch(message, /internet connection/i);
+  }
+  assert.match(
+    getViduStartErrorMessage(new Error('Plus needs at least 30 credits to start (2 cr/sec). Top up and try again.'), 'x'),
+    /needs at least 30 credits/,
+  );
+  assert.match(getViduStartErrorMessage(new Error('Insufficient credits'), 'x'), /Not enough credits.*30 credits/);
+  assert.match(
+    getViduStartErrorMessage(new Error('Plus stopped because your credit balance ran out. Buy credits to continue. Stage: video_received.'), 'x'),
+    /credit balance ran out/,
+  );
+  assert.match(getViduStartErrorMessage(new Error('Plus could not connect to its video room. Stage: rtc_joining.'), 'x'), /internet connection/);
+});
+
+test('client minimum-credit check matches the server (30 credits for Plus)', async () => {
+  const { getMinimumCreditsToStart, getNotEnoughCreditsMessage } = await import('../src/lib/realtime-provider.ts');
+  assert.equal(getMinimumCreditsToStart('vidu', 2), 30);
+  assert.match(getNotEnoughCreditsMessage('vidu', 30), /needs at least 30 credits/);
+  const server = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../server/api/start-session.ts'), 'utf8');
+  assert.match(server, /VIDU_MIN_START_SECONDS = 15/);
 });
