@@ -101,7 +101,7 @@ test('removed Pro engine is rejected before creating or billing a provider sessi
   await startSession({method:'POST',headers:{},body:{provider:'decart'}},res);
   assert.equal(res.code,400);
   assert.equal(res.body.allowed,false);
-  assert.match(res.body.error,/Only Plus subject replacement/);
+  assert.match(res.body.error,/Choose Plus or Pro/);
 });
 
 test('Vidu does not create sessions without an image or retry ambiguous provider failures', async (t) => {

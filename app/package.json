@@ -126,6 +126,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@supabase/supabase-js": "^2.100.1",
     "@vercel/functions": "^3.9.9",
+    "@xmaxai/web-sdk": "^1.1.1",
     "aliyun-rtc-sdk": "7.1.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

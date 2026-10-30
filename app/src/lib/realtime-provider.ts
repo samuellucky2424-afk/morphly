@@ -1,29 +1,41 @@
-export const DEFAULT_REALTIME_PROVIDER = 'vidu' as const;
+// Plus = Xmax X2.1 (2 cr/s). Pro = Vidu S2-Editing (2.5 cr/s).
+export const XMAX_REALTIME_PROVIDER = 'xmax' as const;
+export const DEFAULT_REALTIME_PROVIDER = XMAX_REALTIME_PROVIDER;
 export const VIDU_REALTIME_PROVIDER = 'vidu' as const;
 export const VIDU_REALTIME_MODEL = 's2-editing' as const;
 export const DECART_REALTIME_PROVIDER = 'decart' as const;
 export const DECART_REALTIME_MODEL = 'lucy-2.5' as const;
-export type RealtimeProvider = typeof VIDU_REALTIME_PROVIDER | typeof DECART_REALTIME_PROVIDER;
-export const REALTIME_PROVIDER_OPTIONS: ReadonlyArray<{ value: RealtimeProvider; label: string; detail: string }> = [
-  { value: VIDU_REALTIME_PROVIDER, label: 'Plus', detail: '2 credits per second' },
+export type RealtimeProvider = typeof XMAX_REALTIME_PROVIDER | typeof VIDU_REALTIME_PROVIDER | typeof DECART_REALTIME_PROVIDER;
+export const REALTIME_PROVIDER_CREDITS_PER_SECOND: Record<RealtimeProvider, number> = { xmax: 2, vidu: 2.5, decart: 2.5 };
+export const REALTIME_PROVIDER_OPTIONS: ReadonlyArray<{ value: RealtimeProvider; label: string; detail: string; short: string }> = [
+  { value: XMAX_REALTIME_PROVIDER, label: 'Plus', detail: '2 credits per second', short: 'Plus · 2 cr/s' },
+  { value: VIDU_REALTIME_PROVIDER, label: 'Pro', detail: '2.5 credits per second', short: 'Pro · 2.5 cr/s' },
 ];
 export function isRealtimeProvider(value: unknown): value is RealtimeProvider {
-  return value === VIDU_REALTIME_PROVIDER;
+  return value === XMAX_REALTIME_PROVIDER || value === VIDU_REALTIME_PROVIDER;
+}
+/** Both engines are reference-image subject replacement engines. */
+export function isReferenceImageProvider(value: unknown): boolean {
+  return value === XMAX_REALTIME_PROVIDER || value === VIDU_REALTIME_PROVIDER;
 }
 export function getRealtimeProviderLabel(provider: RealtimeProvider): string {
-  return provider === DECART_REALTIME_PROVIDER ? 'Pro' : 'Plus';
+  return provider === XMAX_REALTIME_PROVIDER ? 'Plus' : 'Pro';
+}
+/** Vidu (Pro) internals still say "Plus" in their messages; relabel at display time. */
+export function relabelProviderMessage(message: string, provider: RealtimeProvider): string {
+  return provider === XMAX_REALTIME_PROVIDER ? message : message.replace(/\bPlus(?=\b|’|')/g, 'Pro');
 }
 export function resolveRealtimeProvider(value: unknown, fallback: RealtimeProvider = DEFAULT_REALTIME_PROVIDER): RealtimeProvider {
   return isRealtimeProvider(value) ? value : fallback;
 }
 export function resolveRealtimeModel(provider: RealtimeProvider, _value: unknown): string {
+  if (provider === XMAX_REALTIME_PROVIDER) return 'x2.1';
   return provider === DECART_REALTIME_PROVIDER ? DECART_REALTIME_MODEL : VIDU_REALTIME_MODEL;
 }
 
-/** Seconds of Plus credit required before a start is allowed (mirrors app/server/api/start-session.ts). */
+/** Seconds of credit required (each engine) before a start is allowed (mirrors app/server/api/start-session.ts). */
 export const VIDU_MIN_START_SECONDS = 15;
-export function getMinimumCreditsToStart(provider: RealtimeProvider, ratePerSecond: number): number {
-  if (provider === DECART_REALTIME_PROVIDER) return 25;
+export function getMinimumCreditsToStart(_provider: RealtimeProvider, ratePerSecond: number): number {
   return ratePerSecond * VIDU_MIN_START_SECONDS;
 }
 export function getNotEnoughCreditsMessage(provider: RealtimeProvider, minimum: number): string {

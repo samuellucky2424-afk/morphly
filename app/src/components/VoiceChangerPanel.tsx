@@ -648,7 +648,7 @@ export function VoiceChangerPanel() {
           </span>
         </div>
         <p className="mt-1 text-center text-[10px] leading-4 text-muted-foreground">
-          {VOICE_CREDITS_PER_SECOND} credits per second; combined with Plus face streaming, 4 credits per second.
+          {VOICE_CREDITS_PER_SECOND} credits per second; combined with Plus face streaming, 4 credits per second; with Pro, 4.5 credits per second.
         </p>
       </footer>
     </aside>
