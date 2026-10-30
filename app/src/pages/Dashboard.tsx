@@ -108,7 +108,7 @@ type AiSessionResponse = {
   maxSeconds?: number;
   sessionId?: string;
   billingVersion?: number;
-  referenceSoftening?: { blurPercent: number; maxSide: number; quality: number };
+  referenceSoftening?: Partial<import('@/lib/xmax-reference-softening').XmaxReferenceSoftening>;
   serverNow?: number;
   expiresAt?: string | null;
   model?: string;

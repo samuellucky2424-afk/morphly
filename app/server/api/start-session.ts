@@ -961,17 +961,20 @@ export default async function handler(req, res) {
   }
 }
 
-// Plus-only reference softening, tunable without a rebuild via Vercel env vars:
-//   XMAX_REFERENCE_BLUR_PERCENT (default 1.5 = blur radius as % of shorter side; 0 disables)
-//   XMAX_REFERENCE_MAX_SIDE     (default 512 px)
+// Plus-only reference preprocessing, tunable without a rebuild via Vercel env vars
+// (unset = client defaults in src/lib/xmax-reference-softening.ts):
+//   XMAX_REFERENCE_BLUR_PERCENT (0.5)  XMAX_REFERENCE_BRIGHTNESS (0.94)  XMAX_REFERENCE_CONTRAST (0.92)
+//   XMAX_REFERENCE_DOWNSCALE (0.75)    XMAX_REFERENCE_MAX_SIDE (512)     XMAX_REFERENCE_QUALITY (0.9)
+const XMAX_REFERENCE_ENV = {
+  blurPercent: 'XMAX_REFERENCE_BLUR_PERCENT', brightness: 'XMAX_REFERENCE_BRIGHTNESS', contrast: 'XMAX_REFERENCE_CONTRAST',
+  downscale: 'XMAX_REFERENCE_DOWNSCALE', maxSide: 'XMAX_REFERENCE_MAX_SIDE', quality: 'XMAX_REFERENCE_QUALITY',
+};
 export function readXmaxReferenceSoftening(env: Record<string, string | undefined> = process.env) {
-  const num = (v: string | undefined, d: number, min: number, max: number) => {
-    const n = Number(v);
-    return v !== undefined && v.trim() !== '' && Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : d;
-  };
-  return {
-    blurPercent: num(env.XMAX_REFERENCE_BLUR_PERCENT, 1.5, 0, 10),
-    maxSide: Math.round(num(env.XMAX_REFERENCE_MAX_SIDE, 512, 128, 2048)),
-    quality: 0.9,
-  };
+  const out: Record<string, number> = {};
+  for (const [key, name] of Object.entries(XMAX_REFERENCE_ENV)) {
+    const raw = env[name];
+    const n = Number(raw);
+    if (raw !== undefined && raw.trim() !== '' && Number.isFinite(n)) out[key] = n;
+  }
+  return out; // client clamps and fills defaults
 }
