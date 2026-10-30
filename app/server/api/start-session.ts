@@ -149,7 +149,7 @@ export async function createXmaxTemporaryKey({ apiKey, maxSeconds, fetchImpl = f
     response = await fetchImpl(`${XMAX_API_BASE_URL}/temporary-api-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
-      body: JSON.stringify({ expireSeconds, pointsLimit, temporaryApiKeySessionLimit: 1 }),
+      body: JSON.stringify({ expireSeconds, pointsLimit, temporaryApiKeySessionLimit: 3 }),
       signal: AbortSignal.timeout(10000),
     });
   } catch {
