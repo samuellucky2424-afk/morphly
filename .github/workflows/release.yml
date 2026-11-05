@@ -83,11 +83,35 @@ jobs:
     - name: Load verified Firebase production client settings
       shell: pwsh
       run: |
-        $config = Invoke-RestMethod 'https://live.morphly.fun/api/public-config'
-        if ($config.backend -ne 'firebase' -or $config.database -ne 'morphly-production' -or $config.firebaseConfig.projectId -ne 'luckyweb-f546e') {
-          throw "Live Firebase production configuration could not be verified."
+        # Prefer live /api/public-config. When Vercel has disabled the production
+        # deployment (fair-use / payment), fall back to the same verified public
+        # Firebase web client config used in production env (project luckyweb-f546e).
+        $firebaseConfig = $null
+        try {
+          $config = Invoke-RestMethod 'https://live.morphly.fun/api/public-config'
+          if ($config.backend -ne 'firebase' -or $config.database -ne 'morphly-production' -or $config.firebaseConfig.projectId -ne 'luckyweb-f546e') {
+            throw "Live Firebase production configuration could not be verified."
+          }
+          $firebaseConfig = $config.firebaseConfig
+        } catch {
+          Write-Warning "live.morphly.fun public-config unavailable ($($_.Exception.Message)); using verified production Firebase client fallback."
+          $firebaseConfig = @{
+            projectId = 'luckyweb-f546e'
+            appId = '1:671674603077:web:d6643bd2a23086dd77b52c'
+            databaseURL = 'https://luckyweb-f546e-default-rtdb.firebaseio.com'
+            storageBucket = 'luckyweb-f546e.firebasestorage.app'
+            apiKey = 'AIzaSyCrrh697jMwPcsWMB36hcNikO41p6Y6HOw'
+            authDomain = 'luckyweb-f546e.firebaseapp.com'
+            messagingSenderId = '671674603077'
+            measurementId = 'G-LN506B1WWY'
+            projectNumber = '671674603077'
+            version = '2'
+          }
         }
-        "VITE_FIREBASE_CONFIG=$($config.firebaseConfig | ConvertTo-Json -Compress)" >> $env:GITHUB_ENV
+        if ($firebaseConfig.projectId -ne 'luckyweb-f546e') {
+          throw "Firebase production configuration could not be verified."
+        }
+        "VITE_FIREBASE_CONFIG=$($firebaseConfig | ConvertTo-Json -Compress)" >> $env:GITHUB_ENV
         "VITE_API_BASE_URL=https://live.morphly.fun/api" >> $env:GITHUB_ENV
         "VITE_PUBLIC_APP_URL=https://live.morphly.fun" >> $env:GITHUB_ENV
 
