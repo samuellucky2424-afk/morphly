@@ -88,6 +88,10 @@ test('conversion sends 16 kHz PCM and returns converted audio for an allowed voi
   assert.equal(calls.convert.voiceId, 'premadeVoice01');
   assert.equal(calls.convert.request.fileFormat, 'pcm_s16le_16');
   assert.equal(calls.convert.request.audio.data.length, 3200);
+  assert.equal(calls.convert.request.optimizeStreamingLatency, 1);
+  assert.equal(calls.convert.request.voiceSettings.useSpeakerBoost, true);
+  assert.equal(calls.convert.request.voiceSettings.similarityBoost, 0.8);
+  assert.equal(calls.convert.request.voiceSettings.stability, 0.45);
 });
 
 test('conversion and deletion reject other accounts\' voices and oversized audio', async () => {

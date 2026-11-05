@@ -118,7 +118,14 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
         modelId: getStsModel(),
         outputFormat: 'mp3_44100_128',
         removeBackgroundNoise: req.body?.removeBackgroundNoise === true,
-        optimizeStreamingLatency: 3,
+        // 1 = light latency opts; 3 was max and hurt clarity.
+        optimizeStreamingLatency: 1,
+        voiceSettings: {
+          stability: 0.45,
+          similarityBoost: 0.8,
+          style: 0,
+          useSpeakerBoost: true,
+        },
       });
       const converted = await readStream(stream);
       res.setHeader('Content-Type', 'audio/mpeg');
