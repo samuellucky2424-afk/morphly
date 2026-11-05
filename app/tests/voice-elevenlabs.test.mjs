@@ -1,7 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { createVoiceHandler } from '../server/api/voice.ts';
 import { invalidateVoiceCache, ownerTag, describeElevenLabsError, normalizeVoiceName } from '../server/elevenlabs-voice.js';
+
+const STS_VOICE_SETTINGS = {
+  stability: 0.45,
+  similarity_boost: 0.8,
+  style: 0,
+  use_speaker_boost: true,
+};
+
+// The speech-to-speech client puts voiceSettings on the multipart body with
+// String(value). Capture that field the way a live convert request would send it.
+async function voiceSettingsOnTheWire(request) {
+  let form;
+  const client = new ElevenLabsClient({
+    apiKey: 'test-key',
+    maxRetries: 0,
+    fetch: async (_url, init) => {
+      form = init.body;
+      return new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'audio/mpeg' } });
+    },
+  });
+  await client.speechToSpeech.convert('premadeVoice01', request);
+  const field = form.get('voice_settings');
+  return typeof field === 'string' ? field : await field.text();
+}
 
 const premade = { voiceId: 'premadeVoice01', name: 'Rachel', category: 'premade', description: 'Calm', previewUrl: 'https://x/p.mp3' };
 const mine = { voiceId: 'ownerVoice0001', name: 'My clone', category: 'cloned', description: ownerTag('owner') };
@@ -89,9 +114,11 @@ test('conversion sends 16 kHz PCM and returns converted audio for an allowed voi
   assert.equal(calls.convert.request.fileFormat, 'pcm_s16le_16');
   assert.equal(calls.convert.request.audio.data.length, 3200);
   assert.equal(calls.convert.request.optimizeStreamingLatency, 1);
-  assert.equal(calls.convert.request.voiceSettings.useSpeakerBoost, true);
-  assert.equal(calls.convert.request.voiceSettings.similarityBoost, 0.8);
-  assert.equal(calls.convert.request.voiceSettings.stability, 0.45);
+  assert.equal(calls.convert.request.removeBackgroundNoise, false);
+  assert.equal(typeof calls.convert.request.voiceSettings, 'string');
+  const encoded = await voiceSettingsOnTheWire(calls.convert.request);
+  assert.notEqual(encoded, '[object Object]');
+  assert.deepEqual(JSON.parse(encoded), STS_VOICE_SETTINGS);
 });
 
 test('conversion and deletion reject other accounts\' voices and oversized audio', async () => {
