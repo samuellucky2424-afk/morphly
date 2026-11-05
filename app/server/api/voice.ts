@@ -120,12 +120,17 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
         removeBackgroundNoise: req.body?.removeBackgroundNoise === true,
         // 1 = light latency opts; 3 was max and hurt clarity.
         optimizeStreamingLatency: 1,
-        voiceSettings: {
+        // speech-to-speech types voice_settings as a JSON string, and
+        // @elevenlabs/elevenlabs-js appends that field with String(value).
+        // An object becomes "[object Object]", which ElevenLabs rejects
+        // (invalid_voice_settings) and leaves the caller with no audio.
+        // Keys are the API's snake_case names.
+        voiceSettings: JSON.stringify({
           stability: 0.45,
-          similarityBoost: 0.8,
+          similarity_boost: 0.8,
           style: 0,
-          useSpeakerBoost: true,
-        },
+          use_speaker_boost: true,
+        }),
       });
       const converted = await readStream(stream);
       res.setHeader('Content-Type', 'audio/mpeg');
