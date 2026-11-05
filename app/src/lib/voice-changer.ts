@@ -152,6 +152,8 @@ export type LiveVoiceOptions = {
   inputDeviceId: string;
   outputDeviceId: string;
   removeBackgroundNoise: boolean;
+  /** Browser echoCancellation / noiseSuppression / autoGainControl. Off by default for clearer STS input. */
+  micProcessing?: boolean;
   onStats: (stats: LiveVoiceStats) => void;
   onError: (message: string) => void;
   /** Account or configuration failure: conversion has stopped. */
@@ -162,23 +164,57 @@ export type LiveVoiceOptions = {
 
 type AudioContextWithSink = AudioContext & { setSinkId?: (id: string) => Promise<void> };
 
-function downsample(input: Float32Array, sourceRate: number): Int16Array {
-  const ratio = sourceRate / TARGET_SAMPLE_RATE;
-  const length = Math.floor(input.length / ratio);
-  const output = new Int16Array(length);
-  for (let index = 0; index < length; index += 1) {
-    const start = Math.floor(index * ratio);
-    const end = Math.min(input.length, Math.floor((index + 1) * ratio));
-    let sum = 0;
-    for (let cursor = start; cursor < end; cursor += 1) sum += input[cursor];
-    const sample = Math.max(-1, Math.min(1, sum / Math.max(1, end - start)));
+function floatToInt16(input: Float32Array): Int16Array {
+  const output = new Int16Array(input.length);
+  for (let index = 0; index < input.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, input[index]));
     output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
   }
   return output;
 }
 
-function concat(chunks: Int16Array[]): Int16Array {
-  const output = new Int16Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+// Mild peak normalize / soft limit so quiet clones stay audible.
+function normalizePlaybackBuffer(buffer: AudioBuffer): AudioBuffer {
+  let peak = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let index = 0; index < data.length; index += 1) peak = Math.max(peak, Math.abs(data[index]));
+  }
+  if (peak === 0) return buffer;
+  const target = 0.89;
+  let gain = 1;
+  if (peak > target) gain = target / peak;
+  else if (peak < 0.25) gain = Math.min(2.2, target / peak);
+  if (Math.abs(gain - 1) < 0.05) return buffer;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    for (let index = 0; index < data.length; index += 1) {
+      const sample = data[index] * gain;
+      data[index] = sample < -1 ? -1 : sample > 1 ? 1 : sample;
+    }
+  }
+  return buffer;
+}
+
+// OfflineAudioContext resamples with the browser's quality path (anti-aliased)
+// instead of a crude box-average downsample that dulls consonants.
+async function resampleToPcm16(input: Float32Array, sourceRate: number): Promise<Int16Array> {
+  if (!input.length) return new Int16Array(0);
+  if (Math.abs(sourceRate - TARGET_SAMPLE_RATE) < 1) return floatToInt16(input);
+  const frameCount = Math.max(1, Math.ceil(input.length * TARGET_SAMPLE_RATE / sourceRate));
+  const offline = new OfflineAudioContext(1, frameCount, TARGET_SAMPLE_RATE);
+  const buffer = offline.createBuffer(1, input.length, sourceRate);
+  buffer.copyToChannel(input.slice(), 0);
+  const source = offline.createBufferSource();
+  source.buffer = buffer;
+  source.connect(offline.destination);
+  source.start(0);
+  const rendered = await offline.startRendering();
+  return floatToInt16(rendered.getChannelData(0));
+}
+
+function concatFloat(chunks: Float32Array[]): Float32Array {
+  const output = new Float32Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
   let offset = 0;
   for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.length; }
   return output;
@@ -194,8 +230,9 @@ export class LiveVoiceChanger {
   private playbackContext: AudioContextWithSink | null = null;
   private processor: ScriptProcessorNode | null = null;
   private abort = new AbortController();
-  private preRoll: Int16Array[] = [];
-  private segment: Int16Array[] = [];
+  private preRoll: Float32Array[] = [];
+  private segment: Float32Array[] = [];
+  private captureSampleRate = TARGET_SAMPLE_RATE;
   private speechMs = 0;
   private silenceMs = 0;
   private noiseFloor = 0.004;
@@ -249,10 +286,17 @@ export class LiveVoiceChanger {
     }
     this.applyBilling(initial);
     this.billingTimer = setInterval(() => void this.renewBilling(), VOICE_BILLING_INTERVAL_MS);
+    // Browser mic "cleaning" muddies speech-to-speech. Keep it off unless the
+    // user opts in. Never stack browser noiseSuppression with ElevenLabs denoise.
+    const micProcessing = this.options.micProcessing === true;
+    const removeNoise = this.options.removeBackgroundNoise === true;
     this.stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: this.options.inputDeviceId ? { exact: this.options.inputDeviceId } : undefined,
-        channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+        channelCount: 1,
+        echoCancellation: micProcessing,
+        noiseSuppression: micProcessing && !removeNoise,
+        autoGainControl: micProcessing,
       },
     });
     this.playbackContext = new AudioContext() as AudioContextWithSink;
@@ -261,10 +305,14 @@ export class LiveVoiceChanger {
       await this.playbackContext.setSinkId(this.options.outputDeviceId);
     }
     this.captureContext = new AudioContext();
+    await Promise.all([this.playbackContext.resume(), this.captureContext.resume()]);
+    if (this.playbackContext.state === 'suspended' || this.captureContext.state === 'suspended') {
+      throw new Error('Audio is blocked in this window. Click Start voice conversion again after clicking inside Morphly, or allow sound for this app in your browser or system settings.');
+    }
     const source = this.captureContext.createMediaStreamSource(this.stream);
     this.processor = this.captureContext.createScriptProcessor(2048, 1, 1);
-    const sampleRate = this.captureContext.sampleRate;
-    this.processor.onaudioprocess = (event) => this.handleAudio(event.inputBuffer.getChannelData(0), sampleRate);
+    this.captureSampleRate = this.captureContext.sampleRate;
+    this.processor.onaudioprocess = (event) => this.handleAudio(event.inputBuffer.getChannelData(0), this.captureSampleRate);
     // A muted gain keeps the processor running without echoing the microphone.
     const mute = this.captureContext.createGain();
     mute.gain.value = 0;
@@ -305,12 +353,13 @@ export class LiveVoiceChanger {
     for (let index = 0; index < samples.length; index += 1) energy += samples[index] * samples[index];
     const rms = Math.sqrt(energy / samples.length);
     const blockMs = (samples.length / sampleRate) * 1000;
-    const pcm = downsample(samples, sampleRate);
+    // Copy: ScriptProcessor reuses the underlying buffer between callbacks.
+    const frame = samples.slice();
     const speaking = rms > Math.max(0.012, this.noiseFloor * 3);
     if (!speaking) this.noiseFloor = this.noiseFloor * 0.95 + rms * 0.05;
 
     if (!this.segment.length) {
-      this.preRoll.push(pcm);
+      this.preRoll.push(frame);
       while (this.preRoll.length * blockMs > PRE_ROLL_MS) this.preRoll.shift();
       if (!speaking) return;
       this.segment = [...this.preRoll];
@@ -321,7 +370,7 @@ export class LiveVoiceChanger {
       return;
     }
 
-    this.segment.push(pcm);
+    this.segment.push(frame);
     if (speaking) { this.speechMs += blockMs; this.silenceMs = 0; } else { this.silenceMs += blockMs; }
     const durationMs = this.segment.length * blockMs;
     if (this.silenceMs >= SILENCE_FLUSH_MS || durationMs >= MAX_SEGMENT_MS) this.flush();
@@ -330,6 +379,7 @@ export class LiveVoiceChanger {
   private flush() {
     const segment = this.segment;
     const speechMs = this.speechMs;
+    const sampleRate = this.captureSampleRate;
     this.segment = [];
     this.stats.listening = false;
     if (speechMs < MIN_SPEECH_MS) { this.emit(); return; }
@@ -339,29 +389,46 @@ export class LiveVoiceChanger {
       return;
     }
     const id = this.sequence++;
-    void this.convert(id, concat(segment));
+    void this.convert(id, concatFloat(segment), sampleRate);
   }
 
-  private async convert(id: number, pcm: Int16Array) {
+  private async convert(id: number, floatSamples: Float32Array, sampleRate: number) {
     this.inFlight += 1;
     this.emit();
     const startedAt = performance.now();
     let decoded: AudioBuffer | null = null;
+    let lastMessage = 'Voice conversion failed.';
     try {
-      const mp3 = await convertSegment(this.options.voiceId, this.sessionId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
-      if (this.stopped || !this.playbackContext) return;
-      decoded = await this.playbackContext.decodeAudioData(mp3);
-      this.stats.phrases += 1;
-      this.stats.lastLatencyMs = Math.round(performance.now() - startedAt);
+      const pcm = await resampleToPcm16(floatSamples, sampleRate);
+      if (this.stopped) return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const mp3 = await convertSegment(this.options.voiceId, this.sessionId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
+          if (this.stopped || !this.playbackContext) return;
+          decoded = normalizePlaybackBuffer(await this.playbackContext.decodeAudioData(mp3.slice(0)));
+          this.stats.phrases += 1;
+          this.stats.lastLatencyMs = Math.round(performance.now() - startedAt);
+          lastMessage = '';
+          break;
+        } catch (error) {
+          if (this.stopped) return;
+          lastMessage = error instanceof Error ? error.message : 'Voice conversion failed.';
+          if (error instanceof VoiceServiceError && error.fatal) {
+            void this.stop();
+            this.options.onFatal(lastMessage);
+            return;
+          }
+          if (attempt === 0) {
+            this.options.onError('Conversion hiccup — retrying that phrase…');
+            continue;
+          }
+          this.options.onError(`Could not convert that phrase after retrying. ${lastMessage}`);
+        }
+      }
     } catch (error) {
       if (this.stopped) return;
-      const message = error instanceof Error ? error.message : 'Voice conversion failed.';
-      if (error instanceof VoiceServiceError && error.fatal) {
-        void this.stop();
-        this.options.onFatal(message);
-        return;
-      }
-      this.options.onError(message);
+      lastMessage = error instanceof Error ? error.message : 'Voice conversion failed.';
+      this.options.onError(lastMessage);
     } finally {
       this.inFlight -= 1;
       this.finished.set(id, decoded);

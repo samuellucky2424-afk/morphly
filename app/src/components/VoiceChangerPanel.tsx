@@ -86,6 +86,7 @@ export function VoiceChangerPanel() {
   const [devices, setDevices] = useState<AudioDevices | null>(null);
   const [routing, setRouting] = useState<{ input: string | null; output: string | null }>({ input: null, output: null });
   const [removeBackgroundNoise, setRemoveBackgroundNoise] = useState(false);
+  const [micProcessing, setMicProcessing] = useState(false);
   const [hasConsent, setHasConsent] = useState(false);
   const [runtimeState, setRuntimeState] = useState<RuntimeState>('stopped');
   const [stats, setStats] = useState<LiveVoiceStats | null>(null);
@@ -201,6 +202,7 @@ export function VoiceChangerPanel() {
       inputDeviceId: routing.input,
       outputDeviceId: routing.output,
       removeBackgroundNoise,
+      micProcessing,
       onStats: setStats,
       onError: setError,
       onCredits: setCredits,
@@ -552,13 +554,20 @@ export function VoiceChangerPanel() {
             {runtimeActive ? <p className="mt-3 text-xs text-warning">Stop conversion before changing audio devices.</p> : null}
           </section>
 
-          <section aria-labelledby="voice-options-heading" className="border-b border-border px-4 py-4">
+          <section aria-labelledby="voice-options-heading" className="space-y-3 border-b border-border px-4 py-4">
             <div className="flex items-center justify-between gap-4">
               <div className="min-w-0">
                 <h3 id="voice-options-heading" className="text-xs font-semibold text-foreground">Remove background noise</h3>
-                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Cleans your microphone before conversion. Leave off in quiet rooms.</p>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Cloud denoise before conversion. Leave off in quiet rooms. Not stacked with browser mic cleaning.</p>
               </div>
               <Switch checked={removeBackgroundNoise} onCheckedChange={setRemoveBackgroundNoise} disabled={runtimeActive} aria-label="Remove background noise" />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <h3 className="text-xs font-semibold text-foreground">Browser mic cleaning</h3>
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">Echo cancel, noise suppress and auto-gain in the browser. Off by default so conversion stays clearer.</p>
+              </div>
+              <Switch checked={micProcessing} onCheckedChange={setMicProcessing} disabled={runtimeActive} aria-label="Browser mic cleaning" />
             </div>
           </section>
 
