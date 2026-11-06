@@ -259,8 +259,8 @@ export function VoiceChangerPanel() {
   const runtimeMessage = runtimeState === 'starting' ? 'Opening the microphone...'
     : stats?.pending ? `Converting ${stats.pending === 1 ? 'a phrase' : `${stats.pending} phrases`}...`
       : stats?.listening ? 'Listening...'
-        : stats?.lastLatencyMs ? `Live · last phrase converted in ${(stats.lastLatencyMs / 1000).toFixed(1)} s`
-          : 'Live · speak, then pause briefly to hear your converted voice';
+        : stats?.lastLatencyMs ? `Live · voice started in ${(stats.lastLatencyMs / 1000).toFixed(1)} s`
+          : 'Live · converted voice starts as each phrase is ready';
   const stateLabel = runtimeState === 'running' ? 'Live' : runtimeState === 'starting' ? 'Starting'
     : serviceReady ? 'Ready' : voicesError ? 'Setup needed' : 'Connecting';
   const connecting = !serviceReady && !voicesError;
@@ -593,7 +593,7 @@ export function VoiceChangerPanel() {
                   <div className="mx-4 mb-3 space-y-1 rounded border border-border bg-background p-3 text-xs leading-5">
                     <p className="font-semibold">Conversion</p>
                     <p>Phrases converted: {stats.phrases}</p>
-                    <p className="text-muted-foreground">Last phrase: {stats.lastLatencyMs ? `${(stats.lastLatencyMs / 1000).toFixed(1)} s` : '—'} · In progress: {stats.pending}</p>
+                    <p className="text-muted-foreground">First audio: {stats.lastLatencyMs ? `${(stats.lastLatencyMs / 1000).toFixed(1)} s` : '—'} · In progress: {stats.pending}</p>
                   </div>
                 ) : null}
                 <div className="divide-y divide-border border-t border-border px-4">

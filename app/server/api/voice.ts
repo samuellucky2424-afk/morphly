@@ -3,8 +3,9 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 import {
   CLONE_AUDIO_TYPES, MAX_CLONE_BYTES, MAX_CONVERT_BYTES,
-  canUseVoice, decodeBase64Audio, describeElevenLabsError, elevenLabsErrorDetail, findUsableVoice, getElevenLabsClient,
-  getStsModel, invalidateVoiceCache, listAccountVoices, normalizeVoiceName, ownerTag, readStream,
+  STS_OPTIMIZE_STREAMING_LATENCY, STS_STREAM_OUTPUT_FORMAT, STS_VOICE_SETTINGS_JSON,
+  beginStreamedAudio, canUseVoice, decodeBase64Audio, describeElevenLabsError, elevenLabsErrorDetail, findUsableVoice, getElevenLabsClient,
+  getStsModel, invalidateVoiceCache, listAccountVoices, normalizeVoiceName, ownerTag, pipeAudioStream,
   toPublicVoice, voiceOwner,
 } from '../elevenlabs-voice.js';
 
@@ -103,7 +104,11 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
         return res.json({ deleted: true });
       }
 
-      // convert: 16 kHz mono 16-bit PCM from the microphone → converted MP3.
+      // convert: 16 kHz mono 16-bit PCM from the microphone → streamed MP3.
+      // There is no flash/turbo speech-to-speech model. The stream endpoint
+      // (POST /v1/voice-changer/{voice_id}/stream) plus pcm_s16le_16 input,
+      // a low-bitrate MP3, and optimize_streaming_latency 3 is the fastest
+      // documented path that still runs the text normalizer.
       const audio = decodeBase64Audio(req.body?.audio, MAX_CONVERT_BYTES);
       if (!audio || audio.length % 2 !== 0) return res.status(400).json({ error: 'Invalid audio segment.' });
       const sessionId = voiceBillingSessionId(userId, req.body?.sessionId);
@@ -112,31 +117,37 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
         return res.status(402).json({ error: 'Your voice conversion time is not paid for. Check your credits, then start voice conversion again.',
           code: 'billing_required', fatal: true });
       }
-      const stream = await client.speechToSpeech.convert(voiceId, {
+      const stream = await client.speechToSpeech.stream(voiceId, {
         audio: { data: audio, filename: 'speech.pcm', contentType: 'application/octet-stream' },
         fileFormat: 'pcm_s16le_16',
         modelId: getStsModel(),
-        outputFormat: 'mp3_44100_128',
+        outputFormat: STS_STREAM_OUTPUT_FORMAT,
         removeBackgroundNoise: req.body?.removeBackgroundNoise === true,
-        // 1 = light latency opts; 3 was max and hurt clarity.
-        optimizeStreamingLatency: 1,
+        optimizeStreamingLatency: STS_OPTIMIZE_STREAMING_LATENCY,
         // speech-to-speech types voice_settings as a JSON string, and
         // @elevenlabs/elevenlabs-js appends that field with String(value).
         // An object becomes "[object Object]", which ElevenLabs rejects
         // (invalid_voice_settings) and leaves the caller with no audio.
         // Keys are the API's snake_case names.
-        voiceSettings: JSON.stringify({
-          stability: 0.45,
-          similarity_boost: 0.8,
-          style: 0,
-          use_speaker_boost: true,
-        }),
+        voiceSettings: STS_VOICE_SETTINGS_JSON,
       });
-      const converted = await readStream(stream);
-      res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Cache-Control', 'no-store');
-      res.statusCode = 200;
-      return res.end(converted);
+      // Headers go out before the body so a new client can play the first
+      // MP3 bytes while ElevenLabs is still synthesizing the rest. Older
+      // clients keep calling this route and decoding the completed MP3.
+      let streaming = false;
+      try {
+        beginStreamedAudio(res);
+        streaming = true;
+        await pipeAudioStream(stream, res);
+      } catch (streamError) {
+        if (!streaming) throw streamError;
+        const detail = elevenLabsErrorDetail(streamError);
+        console.warn('[voice] ElevenLabs stream failed after audio started', { action, status: detail.status, code: detail.code, message: detail.message });
+        if (!res.writableEnded && typeof res.end === 'function') {
+          try { res.end(); } catch { /* the response is already closed */ }
+        }
+      }
+      return;
     } catch (error) {
       const failure = describeElevenLabsError(error);
       const detail = elevenLabsErrorDetail(error);

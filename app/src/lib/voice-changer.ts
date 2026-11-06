@@ -1,4 +1,5 @@
 import { apiFetchWithAuth } from './api-client';
+import { PhraseAudioBuffer, StreamingMp3Queue, readConvertedAudio, shouldFlushLiveSegment } from './voice-stream';
 
 export type VoiceOption = {
   id: string;
@@ -10,8 +11,6 @@ export type VoiceOption = {
 
 export const MAX_VOICE_UPLOAD_BYTES = 3 * 1024 * 1024;
 const TARGET_SAMPLE_RATE = 16000;
-const MAX_SEGMENT_MS = 6000;
-const SILENCE_FLUSH_MS = 550;
 const PRE_ROLL_MS = 250;
 const MIN_SPEECH_MS = 350;
 const MAX_IN_FLIGHT = 3;
@@ -109,7 +108,7 @@ async function convertSegment(voiceId: string, sessionId: string, pcm: Int16Arra
     signal,
   });
   if (!response.ok) await readJson(response);
-  return response.arrayBuffer();
+  return response;
 }
 
 export type AudioDeviceOption = { id: string; name: string };
@@ -220,9 +219,10 @@ function concatFloat(chunks: Float32Array[]): Float32Array {
   return output;
 }
 
-// ElevenLabs speech-to-speech converts whole utterances, so the live changer
-// detects phrases on the microphone, converts each one, and plays results in
-// order on the selected output (normally VB-CABLE "CABLE Input").
+// ElevenLabs speech-to-speech converts a captured phrase. The live changer
+// flushes on a short pause (or a max length) and plays streamed MP3 as soon
+// as the first decodable bytes arrive, still in phrase order, on the selected
+// output (normally VB-CABLE "CABLE Input").
 export class LiveVoiceChanger {
   private options: LiveVoiceOptions;
   private stream: MediaStream | null = null;
@@ -238,7 +238,8 @@ export class LiveVoiceChanger {
   private noiseFloor = 0.004;
   private sequence = 0;
   private nextToPlay = 0;
-  private finished = new Map<number, AudioBuffer | null>();
+  private turnWaiters: Array<() => void> = [];
+  private skippedPhrases = new Set<number>();
   private inFlight = 0;
   private playAt = 0;
   private stats: LiveVoiceStats = { phrases: 0, lastLatencyMs: null, pending: 0, listening: false };
@@ -325,6 +326,8 @@ export class LiveVoiceChanger {
   async stop() {
     const wasStopped = this.stopped;
     this.stopped = true;
+    const waiters = this.turnWaiters.splice(0);
+    for (const resolve of waiters) resolve();
     if (this.billingTimer) clearInterval(this.billingTimer);
     this.billingTimer = null;
     // Close the paid session once so unused reserved seconds are refunded.
@@ -373,7 +376,7 @@ export class LiveVoiceChanger {
     this.segment.push(frame);
     if (speaking) { this.speechMs += blockMs; this.silenceMs = 0; } else { this.silenceMs += blockMs; }
     const durationMs = this.segment.length * blockMs;
-    if (this.silenceMs >= SILENCE_FLUSH_MS || durationMs >= MAX_SEGMENT_MS) this.flush();
+    if (shouldFlushLiveSegment(this.silenceMs, durationMs)) this.flush();
   }
 
   private flush() {
@@ -392,30 +395,125 @@ export class LiveVoiceChanger {
     void this.convert(id, concatFloat(segment), sampleRate);
   }
 
+  private waitUntilTurn(id: number): Promise<void> {
+    if (this.stopped || this.nextToPlay === id) return Promise.resolve();
+    return new Promise<void>(resolve => { this.turnWaiters.push(resolve); }).then(() => this.waitUntilTurn(id));
+  }
+
+  private releasePhrase(id: number) {
+    if (this.stopped || id < this.nextToPlay) return;
+    if (id !== this.nextToPlay) {
+      this.skippedPhrases.add(id);
+      return;
+    }
+    this.skippedPhrases.delete(id);
+    this.nextToPlay += 1;
+    while (this.skippedPhrases.has(this.nextToPlay)) {
+      this.skippedPhrases.delete(this.nextToPlay);
+      this.nextToPlay += 1;
+    }
+    const waiters = this.turnWaiters.splice(0);
+    for (const resolve of waiters) resolve();
+  }
+
+  private scheduleDecoded(buffer: AudioBuffer, offsetSeconds: number) {
+    const context = this.playbackContext;
+    if (!context || this.stopped) return;
+    const slice = buffer.duration - offsetSeconds;
+    if (slice <= 0.005) return;
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    const when = Math.max(context.currentTime + 0.02, this.playAt);
+    source.start(when, offsetSeconds);
+    this.playAt = when + slice;
+  }
+
+  private async playPhrase(id: number, phrase: PhraseAudioBuffer, startedAt: number, onStarted: () => void) {
+    await this.waitUntilTurn(id);
+    if (this.stopped || !this.playbackContext) return;
+    const context = this.playbackContext;
+    let noted = false;
+    const queue = new StreamingMp3Queue<{ duration: number; buffer: AudioBuffer }>(
+      async (bytes) => {
+        const copy = new Uint8Array(bytes.byteLength);
+        copy.set(bytes);
+        const decoded = normalizePlaybackBuffer(await context.decodeAudioData(copy.buffer));
+        return { duration: decoded.duration, buffer: decoded };
+      },
+      (decoded, offset) => {
+        this.scheduleDecoded(decoded.buffer, offset);
+        if (noted) return;
+        noted = true;
+        onStarted();
+        this.stats.phrases += 1;
+        this.stats.lastLatencyMs = Math.round(performance.now() - startedAt);
+        this.emit();
+      },
+    );
+    let index = 0;
+    try {
+      for (;;) {
+        const chunk = await phrase.take(index);
+        index += 1;
+        if (!chunk) break;
+        if (this.stopped) return;
+        await queue.push(chunk);
+      }
+      if (!this.stopped) await queue.close();
+    } catch (error) {
+      if (!queue.started) throw error;
+    }
+    return queue.started;
+  }
+
+  private async convertOnce(id: number, pcm: Int16Array, startedAt: number, onStarted: () => void) {
+    // Retryable failures happen before a player exists. Starting playback only
+    // after the response headers succeed avoids waiting on phrase order when
+    // the voice service rejects the request.
+    const response = await convertSegment(this.options.voiceId, this.sessionId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
+    if (this.stopped || !this.playbackContext) return;
+    const phrase = new PhraseAudioBuffer();
+    const playback = this.playPhrase(id, phrase, startedAt, onStarted);
+    try {
+      await readConvertedAudio(response, chunk => phrase.push(chunk));
+      phrase.finish();
+      const started = await playback;
+      if (!started) throw new Error('The voice service returned no audio.');
+    } catch (error) {
+      phrase.fail(error instanceof Error ? error : new Error('Voice conversion failed.'));
+      try {
+        await playback;
+      } catch {
+        // No audio was scheduled. The caller retries or reports `error`.
+      }
+      throw error instanceof Error ? error : new Error('Voice conversion failed.');
+    }
+  }
+
   private async convert(id: number, floatSamples: Float32Array, sampleRate: number) {
     this.inFlight += 1;
     this.emit();
     const startedAt = performance.now();
-    let decoded: AudioBuffer | null = null;
-    let lastMessage = 'Voice conversion failed.';
+    let played = false;
     try {
       const pcm = await resampleToPcm16(floatSamples, sampleRate);
       if (this.stopped) return;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      let lastMessage = 'Voice conversion failed.';
+      for (let attempt = 0; attempt < 2 && !played; attempt += 1) {
         try {
-          const mp3 = await convertSegment(this.options.voiceId, this.sessionId, pcm, this.options.removeBackgroundNoise, this.abort.signal);
-          if (this.stopped || !this.playbackContext) return;
-          decoded = normalizePlaybackBuffer(await this.playbackContext.decodeAudioData(mp3.slice(0)));
-          this.stats.phrases += 1;
-          this.stats.lastLatencyMs = Math.round(performance.now() - startedAt);
-          lastMessage = '';
-          break;
+          await this.convertOnce(id, pcm, startedAt, () => { played = true; });
+          return;
         } catch (error) {
           if (this.stopped) return;
           lastMessage = error instanceof Error ? error.message : 'Voice conversion failed.';
           if (error instanceof VoiceServiceError && error.fatal) {
             void this.stop();
             this.options.onFatal(lastMessage);
+            return;
+          }
+          if (played) {
+            this.options.onError(`Converted audio was interrupted. ${lastMessage}`);
             return;
           }
           if (attempt === 0) {
@@ -427,29 +525,11 @@ export class LiveVoiceChanger {
       }
     } catch (error) {
       if (this.stopped) return;
-      lastMessage = error instanceof Error ? error.message : 'Voice conversion failed.';
-      this.options.onError(lastMessage);
+      this.options.onError(error instanceof Error ? error.message : 'Voice conversion failed.');
     } finally {
       this.inFlight -= 1;
-      this.finished.set(id, decoded);
-      this.playReady();
+      this.releasePhrase(id);
       this.emit();
-    }
-  }
-
-  private playReady() {
-    const context = this.playbackContext;
-    while (context && !this.stopped && this.finished.has(this.nextToPlay)) {
-      const buffer = this.finished.get(this.nextToPlay);
-      this.finished.delete(this.nextToPlay);
-      this.nextToPlay += 1;
-      if (!buffer) continue;
-      const source = context.createBufferSource();
-      source.buffer = buffer;
-      source.connect(context.destination);
-      this.playAt = Math.max(context.currentTime + 0.02, this.playAt);
-      source.start(this.playAt);
-      this.playAt += buffer.duration;
     }
   }
 }

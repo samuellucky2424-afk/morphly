@@ -8,6 +8,21 @@ import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 const OWNER_TAG_PREFIX = 'morphly-owner:';
 const VOICE_CACHE_MS = 60_000;
 export const DEFAULT_STS_MODEL = 'eleven_multilingual_sts_v2';
+// Speech-to-speech has no flash/turbo model. Level 3 is the strongest
+// optimize_streaming_latency setting that keeps the text normalizer on.
+// Level 4 is slightly faster and can mispronounce numbers and dates.
+export const STS_OPTIMIZE_STREAMING_LATENCY = 3;
+// Smallest MP3 the voice-changer stream accepts. Lower bitrate starts
+// playback sooner than mp3_44100_128; the bytes stay a normal MP3 so older
+// desktop clients can still decode the finished body.
+export const STS_STREAM_OUTPUT_FORMAT = 'mp3_22050_32';
+export const STS_STREAM_CONTENT_TYPE = 'audio/mpeg';
+export const STS_VOICE_SETTINGS_JSON = JSON.stringify({
+  stability: 0.45,
+  similarity_boost: 0.8,
+  style: 0,
+  use_speaker_boost: true,
+});
 export const MAX_CLONE_BYTES = 3 * 1024 * 1024; // keeps base64 JSON under Vercel's 4.5 MB body limit
 export const MAX_CONVERT_BYTES = 16000 * 2 * 15; // 15 s of 16 kHz mono 16-bit PCM
 export const CLONE_AUDIO_TYPES = ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/mpeg', 'audio/mp3',
@@ -97,21 +112,85 @@ export function normalizeVoiceName(value, fallback = 'My voice') {
   return (name || fallback).slice(0, 80);
 }
 
+function toAudioBuffer(chunk) {
+  if (!chunk) return Buffer.alloc(0);
+  if (Buffer.isBuffer(chunk)) return chunk;
+  if (chunk instanceof ArrayBuffer) return Buffer.from(chunk);
+  if (ArrayBuffer.isView(chunk)) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  return Buffer.from(chunk);
+}
+
 export async function readStream(stream) {
   if (Buffer.isBuffer(stream) || stream instanceof Uint8Array) return Buffer.from(stream);
   if (stream instanceof ArrayBuffer) return Buffer.from(stream);
   const chunks = [];
   if (typeof stream?.getReader === 'function') {
     const reader = stream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(Buffer.from(value));
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const buffer = toAudioBuffer(value);
+        if (buffer.length) chunks.push(buffer);
+      }
+    } finally {
+      if (typeof reader.releaseLock === 'function') reader.releaseLock();
     }
   } else {
-    for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+    for await (const chunk of stream) {
+      const buffer = toAudioBuffer(chunk);
+      if (buffer.length) chunks.push(buffer);
+    }
   }
   return Buffer.concat(chunks);
+}
+
+// Send headers immediately so proxies and the browser do not wait for the
+// whole voice-changer body before the first byte can be played.
+export function beginStreamedAudio(res, contentType = STS_STREAM_CONTENT_TYPE) {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'no-store, no-transform');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+}
+
+// Forward each upstream chunk as it arrives. Clients that still read the
+// finished body (arrayBuffer / decodeAudioData) receive the same bytes; they
+// just wait until the last write. When `res.write` is missing, fall back to
+// one buffered end() so the response is still a complete audio file.
+export async function pipeAudioStream(stream, res) {
+  if (typeof res.write !== 'function') {
+    res.end(await readStream(stream));
+    return;
+  }
+  const writeChunk = (chunk) => {
+    const buffer = toAudioBuffer(chunk);
+    if (!buffer.length) return;
+    res.write(buffer);
+    if (typeof res.flush === 'function') res.flush();
+  };
+  if (Buffer.isBuffer(stream) || stream instanceof Uint8Array || stream instanceof ArrayBuffer) {
+    writeChunk(stream);
+    res.end();
+    return;
+  }
+  if (typeof stream?.getReader === 'function') {
+    const reader = stream.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        writeChunk(value);
+      }
+    } finally {
+      if (typeof reader.releaseLock === 'function') reader.releaseLock();
+    }
+    res.end();
+    return;
+  }
+  for await (const chunk of stream) writeChunk(chunk);
+  res.end();
 }
 
 // ElevenLabs errors carry a statusCode and a JSON body with detail.status
