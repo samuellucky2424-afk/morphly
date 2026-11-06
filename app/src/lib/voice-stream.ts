@@ -1,10 +1,10 @@
 // Phrase capture and streamed-MP3 playback helpers for the live voice changer.
 // Kept free of browser and network imports so tests can drive them directly.
 
-// A short pause still ends a phrase, but we no longer wait 550ms, and a
-// run-on utterance is sent before the old 6s cap so conversion can start.
+// A pause of about 400ms still ends a phrase. If the speaker keeps talking,
+// send the audio after about 1 second instead of holding a longer window.
 export const SILENCE_FLUSH_MS = 400;
-export const MAX_SEGMENT_MS = 4000;
+export const MAX_SEGMENT_MS = 1000;
 
 // A few MP3 frames at 22.05 kHz / 32 kbps (~200 bytes each). Enough to decode
 // a prefix without waiting for the rest of the phrase.

@@ -285,14 +285,13 @@ test('account problems are explained precisely and marked fatal so live conversi
   assert.equal(describeElevenLabsError(new Error('socket hang up')).code, 'network_error');
 });
 
-test('live capture flushes sooner than the old 550ms / 6s limits', () => {
-  assert.ok(SILENCE_FLUSH_MS < 550);
-  assert.ok(MAX_SEGMENT_MS < 6000);
+test('live capture flushes a pause at 400ms and continuous speech after about 1s', () => {
   assert.equal(SILENCE_FLUSH_MS, 400);
-  assert.equal(MAX_SEGMENT_MS, 4000);
-  assert.equal(shouldFlushLiveSegment(399, 3999), false);
+  assert.equal(MAX_SEGMENT_MS, 1000);
+  assert.equal(shouldFlushLiveSegment(399, 999), false);
   assert.equal(shouldFlushLiveSegment(400, 100), true);
-  assert.equal(shouldFlushLiveSegment(0, 4000), true);
+  assert.equal(shouldFlushLiveSegment(0, 999), false);
+  assert.equal(shouldFlushLiveSegment(0, 1000), true);
 });
 
 test('playback reads and schedules audio before the phrase body is finished', async () => {
