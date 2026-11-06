@@ -1,7 +1,7 @@
 {
   "name": "morphly-desktop",
   "private": true,
-  "version": "2.5.45",
+  "version": "2.5.46",
   "description": "Morphly Desktop with virtual camera support and a cloud voice changer.",
   "author": "Morphly",
   "repository": {
@@ -96,7 +96,7 @@
   },
   "dependencies": {
     "@decartai/sdk": "^0.2.3",
-    "@elevenlabs/elevenlabs-js": "^2.73.0",
+    "@elevenlabs/elevenlabs-js": "^2.76.0",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",

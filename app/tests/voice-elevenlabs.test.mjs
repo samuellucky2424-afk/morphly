@@ -2,7 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ElevenLabsClient } from '@elevenlabs/elevenlabs-js';
 import { createVoiceHandler } from '../server/api/voice.ts';
-import { invalidateVoiceCache, ownerTag, describeElevenLabsError, normalizeVoiceName } from '../server/elevenlabs-voice.js';
+import {
+  STS_OPTIMIZE_STREAMING_LATENCY, STS_STREAM_OUTPUT_FORMAT, STS_VOICE_SETTINGS_JSON,
+  invalidateVoiceCache, ownerTag, describeElevenLabsError, normalizeVoiceName,
+} from '../server/elevenlabs-voice.js';
+import {
+  MAX_SEGMENT_MS, MP3_PLAYBACK_MIN_BYTES, PhraseAudioBuffer, SILENCE_FLUSH_MS, StreamingMp3Queue,
+  readConvertedAudio, shouldFlushLiveSegment,
+} from '../src/lib/voice-stream.ts';
 
 const STS_VOICE_SETTINGS = {
   stability: 0.45,
@@ -12,20 +19,25 @@ const STS_VOICE_SETTINGS = {
 };
 
 // The speech-to-speech client puts voiceSettings on the multipart body with
-// String(value). Capture that field the way a live convert request would send it.
+// String(value). Capture that field the way a live stream request would send it.
 async function voiceSettingsOnTheWire(request) {
   let form;
+  let requestUrl = '';
   const client = new ElevenLabsClient({
     apiKey: 'test-key',
     maxRetries: 0,
-    fetch: async (_url, init) => {
+    fetch: async (url, init) => {
+      requestUrl = String(url);
       form = init.body;
       return new Response(new Uint8Array([1]), { status: 200, headers: { 'content-type': 'audio/mpeg' } });
     },
   });
-  await client.speechToSpeech.convert('premadeVoice01', request);
+  await client.speechToSpeech.stream('premadeVoice01', request);
   const field = form.get('voice_settings');
-  return typeof field === 'string' ? field : await field.text();
+  const encoded = typeof field === 'string' ? field : await field.text();
+  const fileFormatField = form.get('file_format');
+  const fileFormat = typeof fileFormatField === 'string' ? fileFormatField : await fileFormatField.text();
+  return { encoded, requestUrl, fileFormat };
 }
 
 const premade = { voiceId: 'premadeVoice01', name: 'Rachel', category: 'premade', description: 'Calm', previewUrl: 'https://x/p.mp3' };
@@ -41,8 +53,9 @@ function fakeClient(calls = {}) {
       ivc: { create: async request => { calls.clone = request; return { voiceId: 'newVoice000001', requiresVerification: false }; } },
     },
     speechToSpeech: {
-      convert: async (voiceId, request) => {
-        calls.convert = { voiceId, request };
+      convert: async () => { throw new Error('speechToSpeech.convert waits for the whole file'); },
+      stream: async (voiceId, request) => {
+        calls.stream = { voiceId, request };
         return new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); controller.close(); } });
       },
     },
@@ -58,15 +71,29 @@ function handler(action, { client = fakeClient(), user = 'owner', authError,
   });
 }
 
-async function call(action, { method = action === 'voices' ? 'GET' : 'POST', body = {}, ...options } = {}) {
-  invalidateVoiceCache();
-  const response = {
-    headers: {}, statusCode: 200, body: undefined, ended: undefined,
+function createResponse() {
+  const chunks = [];
+  return {
+    headers: {}, statusCode: 200, body: undefined, ended: undefined, chunks,
+    headersFlushed: false, writableEnded: false,
     setHeader(name, value) { this.headers[name.toLowerCase()] = value; },
     status(code) { this.statusCode = code; return this; },
     json(value) { this.body = value; return this; },
-    end(value) { this.ended = value; return this; },
+    write(value) { chunks.push(Buffer.from(value)); return true; },
+    flush() { this.flushed = true; },
+    flushHeaders() { this.headersFlushed = true; },
+    end(value) {
+      if (value != null) chunks.push(Buffer.from(value));
+      this.writableEnded = true;
+      this.ended = chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0);
+      return this;
+    },
   };
+}
+
+async function call(action, { method = action === 'voices' ? 'GET' : 'POST', body = {}, ...options } = {}) {
+  invalidateVoiceCache();
+  const response = createResponse();
   await handler(action, options)({ method, body, headers: {} }, response);
   return response;
 }
@@ -102,23 +129,109 @@ test('uploading a voice clones it under the caller\'s ownership', async () => {
   assert.equal((await call('clone', { body: { contentType: 'audio/mpeg', audio: tooLarge } })).statusCode, 400);
 });
 
-test('conversion sends 16 kHz PCM and returns converted audio for an allowed voice', async () => {
+test('conversion streams 16 kHz PCM with max safe latency settings and a complete MP3 body', async () => {
   const calls = {};
   const response = await call('convert', { client: fakeClient(calls), body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm },
     rpc: async (name, args) => { calls.billing = { name, args }; return { data: { active: true }, error: null }; } });
   assert.equal(response.headers['content-type'], 'audio/mpeg');
+  assert.equal(response.headers['cache-control'], 'no-store, no-transform');
+  assert.equal(response.headers['x-accel-buffering'], 'no');
+  assert.equal(response.headersFlushed, true);
+  // Older clients read the finished body. Streaming must still deliver every byte.
   assert.deepEqual([...response.ended], [1, 2, 3]);
   assert.equal(calls.billing.name, 'voice_session_active');
   assert.equal(calls.billing.args.p_session, 'voice_owner_12345678-1234');
-  assert.equal(calls.convert.voiceId, 'premadeVoice01');
-  assert.equal(calls.convert.request.fileFormat, 'pcm_s16le_16');
-  assert.equal(calls.convert.request.audio.data.length, 3200);
-  assert.equal(calls.convert.request.optimizeStreamingLatency, 1);
-  assert.equal(calls.convert.request.removeBackgroundNoise, false);
-  assert.equal(typeof calls.convert.request.voiceSettings, 'string');
-  const encoded = await voiceSettingsOnTheWire(calls.convert.request);
-  assert.notEqual(encoded, '[object Object]');
-  assert.deepEqual(JSON.parse(encoded), STS_VOICE_SETTINGS);
+  assert.equal(calls.stream.voiceId, 'premadeVoice01');
+  assert.equal(calls.stream.request.fileFormat, 'pcm_s16le_16');
+  assert.equal(calls.stream.request.audio.data.length, 3200);
+  assert.equal(STS_OPTIMIZE_STREAMING_LATENCY, 3);
+  assert.equal(STS_STREAM_OUTPUT_FORMAT, 'mp3_22050_32');
+  assert.equal(calls.stream.request.optimizeStreamingLatency, 3);
+  assert.equal(calls.stream.request.outputFormat, 'mp3_22050_32');
+  assert.equal(calls.stream.request.removeBackgroundNoise, false);
+  assert.equal(calls.stream.request.voiceSettings, STS_VOICE_SETTINGS_JSON);
+  assert.equal(typeof calls.stream.request.voiceSettings, 'string');
+  assert.deepEqual(JSON.parse(STS_VOICE_SETTINGS_JSON), STS_VOICE_SETTINGS);
+  const wire = await voiceSettingsOnTheWire(calls.stream.request);
+  assert.notEqual(wire.encoded, '[object Object]');
+  assert.deepEqual(JSON.parse(wire.encoded), STS_VOICE_SETTINGS);
+  const url = new URL(wire.requestUrl);
+  assert.match(url.pathname, /\/v1\/voice-changer\/premadeVoice01\/stream$/);
+  assert.equal(url.searchParams.get('optimize_streaming_latency'), '3');
+  assert.equal(url.searchParams.get('output_format'), 'mp3_22050_32');
+  assert.equal(wire.fileFormat, 'pcm_s16le_16');
+});
+
+test('conversion writes the first audio chunk before the voice service finishes the phrase', async () => {
+  let release = () => {};
+  const gate = new Promise(resolve => { release = resolve; });
+  let writes = 0;
+  let sawFirst = () => {};
+  const firstWrite = new Promise(resolve => { sawFirst = resolve; });
+  const calls = {};
+  const client = fakeClient(calls);
+  client.speechToSpeech.stream = async (voiceId, request) => {
+    calls.stream = { voiceId, request };
+    return new ReadableStream({
+      async start(controller) {
+        controller.enqueue(new Uint8Array([9, 8, 7]));
+        await gate;
+        controller.enqueue(new Uint8Array([6]));
+        controller.close();
+      },
+    });
+  };
+  invalidateVoiceCache();
+  const response = createResponse();
+  const originalWrite = response.write.bind(response);
+  response.write = (value) => {
+    writes += 1;
+    if (writes === 1) {
+      assert.equal(response.headersFlushed, true);
+      sawFirst();
+    }
+    return originalWrite(value);
+  };
+  const pending = handler('convert', { client })({
+    method: 'POST',
+    headers: {},
+    body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm, removeBackgroundNoise: true },
+  }, response);
+  try {
+    await Promise.race([
+      firstWrite,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('handler buffered the voice stream')), 1000)),
+    ]);
+    assert.equal(writes, 1);
+    assert.deepEqual([...response.chunks[0]], [9, 8, 7]);
+    assert.equal(calls.stream.request.removeBackgroundNoise, true);
+  } finally {
+    release();
+    await pending;
+  }
+  assert.deepEqual([...response.ended], [9, 8, 7, 6]);
+});
+
+test('a stream failure after the first byte keeps the audio response instead of JSON', async () => {
+  const client = fakeClient();
+  client.speechToSpeech.stream = async () => new ReadableStream({
+    async start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      controller.error(Object.assign(new Error('reset'), { statusCode: 502 }));
+    },
+  });
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, undefined);
+    assert.equal(response.headers['content-type'], 'audio/mpeg');
+    assert.deepEqual([...response.ended], [1, 2]);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test('conversion and deletion reject other accounts\' voices and oversized audio', async () => {
@@ -172,9 +285,96 @@ test('account problems are explained precisely and marked fatal so live conversi
   assert.equal(describeElevenLabsError(new Error('socket hang up')).code, 'network_error');
 });
 
+test('live capture flushes sooner than the old 550ms / 6s limits', () => {
+  assert.ok(SILENCE_FLUSH_MS < 550);
+  assert.ok(MAX_SEGMENT_MS < 6000);
+  assert.equal(SILENCE_FLUSH_MS, 400);
+  assert.equal(MAX_SEGMENT_MS, 4000);
+  assert.equal(shouldFlushLiveSegment(399, 3999), false);
+  assert.equal(shouldFlushLiveSegment(400, 100), true);
+  assert.equal(shouldFlushLiveSegment(0, 4000), true);
+});
+
+test('playback reads and schedules audio before the phrase body is finished', async () => {
+  let release = () => {};
+  const gate = new Promise(resolve => { release = resolve; });
+  const stream = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(new Uint8Array([1, 2]));
+      await gate;
+      controller.enqueue(new Uint8Array([3]));
+      controller.close();
+    },
+  });
+  const seen = [];
+  let sawFirst = () => {};
+  const firstChunk = new Promise(resolve => { sawFirst = resolve; });
+  const pending = readConvertedAudio({ body: stream, arrayBuffer: async () => { throw new Error('full body'); } }, async (chunk) => {
+    seen.push([...chunk]);
+    if (seen.length === 1) sawFirst();
+  });
+  try {
+    await Promise.race([
+      firstChunk,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('client waited for the full body')), 1000)),
+    ]);
+    assert.deepEqual(seen, [[1, 2]]);
+  } finally {
+    release();
+    await pending;
+  }
+  assert.deepEqual(seen, [[1, 2], [3]]);
+
+  const fallback = [];
+  await readConvertedAudio({
+    body: null,
+    arrayBuffer: async () => Uint8Array.from([4, 5, 6]).buffer,
+  }, chunk => { fallback.push(...chunk); });
+  assert.deepEqual(fallback, [4, 5, 6]);
+
+  const starts = [];
+  const queue = new StreamingMp3Queue(
+    async (bytes) => {
+      if (bytes.byteLength < 8) throw new Error('incomplete mp3');
+      return { duration: bytes.byteLength / 10 };
+    },
+    (decoded, offset) => starts.push({ duration: decoded.duration, offset }),
+    4,
+    0.05,
+  );
+  await queue.push(new Uint8Array([1, 2]));
+  assert.equal(starts.length, 0);
+  assert.equal(queue.started, false);
+  await queue.push(new Uint8Array([3, 4, 5, 6, 7, 8]));
+  assert.equal(queue.started, true);
+  assert.deepEqual(starts, [{ duration: 0.8, offset: 0 }]);
+  await queue.push(new Uint8Array([9, 10]));
+  assert.deepEqual(starts, [{ duration: 0.8, offset: 0 }, { duration: 1, offset: 0.8 }]);
+  await queue.close();
+  assert.equal(starts.length, 2);
+
+  const tail = [];
+  const short = new StreamingMp3Queue(
+    async (bytes) => ({ duration: bytes.byteLength / 10 }),
+    (decoded, offset) => tail.push({ duration: decoded.duration, offset }),
+    MP3_PLAYBACK_MIN_BYTES,
+  );
+  await short.push(new Uint8Array(10));
+  assert.equal(tail.length, 0);
+  await short.close();
+  assert.deepEqual(tail, [{ duration: 1, offset: 0 }]);
+
+  const phrase = new PhraseAudioBuffer();
+  const taken = phrase.take(0);
+  phrase.push(Uint8Array.from([7]));
+  assert.deepEqual([...(await taken)], [7]);
+  phrase.finish();
+  assert.equal(await phrase.take(1), null);
+});
+
 test('conversion failures return the ElevenLabs reason to the app', async () => {
   const client = fakeClient();
-  client.speechToSpeech.convert = async () => { throw Object.assign(new Error('Status 401'), { statusCode: 401, body: { detail: { status: 'missing_permissions', message: 'missing speech_to_speech' } } }); };
+  client.speechToSpeech.stream = async () => { throw Object.assign(new Error('Status 401'), { statusCode: 401, body: { detail: { status: 'missing_permissions', message: 'missing speech_to_speech' } } }); };
   const originalWarn = console.warn;
   const logged = [];
   console.warn = (...args) => logged.push(args);
