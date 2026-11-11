@@ -33,4 +33,6 @@
 .morphly-feedback-success { display:flex; flex-direction:column; gap:12px; align-items:flex-start; font-size:14px; }
 .morphly-feedback-success > svg { color:#15803d; }
 @media(max-width:600px) { .morphly-feedback-fields { grid-template-columns:1fr; } .morphly-feedback-dialog { padding:22px; } .morphly-notice { flex-wrap:wrap; gap:4px; } .morphly-notice p { flex-basis:75%; } .morphly-notice-countdown { margin-left:22px; } }
+.morphly-affiliate-points { margin: 0; padding-left: 18px; display: grid; gap: 8px; font-size: 14px; line-height: 1.5; color: #3d4450; }
+.morphly-affiliate-prompt .community-primary { display: inline-flex; align-items: center; gap: 6px; }
 @media(prefers-reduced-motion:reduce) { .morphly-feedback-dialog { animation:none!important; transition:none!important; } }

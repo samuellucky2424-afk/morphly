@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { BadgePercent, Copy, LoaderCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import { AffiliateTour } from '@/components/AffiliateTour';
 import { Button } from '@/components/ui/button';
+import { useAuth } from '@/context/AuthContext';
+import {
+  affiliateTourSteps,
+  readTourCompleted,
+  shouldAutoStartAffiliateTour,
+  writeTourCompleted,
+} from '@/lib/affiliate-experience';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -78,6 +86,7 @@ async function confirmRecentSignIn(password: string) {
 }
 
 export default function Affiliate() {
+  const { user } = useAuth();
   const location = useLocation();
   const preferred = (location.state as { view?: string } | null)?.view;
   const [data, setData] = useState<ProgramState | null>(null);
@@ -92,6 +101,37 @@ export default function Affiliate() {
   const [accountNumber, setAccountNumber] = useState('');
   const [accountName, setAccountName] = useState('');
   const [amountNaira, setAmountNaira] = useState('');
+  const [tourOpen, setTourOpen] = useState(false);
+  const [tourStep, setTourStep] = useState(0);
+  const tourStarted = useRef(false);
+  const tourSteps = affiliateTourSteps({
+    rateLabel: data?.program.earnLabel ?? 'Earn 6%',
+    durationDays: data?.program.durationDays ?? 30,
+    holdDays: data?.program.holdDays ?? 7,
+    minWithdrawalKobo: data?.program.minWithdrawalKobo ?? 300000,
+  });
+  const dashboardReady = data?.affiliate?.status === 'active' || data?.affiliate?.status === 'suspended';
+
+  useEffect(() => {
+    if (!dashboardReady || !user?.id || tourStarted.current) return;
+    tourStarted.current = true;
+    if (shouldAutoStartAffiliateTour(readTourCompleted(window.localStorage, user.id))) {
+      setTourStep(0);
+      setTab('overview');
+      setTourOpen(true);
+    }
+  }, [dashboardReady, user?.id]);
+
+  function showTourStep(index: number) {
+    setTourStep(index);
+    setTab(tourSteps[index]?.tab ?? 'overview');
+    setTourOpen(true);
+  }
+
+  function closeTour() {
+    if (user?.id) writeTourCompleted(window.localStorage, user.id);
+    setTourOpen(false);
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -303,6 +343,7 @@ export default function Affiliate() {
           <h1 className="text-2xl font-semibold tracking-tight">{affiliate.status === 'suspended' ? 'Affiliate access paused' : 'Your earnings'}</h1>
         </div>
         <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => showTourStep(0)}>Take the tour</Button>
           {tabs.map((item) => (
             <Button key={item.id} type="button" variant={tab === item.id ? 'default' : 'outline'} size="sm" onClick={() => setTab(item.id)}>{item.label}</Button>
           ))}
@@ -314,7 +355,7 @@ export default function Affiliate() {
 
       {tab === 'overview' ? (
         <div className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" data-affiliate-tour="balances">
             {[
               ['Available', data.wallet.availableKobo],
               ['Pending', data.wallet.pendingKobo],
@@ -335,7 +376,7 @@ export default function Affiliate() {
             ))}
           </div>
           {affiliate.link ? (
-            <Card>
+            <Card data-affiliate-tour="link">
               <CardHeader>
                 <CardTitle>Referral link</CardTitle>
                 <CardDescription>Share this link. Old signup links with the same code still work.</CardDescription>
@@ -353,13 +394,13 @@ export default function Affiliate() {
                 </div>
               </CardContent>
             </Card>
-          ) : <p className="text-sm text-muted-foreground">Your referral link appears after approval.</p>}
+          ) : <p className="text-sm text-muted-foreground" data-affiliate-tour="link">Your referral link appears after approval.</p>}
           {data.wallet.clawbackDueKobo > 0 ? <p className="text-sm text-muted-foreground">A refund left {formatNgn(data.wallet.clawbackDueKobo)} to offset against your next available commission. Morphly does not take this from your bank.</p> : null}
         </div>
       ) : null}
 
       {tab === 'referrals' ? (
-        <Card>
+        <Card data-affiliate-tour="referrals">
           <CardHeader><CardTitle>Referrals</CardTitle><CardDescription>Customer names and emails are hidden.</CardDescription></CardHeader>
           <CardContent className="overflow-x-auto">
             {data.referrals.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No referrals yet. Share your link to get started.</p> : (
@@ -377,7 +418,7 @@ export default function Affiliate() {
       ) : null}
 
       {tab === 'commissions' ? (
-        <Card>
+        <Card data-affiliate-tour="commissions">
           <CardHeader><CardTitle>Commission history</CardTitle><CardDescription>Each row is one paid purchase. Pending amounts are on hold for {data.program.holdDays} days.</CardDescription></CardHeader>
           <CardContent className="overflow-x-auto">
             {data.commissions.length === 0 ? <p className="py-8 text-center text-sm text-muted-foreground">No commissions yet.</p> : (
@@ -395,11 +436,11 @@ export default function Affiliate() {
       ) : null}
 
       {tab === 'payouts' ? (
-        <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+        <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]" data-affiliate-tour="payout">
           <Card>
             <CardHeader>
               <CardTitle>Request a withdrawal</CardTitle>
-              <CardDescription>Minimum {formatNgn(data.program.minWithdrawalKobo)}. Morphly sends the net amount manually after approval. Automatic payouts are not available.</CardDescription>
+              <CardDescription data-affiliate-tour="minimum">Minimum {formatNgn(data.program.minWithdrawalKobo)}. Add your bank on the Bank account tab. Morphly sends the net amount manually after approval. Automatic payouts are not available.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-1">
@@ -463,6 +504,16 @@ export default function Affiliate() {
             <Button type="button" disabled={busy} onClick={() => void saveBank()}>Save bank details</Button>
           </CardContent>
         </Card>
+      ) : null}
+      {tourOpen ? (
+        <AffiliateTour
+          steps={tourSteps}
+          stepIndex={tourStep}
+          onBack={() => showTourStep(Math.max(0, tourStep - 1))}
+          onNext={() => showTourStep(Math.min(tourSteps.length - 1, tourStep + 1))}
+          onSkip={closeTour}
+          onFinish={closeTour}
+        />
       ) : null}
     </div>
   );
