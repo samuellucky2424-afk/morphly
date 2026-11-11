@@ -860,7 +860,12 @@ export default async function handler(req, res) {
       throw providerAuditError;
     }
     const reserved = await supabaseAdmin.rpc('reserve_realtime_video', {
-      p_user: userId, p_session: newSession.id, p_window: PROVIDER_CREDENTIAL_WINDOW_SECONDS,
+      p_user: userId,
+      p_session: newSession.id,
+      // Plus reserves the whole affordable lifetime up front, capped at the
+      // Xmax key maximum, so the one key returned to current desktop builds
+      // stays paid until the balance runs out. Pro keeps a short rolling hold.
+      p_window: isXmax ? maxSeconds : PROVIDER_CREDENTIAL_WINDOW_SECONDS,
     });
     if (reserved.error || !reserved.data || Number(reserved.data.reservedSeconds) < 1) {
       await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });

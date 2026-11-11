@@ -142,6 +142,44 @@ test('a second streaming session cannot stay active on the same balance', async 
   assert.equal(db.row('wallets/wallet-user').credits, balanceAfterFirst);
 });
 
+test('Plus keeps one prepaid key for field clients and revokes it when the heartbeat stops', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 1000 });
+  let now = Date.parse('2026-11-11T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('plus-long').set({
+    id: 'plus-long', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 4,
+    provider: 'xmax', provider_max_seconds: 1800, seconds_used: 0, start_time: new Date(now).toISOString(),
+    provider_key_id: 'tk-field-client',
+  });
+  const reserved = await billing.reserveVideo({ p_user: 'user', p_session: 'plus-long', p_window: 1800 });
+  assert.equal(reserved.reservedSeconds, 500);
+  assert.equal(db.row('wallets/wallet-user').credits, 0);
+  await db.collection('sessions').doc('plus-long').set({
+    ...db.row('sessions/plus-long'),
+    credential_expires_at: new Date(now + 500000).toISOString(),
+  });
+  for (let minute = 0; minute < 6; minute += 1) {
+    now += 60000;
+    const beat = await billing.video({ p_user: 'user', p_session: 'plus-long', p_epoch_seconds: [], p_close: false });
+    assert.equal(beat.ended, false, 'a field client that keeps polling is not cut off');
+  }
+  now += 40000;
+  const stillGoing = await billing.video({ p_user: 'user', p_session: 'plus-long', p_epoch_seconds: [], p_close: false });
+  assert.equal(stillGoing.shouldStop, false);
+  assert.equal(stillGoing.ended, false);
+  assert.equal(stillGoing.totalBillableSeconds, 400);
+  assert.equal(stillGoing.remainingCredits, 200);
+  assert.equal(db.row('sessions/plus-long').provider_key_id, 'tk-field-client');
+  now += 91000;
+  const missed = await billing.video({ p_user: 'user', p_session: 'plus-long', p_epoch_seconds: [], p_close: false });
+  assert.equal(missed.ended, true);
+  assert.equal(missed.reason, 'heartbeat_timeout');
+  assert.equal(missed.totalBillableSeconds, 490);
+  assert.equal(db.row('wallets/wallet-user').credits, 20);
+  assert.equal(db.row('sessions/plus-long').status, 'ended');
+});
+
 test('closing without a client timestamp still bills a long gap in commit-sized chunks', async () => {
   const db = memoryDb();
   await account(db, { credits: 1000 });

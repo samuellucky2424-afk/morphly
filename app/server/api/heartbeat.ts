@@ -2,8 +2,6 @@
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 import { settleRealtimeVideo } from '../realtime-billing.js';
-import { PROVIDER_CREDENTIAL_WINDOW_SECONDS } from '../firebase-realtime-billing.js';
-import { createXmaxTemporaryKey } from './start-session.ts';
 import { revokeProviderSession } from '../provider-revocation.js';
 import { rateLimit } from '../request-rate-limit.js';
 
@@ -89,21 +87,11 @@ export default async function handler(req, res) {
       return res.status(429).json({ error: 'Too many usage updates. Wait a moment and try again.' });
     }
     if (req.body?.billingVersion === 2) {
-      const result = await settleRealtimeVideo(supabaseAdmin, userId, sessionId, false, { extend: req.body?.acceptRenewal === true });
+      // Extension is decided from the session provider. Plus and Pro both
+      // top up here; the original Plus key is kept so field desktop builds
+      // do not have to apply a replacement credential.
+      const result = await settleRealtimeVideo(supabaseAdmin, userId, sessionId, false, { extend: true });
       if (result?.ended) await revokeProviderSession({ id: sessionId, provider: result.provider, provider_key_id: result.providerKeyId, provider_live_id: result.providerLiveId });
-      if (result?.renewalDue && req.body?.acceptRenewal === true && !result.shouldStop && result.provider === 'xmax') {
-        const extended = await supabaseAdmin.rpc('reserve_realtime_video', {
-          p_user: userId, p_session: sessionId, p_window: PROVIDER_CREDENTIAL_WINDOW_SECONDS,
-        });
-        const addedSeconds = Number(extended.data?.reservedSeconds);
-        const minted = extended.error || addedSeconds < 1 ? null : await createXmaxTemporaryKey({ apiKey: process.env.XMAX_API_KEY?.trim(), maxSeconds: addedSeconds });
-        if (minted?.token) {
-          await supabaseAdmin.from('sessions').update({ provider_key_id: minted.token, credential_expires_at: minted.expiresAt }).eq('id', sessionId);
-          result.renewedToken = minted.token;
-          result.expiresAt = minted.expiresAt;
-          result.remainingCredits = extended.data?.remainingCredits ?? result.remainingCredits;
-        }
-      }
       return res.json(result);
     }
     const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);

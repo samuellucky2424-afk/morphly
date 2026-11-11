@@ -6,20 +6,24 @@ const epochId=(uid,second)=>hash(JSON.stringify([uid,String(second)]));
 export const VOICE_RATE_HALF=4; // 2 credits per second
 export const VOICE_GRACE_MS=20000;
 export const HEARTBEAT_TIMEOUT_MS=90000;
-// Provider credentials are minted only for time that has already been debited.
-// Vidu relays renew this window while the wallet can pay. Plus keys are renewed
-// only when the client asks for the next key.
+// Vidu keeps a short rolling hold because its relay can follow server time.
+// Plus keeps one Xmax key for the whole prepaid lifetime (up to 30 minutes, the
+// provider cap). Heartbeats and session-status extend that hold while credits
+// remain, so desktop builds that cannot swap keys are not cut off. The key is
+// never valid for time that has not been reserved, and it is revoked when the
+// balance cannot cover the next second or a heartbeat is missed.
 export const PROVIDER_CREDENTIAL_WINDOW_SECONDS=180;
+export const XMAX_KEY_MAX_SECONDS=1800;
 export const MAX_COMMIT_SECONDS=120;
 export const VOICE_CONVERT_SLOTS=3;
 export const PCM_BYTES_PER_SECOND=32000;
 const SLOT_TTL_MS=30000;
 const utc=value=>Date.parse(typeof value==='string'&&/^\d{4}-\d\d-\d\d /.test(value)?value.replace(' ','T')+'Z':value);
 
-export function paidCredentialSeconds(maxSeconds){
+export function paidCredentialSeconds(maxSeconds,ceiling=XMAX_KEY_MAX_SECONDS){
   const paid=Math.floor(Number(maxSeconds)||0);
   if(paid<1)return 0;
-  return Math.min(paid,PROVIDER_CREDENTIAL_WINDOW_SECONDS);
+  return Math.min(paid,ceiling);
 }
 
 export function pcmDurationSeconds(byteLength){
@@ -123,11 +127,18 @@ export function createFirebaseRealtimeBilling(db,options={}){
       let reason=close?String(p.p_reason||'client_ended').slice(0,80):null;
       if(!close&&Number.isFinite(lastBeat)&&row.last_heartbeat_at&&now()-lastBeat>HEARTBEAT_TIMEOUT_MS){close=true;reason='heartbeat_timeout';}
       if(!close&&row.provider==='xmax'&&Number.isFinite(expiresAt)&&expiresAt<=now()){close=true;reason='credential_expired';}
-      const extend=!close&&(mode.reserveOnly||mode.extend||(row.provider==='vidu'&&!mode.reserveOnly));
+      // Plus and Pro both top up on every server touch. Plus is capped at the
+      // key already issued, so an old client keeps that key and unpaid time is
+      // never added past it.
+      const extend=!close&&(mode.reserveOnly||mode.extend||row.provider==='vidu'||row.provider==='xmax');
       let added=0;
       if(extend||mode.reserveOnly){
-        const windowSeconds=Math.max(1,paidCredentialSeconds(p.p_window||PROVIDER_CREDENTIAL_WINDOW_SECONDS));
-        const targetExclusive=Math.min(anchor+cap,Math.max(prepaidUntil,time+windowSeconds));
+        const requested=Math.max(1,Math.floor(Number(p.p_window)||(row.provider==='xmax'?cap:PROVIDER_CREDENTIAL_WINDOW_SECONDS)));
+        const windowCap=row.provider==='xmax'?XMAX_KEY_MAX_SECONDS:PROVIDER_CREDENTIAL_WINDOW_SECONDS;
+        const windowSeconds=Math.min(requested,windowCap);
+        let horizon=time+windowSeconds;
+        if(!mode.reserveOnly&&row.provider==='xmax'&&Number.isFinite(expiresAt))horizon=Math.min(horizon,Math.floor(expiresAt/1000));
+        const targetExclusive=Math.min(anchor+cap,Math.max(prepaidUntil,horizon));
         added=Math.min(Math.max(0,targetExclusive-prepaidUntil),Math.floor(state.available/state.videoRate));
         if(added>0){state.available-=added*state.videoRate;state.reserved+=added*state.videoRate;state.walletFloor=Math.floor(state.available/2);prepaidUntil+=added;}
         if(mode.reserveOnly){
@@ -139,7 +150,13 @@ export function createFirebaseRealtimeBilling(db,options={}){
       // Sessions opened before prepaid windows still bill elapsed server time
       // from the wallet instead of trusting a client timestamp list.
       if(!Number.isFinite(Number(row.prepaid_until_epoch))&&prepaidUntil<=anchor)prepaidUntil=Math.min(anchor+cap,time);
-      const endInclusive=Math.min(time-1,prepaidUntil-1,anchor+cap-1);
+      const keyEnd=Number.isFinite(expiresAt)?Math.floor(expiresAt/1000):prepaidUntil;
+      const timeoutEnd=Math.floor((lastBeat+HEARTBEAT_TIMEOUT_MS)/1000);
+      // A late or missing heartbeat bills through the moment the session should
+      // have stopped when that is still before the key expires. After the key
+      // itself has expired, the prepaid lifetime was usable and is billed.
+      const usageThrough=reason==='heartbeat_timeout'&&time<keyEnd?Math.min(time,timeoutEnd):reason==='credential_expired'?Math.min(time,keyEnd):time;
+      const endInclusive=Math.min(usageThrough-1,prepaidUntil-1,anchor+cap-1);
       const chunkEnd=Math.min(endInclusive,state.lastSecond+MAX_COMMIT_SECONDS);
       const seconds=[];
       for(let second=state.lastSecond+1;second<=chunkEnd;second++)seconds.push(second);
