@@ -28,7 +28,7 @@ if (!firebaseAdminConfigError) {
   }
   const wrapped=fn=>async(...args)=>{try{return {data:await fn(...args),error:null};}catch(e){return {data:null,error:{message:e.message,code:e.code}};}};
   firebaseAdmin={
-    provider:'firebase',db:firebaseDb,
+    provider:'firebase',db:firebaseDb,authAdmin:auth,
     from:table=>new FirebaseQuery(firebaseDb,table),
     rpc:wrapped(async(name,args)=>operations.rpc(name,args)),
     provision:operations.provision,
