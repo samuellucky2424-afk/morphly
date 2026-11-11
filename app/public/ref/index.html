@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Join Morphly</title>
+  <meta name="referrer" content="no-referrer">
+</head>
+<body>
+  <p>Taking you to Morphly signup…</p>
+  <script>
+    var parts = location.pathname.split('/').filter(Boolean);
+    var raw = parts[0] === 'ref' ? (parts[1] || '') : '';
+    var code = String(raw).replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+    location.replace('/#/signup?ref=' + encodeURIComponent(code));
+  </script>
+</body>
+</html>

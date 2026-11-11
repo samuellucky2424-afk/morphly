@@ -1,0 +1,23 @@
+.affiliate-tour { position: fixed; inset: 0; z-index: 80; }
+.affiliate-tour-shade { position: absolute; inset: 0; border: 0; background: rgba(25, 28, 32, .45); }
+.affiliate-tour-ring { position: fixed; z-index: 81; border: 2px solid #c82436; border-radius: 12px; pointer-events: none; box-shadow: 0 0 0 9999px rgba(25, 28, 32, .45); }
+.affiliate-tour-card { position: fixed; z-index: 82; width: min(360px, calc(100vw - 32px)); max-height: min(70vh, 420px); overflow: auto; padding: 16px; border: 1px solid #e5e7eb; border-radius: 14px; background: #fff; color: #191c20; box-shadow: 0 16px 40px rgba(20, 24, 32, .18); outline: none; }
+.affiliate-tour-card:focus-visible { outline: 2px solid #c82436; outline-offset: 3px; }
+.affiliate-tour-card h2 { margin: 8px 0; font-size: 16px; }
+.affiliate-tour-card p { margin: 0; font-size: 14px; line-height: 1.5; color: #3d4450; }
+.affiliate-tour-progress { display: flex; gap: 6px; margin: 0; }
+.affiliate-tour-progress span { width: 8px; height: 8px; border-radius: 999px; background: #e5e7eb; }
+.affiliate-tour-progress .is-current { background: #c82436; }
+.affiliate-tour-progress .is-done { background: #f2cbd2; }
+.affiliate-tour-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 14px; }
+.affiliate-tour-actions div { display: flex; gap: 8px; }
+.affiliate-tour-actions button { min-height: 40px; padding: 0 12px; border: 1px solid #d4d7dd; border-radius: 8px; background: #fff; font-weight: 700; font-size: 13px; }
+.affiliate-tour-actions button:focus-visible { outline: 2px solid #c82436; outline-offset: 2px; }
+.affiliate-tour-actions .is-primary { border-color: #c82436; background: #c82436; color: #fff; }
+.affiliate-tour .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+@media (max-width: 719px) {
+  .affiliate-tour-card { top: auto !important; left: 16px !important; right: 16px; bottom: 16px; width: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .affiliate-tour, .affiliate-tour-card { scroll-behavior: auto; }
+}

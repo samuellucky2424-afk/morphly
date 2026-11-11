@@ -2,6 +2,7 @@
 import { firebaseDb } from '../firebase-admin.js';
 import { cronAuthorized } from '../customer-engagement.js';
 import { sweepPendingCheckouts } from '../payment-checkouts.js';
+import { reconcileAffiliateCommissions } from '../affiliate-payment-hook.mjs';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
@@ -11,7 +12,10 @@ export default async function handler(req, res) {
   const secretKey = process.env.FLUTTERWAVE_SECRET_KEY;
   if (!secretKey) return res.status(503).json({ error: 'FLUTTERWAVE_SECRET_KEY is not configured' });
   try {
-    return res.json(await sweepPendingCheckouts(firebaseDb, { secretKey }));
+    const summary = await sweepPendingCheckouts(firebaseDb, { secretKey });
+    let affiliateReconcile = null;
+    try { affiliateReconcile = await reconcileAffiliateCommissions(firebaseDb); } catch { affiliateReconcile = { failed: true }; }
+    return res.json({ ...summary, affiliateReconcile });
   } catch {
     return res.status(500).json({ error: 'Payment sweep failed' });
   }

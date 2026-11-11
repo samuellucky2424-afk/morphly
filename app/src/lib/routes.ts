@@ -10,6 +10,7 @@ export const ROUTES = {
     WALLET: '/wallet',
     SUBSCRIPTION: '/subscription',
     SETTINGS: '/settings',
+    AFFILIATE: '/affiliate',
   },
   DEFAULT: '/dashboard',
 } as const;

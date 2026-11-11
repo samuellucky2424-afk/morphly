@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { hash, encode } from './firebase-store.js';
 import { createPaymentRuntime } from './firebase-payment-runtime.mjs';
+import { buildSignupAttribution, maskCustomer, normalizeSettings } from '../../shared/affiliate-program.mjs';
 import { createFirebaseEngagement } from './firebase-engagement.js';
 import { createFirebaseRealtimeBilling } from './firebase-realtime-billing.js';
 
@@ -28,6 +29,8 @@ export function createFirebaseOperations(db,auth,env=process.env){
       const referrer=referrers?one(referrers):null;
       if(requestedCode&&(!referrer||referrer.id===uid||referrer.data().account_status!=='active'||! /^[A-HJ-NP-Z2-9]{6,12}$/.test(requestedCode)))throw new Error('INVALID_REFERRAL_CODE');
       const priorReferrals=referrer?await tx.get(query('referrals','referrer_user_id',referrer.id)):null;
+      const affiliateSnap=referrer?await tx.get(col('affiliates').doc(referrer.id)):null;
+      const affiliateSettingsSnap=affiliateSnap?.exists?await tx.get(col('affiliate_settings').doc('current')):null;
       // The profile document is the registration lock. A retry or login must
       // never give a migrated user another signup bonus.
       const walletRef=wallet?.ref||col('wallets').doc(randomUUID()),transaction=col('transactions').doc(randomUUID()),ledger=col('wallet_ledger').doc(randomUUID());
@@ -38,7 +41,14 @@ export function createFirebaseOperations(db,auth,env=process.env){
       tx.create(ledger,{id:ledger.id,user_id:uid,transaction_id:transaction.id,delta:50,balance_after:credits,entry_type:'signup_bonus',reason:'New account testing credits',idempotency_key:`signup_bonus:${uid}`,created_at:timestamp});
       if(referrer){const ref=col('referrals').doc(randomUUID());const suspicious=priorReferrals.docs.filter(d=>Date.parse(d.data().created_at)>Date.now()-3600000).length>=9;
         tx.create(ref,{id:ref.id,referrer_user_id:referrer.id,referred_user_id:uid,referral_code_used:requestedCode,status:'registered',suspicious,suspicious_reason:suspicious?'High referral registration velocity: 10 or more signups within one hour':null,created_at:timestamp,updated_at:timestamp});
-        const audit=col('referral_audit_logs').doc(randomUUID());tx.create(audit,{id:audit.id,action:'referral.attached',referral_id:ref.id,referrer_user_id:referrer.id,referred_user_id:uid,metadata:JSON.stringify({code:requestedCode,suspicious}),created_at:timestamp});}
+        const audit=col('referral_audit_logs').doc(randomUUID());tx.create(audit,{id:audit.id,action:'referral.attached',referral_id:ref.id,referrer_user_id:referrer.id,referred_user_id:uid,metadata:JSON.stringify({code:requestedCode,suspicious}),created_at:timestamp});
+        if(affiliateSnap?.exists&&affiliateSnap.data().status==='active'){
+          const settings=normalizeSettings(affiliateSettingsSnap?.exists?affiliateSettingsSnap.data():null);
+          tx.create(col('affiliate_attributions').doc(uid),buildSignupAttribution({
+            referredUserId:uid,affiliateId:referrer.id,code:requestedCode,suspicious,settings,now:Date.now(),
+            maskedLabel:maskCustomer(user.user_metadata?.name,user.email),
+          }));
+        }}
       return {walletCreated:!wallet};
     });
   }

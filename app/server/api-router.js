@@ -23,6 +23,8 @@ import versionHandler from './api/version.js';
 import walletHandler from './api/wallet.js';
 import telemetryHandler, { errorLogHandler } from './api/telemetry.js';
 import firebaseRegisterHandler from './api/firebase-register.js';
+import affiliateHandler from './api/affiliate.js';
+import adminAffiliatesHandler from './api/admin-affiliates.js';
 import paymentSweepHandler from './api/payment-sweep.js';
 import { createVoiceHandler } from './api/voice.js';
 
@@ -43,6 +45,8 @@ const routeHandlers = {
   'admin-transactions': createAdminHandler('transactions'),
   'admin-usage': createAdminHandler('usage'),
   'admin-logs': createAdminHandler('logs'),
+  'admin-affiliates': adminAffiliatesHandler,
+  affiliate: affiliateHandler,
   'credit-packages': creditPackagesHandler,
   'end-session': endSessionHandler,
   'ensure-user-wallet': ensureUserWalletHandler,

@@ -1,0 +1,24 @@
+// Merge these matches into the existing Morphly Firestore rules.
+// Do not deploy this file by itself: it is not a complete ruleset and would
+// remove every other collection's rules. Deploy only after review.
+//
+// All affiliate data is server-only (Admin SDK). Clients cannot read or write it.
+// Single-field equality queries used by the server do not need composite indexes.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /affiliate_settings/{id} { allow read, write: if false; }
+    match /affiliate_settings_snapshots/{id} { allow read, write: if false; }
+    match /affiliates/{id} { allow read, write: if false; }
+    match /affiliate_attributions/{id} { allow read, write: if false; }
+    match /affiliate_commissions/{id} { allow read, write: if false; }
+    match /affiliate_commission_dedup/{id} { allow read, write: if false; }
+    match /affiliate_wallets/{id} { allow read, write: if false; }
+    match /affiliate_ledger/{id} { allow read, write: if false; }
+    match /affiliate_withdrawals/{id} { allow read, write: if false; }
+    match /affiliate_bank_accounts/{id} { allow read, write: if false; }
+    match /affiliate_audit/{id} { allow read, write: if false; }
+    match /affiliate_reconcile/{id} { allow read, write: if false; }
+    match /affiliate_rate_limits/{id} { allow read, write: if false; }
+  }
+}
