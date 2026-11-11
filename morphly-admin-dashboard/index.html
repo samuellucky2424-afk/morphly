@@ -44,6 +44,9 @@
         <button class="nav-item" type="button" data-view="referrals">
           <span class="nav-icon">+</span><span>Referrals</span><span class="nav-count" id="sidebarReferralCount">0</span>
         </button>
+        <button class="nav-item" type="button" data-view="affiliates">
+          <span class="nav-icon">₦</span><span>Affiliates</span>
+        </button>
         <button class="nav-item" type="button" data-view="transactions">
           <span class="nav-icon">₦</span><span>Transactions</span>
         </button>
@@ -255,6 +258,9 @@
             <article class="engagement-panel"><h4>Recent email activity</h4><p>“Sent” means accepted by Resend. Failed messages remain visible for investigation.</p><div id="engagementEmailJobs"></div></article>
           </div>
         </section>
+        <section class="view" id="affiliatesView" data-view-panel="affiliates">
+          <div id="affiliateAdminRoot"><p class="empty-cell">Loading the affiliate program…</p></div>
+        </section>
         <section class="view" id="logsView" data-view-panel="logs">
           <div class="metric-grid compact" id="logMetrics"></div>
           <article class="panel"><div class="panel-head"><div><p class="eyebrow">Reliability</p><h2>System event logs</h2></div><select id="logSeverityFilter" aria-label="Filter log severity"><option value="all">All severity</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Information</option></select></div><div class="table-wrap"><table><thead><tr><th>Event</th><th>Details</th><th>Platform</th><th>User</th><th>Count</th><th>Severity</th><th>Last seen</th></tr></thead><tbody id="logTableBody"></tbody></table></div></article>
@@ -312,7 +318,8 @@
     <section class="drawer-section"><div class="section-title"><div><p class="eyebrow">Account history</p><h3>Audit trail</h3></div></div><div class="timeline" data-user-audit></div></section>
   </template>
 
-  <script src="/private/morphly/login/app.js?v=20261006-logout"></script>
+  <script src="/private/morphly/login/app.js?v=20261111-affiliates"></script>
   <script src="/private/morphly/login/engagement.js?v=20260905"></script>
+  <script src="/private/morphly/login/affiliate-admin.js?v=20261111"></script>
 </body>
 </html>

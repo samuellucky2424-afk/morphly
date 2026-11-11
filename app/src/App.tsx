@@ -18,6 +18,7 @@ const Dashboard = lazy(() => import('@/pages/Dashboard'));
 const Wallet = lazy(() => import('@/pages/Wallet'));
 const Subscription = lazy(() => import('@/pages/Subscription'));
 const Settings = lazy(() => import('@/pages/Settings'));
+const Affiliate = lazy(() => import('@/pages/Affiliate'));
 const NotFound = lazy(() => import('@/pages/NotFound'));
 
 function DefaultRouteRedirect() {
@@ -95,6 +96,14 @@ function App() {
                       element={
                         <UserRoute>
                           <Settings />
+                        </UserRoute>
+                      }
+                    />
+                    <Route
+                      path={ROUTES.PROTECTED.AFFILIATE}
+                      element={
+                        <UserRoute>
+                          <Affiliate />
                         </UserRoute>
                       }
                     />

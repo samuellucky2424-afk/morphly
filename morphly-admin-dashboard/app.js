@@ -692,12 +692,13 @@ function renderAll() {
 
 function setView(view) {
   state.activeView = view;
-  const titles = { overview: "Business overview", users: "User management", usage: "AI credits usage", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API" };
+  const titles = { overview: "Business overview", users: "User management", usage: "AI credits usage", referrals: "Referral program", transactions: "Transactions", packages: "Credit packages", logs: "System logs", developer: "Developer API", affiliates: "Affiliate program" };
   $$("[data-view]").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
   $$("[data-view-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.viewPanel === view));
   $("#pageTitle").textContent = view === 'communications' ? 'Customer communications' : titles[view] || "Morphly admin";
   $("#sidebar").classList.remove("open");
   renderAll();
+  if (view === "affiliates") window.MorphlyAffiliateAdmin?.render();
   void loadLiveData();
 }
 

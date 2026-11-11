@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signOut, onIdTokenChanged, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, getAdditionalUserInfo } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, signOut, onIdTokenChanged, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, getAdditionalUserInfo, EmailAuthProvider, reauthenticateWithCredential, reauthenticateWithPopup } from 'firebase/auth';
 import type { User as FirebaseUser } from 'firebase/auth';
 import type { AuthUser as User, AuthSession as Session } from './auth-types';
 import {getFirebaseAuthErrorMessage} from './firebase-auth-errors';
@@ -51,4 +51,16 @@ export const firebaseSessionClient={auth:{
   },
   async signOut(_options?:unknown){await signOut(firebaseAuth);return {error:null};},
   async resetPasswordForEmail(email:string,_options?:unknown){try{await sendPasswordResetEmail(firebaseAuth,email.trim().toLowerCase(),{url:'https://live.morphly.fun/#/login',handleCodeInApp:false});return {data:{},error:null};}catch(error){if((error as {code?:string})?.code==='auth/user-not-found')return {data:{},error:null};return {data:null,error:new Error(getFirebaseAuthErrorMessage(error))};}},
+  async reauthenticateWithPassword(password:string){
+    const current=firebaseAuth.currentUser;
+    if(!current?.email)throw new Error('Sign in again to continue.');
+    await reauthenticateWithCredential(current,EmailAuthProvider.credential(current.email,password));
+    return sessionFor(current,true);
+  },
+  async reauthenticateWithGoogle(){
+    const current=firebaseAuth.currentUser;
+    if(!current)throw new Error('Sign in again to continue.');
+    await reauthenticateWithPopup(current,new GoogleAuthProvider());
+    return sessionFor(current,true);
+  },
 }};

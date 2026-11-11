@@ -3,12 +3,10 @@ import { MessageSquare, Megaphone, Wrench, X, CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AffiliateProgramPrompt } from '@/components/AffiliateProgramPrompt';
 import './customer-engagement.css';
 
 type Announcement = { id: string; title: string; message: string; kind: 'update' | 'maintenance'; ends_at: string | null; revision: number };
-// Reset by a new renderer/app launch, but not by visiting Wallet and returning.
-const promptedUsers = new Set<string>();
-
 export function CustomerEngagement({ paused = false }: { paused?: boolean }) {
   const { user } = useAuth();
   const [notices, setNotices] = useState<Announcement[]>([]);
@@ -33,12 +31,6 @@ export function CustomerEngagement({ paused = false }: { paused?: boolean }) {
     setOpen(false); setSaved(false); setMessage(''); setError(''); setRating(''); setCategory('experience'); setNotices([]);
     requestId.current = crypto.randomUUID();
   }, [user?.id]);
-
-  useEffect(() => {
-    if (!user || paused || promptedUsers.has(user.id)) return;
-    const timer = setTimeout(() => { promptedUsers.add(user.id); setOpen(true); }, 1000);
-    return () => clearTimeout(timer);
-  }, [user?.id, paused]);
 
   useEffect(() => {
     if (!user) return;
@@ -71,7 +63,7 @@ export function CustomerEngagement({ paused = false }: { paused?: boolean }) {
     const next = new Set(dismissed).add(keyOf(notice)); setDismissed(next);
     try { sessionStorage.setItem(`morphly-notices:${user?.id}`, JSON.stringify([...next].slice(-100))); } catch { /* memory fallback */ }
   }
-  function openReview() { if (user) promptedUsers.add(user.id); setOpen(true); }
+  function openReview() { setOpen(true); }
   async function submit(event: React.FormEvent) {
     event.preventDefault(); if (busy) return;
     setError('');
@@ -87,6 +79,7 @@ export function CustomerEngagement({ paused = false }: { paused?: boolean }) {
   }
   if (!user) return null;
   return <>
+    <AffiliateProgramPrompt paused={paused || open} />
     <div className="morphly-community-bar">
       <div className="morphly-notices" aria-label="Morphly service announcements">
         {active.length ? active.map((notice) => <div key={keyOf(notice)} className={`morphly-notice ${notice.kind}`} role="status">

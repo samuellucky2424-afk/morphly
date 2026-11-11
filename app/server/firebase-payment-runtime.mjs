@@ -24,14 +24,15 @@ export function createPaymentRuntime(db) {
     const txId=randomUUID(),ledgerId=randomUUID(),now=new Date().toISOString();
     const marker=db.collection('payment_dedup').doc(hash(`reference:${reference}`));
     const gatewayMarker=db.collection('payment_dedup').doc(hash(`${gateway}:${gatewayId}`));
-    return db.runTransaction(async tx=>{
+    const result = await db.runTransaction(async tx=>{
       // Read old transactions as well as new markers: migrated purchases must
       // never be credited again when a delayed provider callback arrives.
-      const [profile,pkg,walletRows,seen,seenGateway,byReference,byGateway,prior,referrals]=await Promise.all([
+      const [profile,pkg,walletRows,seen,seenGateway,byReference,byGateway,prior,referrals,affiliateAttribution]=await Promise.all([
         tx.get(db.collection('users').doc(userId)),tx.get(db.collection('credit_packages').doc(packageId)),
         tx.get(query('wallets','user_id',userId)),tx.get(marker),tx.get(gatewayMarker),
         tx.get(query('transactions','reference',reference)),tx.get(db.collection('transactions').where('gateway_transaction_id','==',String(gatewayId))),
         tx.get(db.collection('transactions').where('user_id','==',userId)),tx.get(query('referrals','referred_user_id',userId)),
+        tx.get(db.collection('affiliate_attributions').doc(userId)),
       ]);
       if(!profile.exists)throw new Error('Payment user not found');
       if(profile.data().account_status!=='active')throw new Error('Account unavailable');
@@ -56,6 +57,9 @@ export function createPaymentRuntime(db) {
           tx.get(query('transactions','reference',`referral_reward:${userId}`)),
         ]);
       }
+      // Attribution is created only for an approved affiliate. That customer stays
+      // out of the 200-credit program even if the affiliate is later suspended.
+      const suppressReferralReward=affiliateAttribution.exists;
       const walletRef=wallet?.ref??db.collection('wallets').doc(randomUUID());
       const record={id:txId,user_id:userId,package_id:packageId,reference,payment_gateway:gateway,gateway_transaction_id:String(gatewayId),amount:amountString(paid),amount_naira:amountString(paid),gateway_fee_ngn:amountString(fee),credits:added,package_name_snapshot:packageData.name,package_price_snapshot_ngn:packageData.price_ngn,package_credits_snapshot:added,type:'credit_purchase',transaction_type:'credit_purchase',status:'success',refund_status:'none',description:`${packageData.name} purchased`,created_at:now,verified_at:now};
       tx.create(db.collection('transactions').doc(txId),record);
@@ -68,7 +72,10 @@ export function createPaymentRuntime(db) {
         const audit=(action,metadata)=>{const id=randomUUID();tx.create(db.collection('referral_audit_logs').doc(id),{id,action,referral_id:referral.id,referrer_user_id:referralData.referrer_user_id,referred_user_id:userId,metadata:JSON.stringify(metadata),created_at:now});};
         audit('referral.qualified',{purchaseId:txId});
         const qualification={qualified_purchase_id:txId,qualified_at:referralData.qualified_at??now,updated_at:now};
-        if(!referrer?.exists||referrer.data().account_status!=='active'){
+        if(suppressReferralReward){
+          tx.update(referral.ref,{...qualification,status:'qualified',affiliate_program:true,reward_suppressed_reason:'affiliate_program'});
+          audit('referral.affiliate_reward_suppressed',{purchaseId:txId});
+        }else if(!referrer?.exists||referrer.data().account_status!=='active'){
           tx.update(referral.ref,{...qualification,status:'disqualified',disqualified_at:now,disqualification_reason:'Referrer is unavailable or ineligible'});
           audit('referral.disqualified',{reason:'Referrer is unavailable or ineligible'});
         }else if(!rewardExists.size){
@@ -85,6 +92,16 @@ export function createPaymentRuntime(db) {
       tx.create(db.collection('firebase_payment_outbox').doc(txId),{type:'payment.completed',user_id:userId,source_id:txId,created_at:now,status:'pending',gateway});
       return {status:'success',duplicate:false,transactionId:txId,creditsAdded:added,newCredits:updated,referralRewarded};
     });
+    // Credits are already committed. Commission recording must not change or fail the purchase.
+    try {
+      const { recordCommissionAfterCredit } = await import('./affiliate-payment-hook.mjs');
+      await recordCommissionAfterCredit(db, {
+        userId, gateway, gatewayId: String(gatewayId), reference, transactionId: result.transactionId,
+      });
+    } catch {
+      try { console.error('[affiliate] commission hook failed'); } catch { /* logging must not affect the purchase */ }
+    }
+    return result;
   }
   async function adjustCredits({adminId,userId,amount,reason,key}) {
     if(!Number.isSafeInteger(amount)||amount===0||Math.abs(amount)>1000000||typeof reason!=='string'||reason.trim().length<3||reason.trim().length>240||typeof key!=='string'||key.trim().length<8||key.trim().length>200)throw new Error('Invalid adjustment');
