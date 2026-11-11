@@ -9,7 +9,7 @@ import { createPaymentRuntime } from '../server/firebase-payment-runtime.mjs';
 import { createFirebaseOperations } from '../server/firebase-operations.js';
 import { createUserAffiliateHandler } from '../server/api/affiliate.js';
 import { ADMIN_AFFILIATE_ACTIONS, createAdminAffiliateHandler } from '../server/api/admin-affiliates.js';
-import { nairaToKobo } from '../../shared/affiliate-program.mjs';
+import { NIGERIAN_BANKS, nairaToKobo } from '../../shared/affiliate-program.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const appDirectory = path.join(root, 'app');
@@ -440,7 +440,7 @@ test('the user app source has no affiliate admin client and the streaming contro
   assert.match(dashboard, /data-testid="realtime-provider-selector"/);
   assert.match(dashboard, /getRealtimeProviderLabel/);
   const rules = fs.readFileSync(path.join(root, 'firestore/affiliate.rules'), 'utf8');
-  for (const collection of ['affiliate_wallets', 'affiliate_ledger', 'affiliate_withdrawals', 'affiliate_bank_accounts', 'affiliate_commissions']) {
+  for (const collection of ['affiliate_wallets', 'affiliate_ledger', 'affiliate_withdrawals', 'affiliate_bank_accounts', 'affiliate_banks', 'affiliate_commissions']) {
     assert.match(rules, new RegExp(`match /${collection}/\\{id\\} \\{ allow read, write: if false; \\}`));
   }
   const adminJs = fs.readFileSync(path.join(root, 'morphly-admin-dashboard/affiliate-admin.js'), 'utf8');
@@ -448,4 +448,224 @@ test('the user app source has no affiliate admin client and the streaming contro
   assert.match(adminJs, /data-copy/);
   assert.match(adminJs, /Mark paid/);
   assert.match(adminJs, /disabled> Automatic payouts/);
+  assert.match(adminJs, /banks: "Banks"/);
+  assert.match(adminJs, /id="affBankAdd"/);
+  assert.match(adminJs, /data-bank-enabled/);
+  assert.match(adminJs, /Only a super admin can change the bank list/);
+});
+
+test('super admins can add, rename, and disable banks, and users only see enabled ones', async () => {
+  const fx = await readyAffiliate({ minWithdrawalKobo: 100 });
+  const added = await fx.svc.addBank('admin_samuel', { code: ' 999111 ', name: '  PalmPay MFB  ' }, { superAdmin: true });
+  assert.equal(added.bank.code, '999111');
+  assert.equal(added.bank.name, 'PalmPay MFB');
+  assert.equal(added.bank.enabled, true);
+  assert.equal(added.bank.builtin, false);
+  assert.equal(added.bank.updatedBy, 'admin_samuel');
+  const stored = (await fx.db.collection('affiliate_banks').doc('999111').get()).data();
+  assert.equal(stored.code, '999111');
+  assert.equal(stored.name, 'PalmPay MFB');
+  assert.equal(stored.enabled, true);
+  assert.equal(stored.updated_by, 'admin_samuel');
+  assert.equal(typeof stored.created_at, 'string');
+  assert.equal(typeof stored.updated_at, 'string');
+
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '999111', name: 'PalmPay Again' }, { superAdmin: true }), /already exists/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '058', name: 'Another GTBank' }, { superAdmin: true }), /already exists/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '12', name: 'Short Code Bank' }, { superAdmin: true }), /3 to 6 digits/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '1234567', name: 'Long Code Bank' }, { superAdmin: true }), /3 to 6 digits/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '05a', name: 'Letter Code Bank' }, { superAdmin: true }), /3 to 6 digits/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '100', name: ' A ' }, { superAdmin: true }), /2 to 80/);
+  await assert.rejects(fx.svc.addBank('admin_samuel', { code: '100', name: 'A'.repeat(81) }, { superAdmin: true }), /2 to 80/);
+  await assert.rejects(fx.svc.updateBank('admin_samuel', { code: '000111', name: 'Missing Bank' }, { superAdmin: true }), /Bank not found/);
+  await assert.rejects(fx.svc.updateBank('admin_samuel', { code: '044' }, { superAdmin: true }), /Nothing to update/);
+  await assert.rejects(fx.svc.updateBank('admin_samuel', { code: '044', enabled: 'false' }, { superAdmin: true }), /true or false/);
+
+  const renamed = await fx.svc.updateBank('admin_samuel', { code: '058', name: 'GTBank' }, { superAdmin: true });
+  assert.equal(renamed.bank.name, 'GTBank');
+  assert.equal(renamed.bank.builtin, true);
+  assert.equal(renamed.bank.enabled, true);
+  const catalogAfterRename = await fx.svc.listBanks();
+  assert.equal(catalogAfterRename.find((bank) => bank.code === '058').builtin, true);
+
+  const dash = await fx.svc.dashboard('aff_amina');
+  assert.equal(dash.banks.length, NIGERIAN_BANKS.length + 1);
+  assert.equal(dash.banks.some((bank) => bank.code === '999111' && bank.name === 'PalmPay MFB'), true);
+  assert.equal(dash.banks.some((bank) => bank.code === '058' && bank.name === 'GTBank'), true);
+  assert.equal(dash.banks.every((bank) => Object.keys(bank).length === 2), true);
+  const names = dash.banks.map((bank) => bank.name);
+  assert.deepEqual(names, [...names].sort((left, right) => left.localeCompare(right, 'en', { sensitivity: 'base' })));
+  assert.equal(dash.banks[0].code, '044');
+
+  await fx.svc.saveBankAccount({
+    userId: 'aff_amina', bankCode: '058', accountNumber: '0123456789', accountName: 'AMINA OKONKWO', authTime: Math.floor(fx.state.clock / 1000),
+  });
+  assert.equal((await fx.svc.dashboard('aff_amina')).bank.bankName, 'GTBank');
+
+  await fx.svc.updateBank('admin_samuel', { code: '058', enabled: false }, { superAdmin: true });
+  await fx.svc.updateBank('admin_samuel', { code: '999111', enabled: false }, { superAdmin: true });
+  const hidden = await fx.svc.dashboard('aff_amina');
+  assert.equal(hidden.banks.length, NIGERIAN_BANKS.length - 1);
+  assert.equal(hidden.banks.some((bank) => bank.code === '058' || bank.code === '999111'), false);
+  assert.equal(hidden.bank.bankName, 'GTBank');
+  const catalog = await fx.svc.listBanks();
+  assert.equal(catalog.find((bank) => bank.code === '058').enabled, false);
+  assert.equal(catalog.find((bank) => bank.code === '058').name, 'GTBank');
+  assert.equal(catalog.find((bank) => bank.code === '999111').enabled, false);
+  assert.equal(catalog.find((bank) => bank.code === '999111').builtin, false);
+
+  await assert.rejects(fx.svc.saveBankAccount({
+    userId: 'aff_amina', bankCode: '058', accountNumber: '0123456789', accountName: 'AMINA OKONKWO', authTime: Math.floor(fx.state.clock / 1000),
+  }), /Nigerian bank/);
+  await assert.rejects(fx.svc.saveBankAccount({
+    userId: 'aff_amina', bankCode: '999111', accountNumber: '0123456789', accountName: 'AMINA OKONKWO', authTime: Math.floor(fx.state.clock / 1000),
+  }), /Nigerian bank/);
+  await assert.rejects(fx.svc.saveBankAccount({
+    userId: 'aff_amina', bankCode: '000111', accountNumber: '0123456789', accountName: 'AMINA OKONKWO', authTime: Math.floor(fx.state.clock / 1000),
+  }), /Nigerian bank/);
+
+  await fx.svc.updateBank('admin_samuel', { code: '999111', enabled: true }, { superAdmin: true });
+  await fx.svc.saveBankAccount({
+    userId: 'aff_amina', bankCode: '999111', accountNumber: '0123456789', accountName: 'AMINA OKONKWO', authTime: Math.floor(fx.state.clock / 1000),
+  });
+  await fx.svc.updateBank('admin_samuel', { code: '999111', name: 'PalmPay', enabled: false }, { superAdmin: true });
+  const stillSaved = await fx.svc.dashboard('aff_amina');
+  assert.equal(stillSaved.bank.bankName, 'PalmPay MFB');
+  assert.equal(stillSaved.banks.some((bank) => bank.code === '999111'), false);
+
+  await fx.svc.attributeReferral({ referredUserId: 'cust_bank', code: 'ABC123', name: 'Customer' });
+  await fx.svc.recordQualifyingPurchase({
+    referredUserId: 'cust_bank', paymentTxId: 'pay_bank', packagePriceKobo: PURCHASE, transactionType: 'credit_purchase', currency: 'NGN',
+  });
+  fx.addDays(7);
+  const active = (await fx.db.collection('affiliate_bank_accounts').get()).docs.find((doc) => doc.data().active);
+  await fx.svc.verifyBankAccount('admin_samuel', active.id);
+  const withdrawal = await fx.svc.requestWithdrawal({
+    userId: 'aff_amina', amountKobo: 100, authTime: Math.floor(fx.state.clock / 1000),
+  });
+  assert.equal(withdrawal.bank.bankName, 'PalmPay MFB');
+
+  const admin = fakeAdmin('admin_samuel', { isAdmin: true, role: 'super_admin' });
+  const handler = createAdminAffiliateHandler({ supabaseAdmin: admin, db: fx.db });
+  const res = mockRes();
+  await handler({ method: 'GET', query: { view: 'withdrawals', status: 'all' }, body: {}, headers: { authorization: 'Bearer token', 'content-type': 'application/json' } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.withdrawals[0].bank.bankName, 'PalmPay MFB');
+  assert.equal(res.body.withdrawals[0].bank.accountNumber, '0123456789');
+  assert.equal(res.body.withdrawals[0].bank.accountName, 'AMINA OKONKWO');
+
+  const audit = await fx.svc.listAudit();
+  assert.equal(audit.some((row) => row.action === 'bank.added' && row.payload.code === '999111'), true);
+  assert.equal(audit.some((row) => row.action === 'bank.updated' && row.payload.code === '058' && row.payload.after.enabled === false), true);
+  assert.equal(audit.some((row) => row.action === 'bank.updated' && row.payload.code === '058' && row.payload.after.name === 'GTBank'), true);
+  assert.equal(JSON.stringify(audit).includes('0123456789'), false);
+
+  await assert.rejects(fx.svc.addBank('admin_reader', { code: '100200', name: 'Nope Bank' }, { superAdmin: false }), /Super admin/);
+  await assert.rejects(fx.svc.updateBank('admin_reader', { code: '044', enabled: false }, { superAdmin: false }), /Super admin/);
+  assert.equal((await fx.db.collection('affiliate_banks').doc('100200').get()).exists, false);
+  assert.equal((await fx.svc.listBanks()).find((bank) => bank.code === '044').enabled, true);
+});
+
+test('plain admins can view banks but cannot add or change them', async () => {
+  const fx = await readyAffiliate();
+  await fx.svc.addBank('admin_samuel', { code: '999111', name: 'PalmPay MFB' }, { superAdmin: true });
+  const plain = fakeAdmin('admin_plain', { isAdmin: true, role: 'admin' });
+  const handler = createAdminAffiliateHandler({ supabaseAdmin: plain, db: fx.db });
+  const view = mockRes();
+  await handler({ method: 'GET', query: { view: 'banks' }, body: {}, headers: { authorization: 'Bearer token' } }, view);
+  assert.equal(view.statusCode, 200);
+  assert.equal(view.body.role, 'admin');
+  assert.equal(view.body.banks.some((bank) => bank.code === '999111' && bank.builtin === false), true);
+  assert.equal(view.body.banks.some((bank) => bank.code === '058' && bank.builtin === true && bank.enabled === true), true);
+  const add = mockRes();
+  await handler({
+    method: 'POST',
+    query: {},
+    body: { action: 'bank-add', code: '100200', name: 'Blocked Bank' },
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+  }, add);
+  assert.equal(add.statusCode, 403);
+  assert.match(add.body.error, /Super admin/);
+  const update = mockRes();
+  await handler({
+    method: 'POST',
+    query: {},
+    body: { action: 'bank-update', code: '999111', enabled: false },
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+  }, update);
+  assert.equal(update.statusCode, 403);
+  assert.match(update.body.error, /Super admin/);
+  assert.equal((await fx.db.collection('affiliate_banks').doc('100200').get()).exists, false);
+  assert.equal((await fx.db.collection('affiliate_banks').doc('999111').get()).data().enabled, true);
+
+  const superAdmin = fakeAdmin('admin_samuel', { isAdmin: true, role: 'super_admin' });
+  const superHandler = createAdminAffiliateHandler({ supabaseAdmin: superAdmin, db: fx.db });
+  const created = mockRes();
+  await superHandler({
+    method: 'POST',
+    query: {},
+    body: { action: 'bank-add', code: '100200', name: 'Kuda MFB' },
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+  }, created);
+  assert.equal(created.statusCode, 200);
+  assert.equal(created.body.bank.code, '100200');
+  assert.equal(created.body.bank.name, 'Kuda MFB');
+  const renamed = mockRes();
+  await superHandler({
+    method: 'POST',
+    query: {},
+    body: { action: 'bank-update', code: '100200', name: 'Kuda Bank', enabled: false },
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+  }, renamed);
+  assert.equal(renamed.statusCode, 200);
+  assert.equal(renamed.body.bank.name, 'Kuda Bank');
+  assert.equal(renamed.body.bank.enabled, false);
+  assert.equal(renamed.body.bank.builtin, false);
+  const listed = mockRes();
+  await superHandler({ method: 'GET', query: { view: 'banks' }, body: {}, headers: { authorization: 'Bearer token' } }, listed);
+  assert.equal(listed.body.banks.find((bank) => bank.code === '100200').enabled, false);
+});
+
+test('the user bank API rejects disabled and unknown codes and omits them from the dashboard list', async () => {
+  const fx = await readyAffiliate();
+  await fx.svc.addBank('admin_samuel', { code: '999111', name: 'PalmPay MFB' }, { superAdmin: true });
+  await fx.svc.updateBank('admin_samuel', { code: '058', enabled: false }, { superAdmin: true });
+  const authTime = Math.floor(Date.now() / 1000);
+  const handler = createUserAffiliateHandler({
+    supabaseAdmin: fakeAdmin('aff_amina', { authTime }),
+    db: fx.db,
+    auth: fakeAdmin('aff_amina', { authTime }).auth,
+  });
+  const headers = { authorization: 'Bearer token', 'content-type': 'application/json', origin: 'https://live.morphly.fun' };
+  const listed = mockRes();
+  await handler({ method: 'GET', query: {}, body: {}, headers }, listed);
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.body.banks.some((bank) => bank.code === '058'), false);
+  assert.equal(listed.body.banks.some((bank) => bank.code === '999111' && bank.name === 'PalmPay MFB'), true);
+  assert.equal(listed.body.banks.every((bank) => Object.keys(bank).every((key) => key === 'code' || key === 'name')), true);
+  const disabled = mockRes();
+  await handler({
+    method: 'POST', query: {},
+    body: { action: 'save-bank', bankCode: '058', accountNumber: '0123456789', accountName: 'AMINA OKONKWO' },
+    headers,
+  }, disabled);
+  assert.equal(disabled.statusCode, 400);
+  assert.match(disabled.body.error, /Nigerian bank/);
+  const unknown = mockRes();
+  await handler({
+    method: 'POST', query: {},
+    body: { action: 'save-bank', bankCode: '000111', accountNumber: '0123456789', accountName: 'AMINA OKONKWO' },
+    headers,
+  }, unknown);
+  assert.equal(unknown.statusCode, 400);
+  assert.match(unknown.body.error, /Nigerian bank/);
+  const saved = mockRes();
+  await handler({
+    method: 'POST', query: {},
+    body: { action: 'save-bank', bankCode: '999111', accountNumber: '0123456789', accountName: 'AMINA OKONKWO' },
+    headers,
+  }, saved);
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.body.bankName, 'PalmPay MFB');
+  assert.equal(JSON.stringify(saved.body).includes('0123456789'), false);
 });

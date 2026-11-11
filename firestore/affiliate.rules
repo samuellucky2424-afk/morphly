@@ -17,6 +17,7 @@ service cloud.firestore {
     match /affiliate_ledger/{id} { allow read, write: if false; }
     match /affiliate_withdrawals/{id} { allow read, write: if false; }
     match /affiliate_bank_accounts/{id} { allow read, write: if false; }
+    match /affiliate_banks/{id} { allow read, write: if false; }
     match /affiliate_audit/{id} { allow read, write: if false; }
     match /affiliate_reconcile/{id} { allow read, write: if false; }
     match /affiliate_rate_limits/{id} { allow read, write: if false; }
