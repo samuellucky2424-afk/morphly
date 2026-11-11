@@ -3,7 +3,8 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
-import { recordRealtimeVideo } from '../realtime-billing.js';
+import { settleRealtimeVideo } from '../realtime-billing.js';
+import { revokeProviderSession } from '../provider-revocation.js';
 
 const CREDITS_PER_SECOND = 2;
 // Hard ceiling: one session can never bill more than 2 hours,
@@ -172,7 +173,8 @@ export default async function handler(req, res) {
       return res.status(403).json({ success: false, message: 'User mismatch' });
     }
     if (req.body?.billingVersion === 2) {
-      const result = await recordRealtimeVideo(supabaseAdmin, userId, req.body, true);
+      const result = await settleRealtimeVideo(supabaseAdmin, userId, sessionId, true);
+      if (result?.ended) await revokeProviderSession({ id: sessionId, provider: result.provider, provider_key_id: result.providerKeyId, provider_live_id: result.providerLiveId });
       return res.json({ success: true, ...result });
     }
 

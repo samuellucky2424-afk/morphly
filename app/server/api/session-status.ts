@@ -3,7 +3,8 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
-import { realtimeWalletBalance } from '../realtime-billing.js';
+import { realtimeWalletBalance, settleRealtimeVideo } from '../realtime-billing.js';
+import { revokeProviderSession } from '../provider-revocation.js';
 
 const CREDITS_PER_SECOND = 2;
 
@@ -82,7 +83,20 @@ export default async function handler(req, res) {
 
     const walletCredits = await realtimeWalletBalance(supabaseAdmin, userId, walletData?.credits);
 
-    if (!activeSession || activeSession.billing_version === 2) {
+    if (activeSession?.billing_version === 2) {
+      const settled = await settleRealtimeVideo(supabaseAdmin, userId, activeSession.id, false);
+      if (settled?.ended) await revokeProviderSession({ id: activeSession.id, provider: settled.provider, provider_key_id: settled.providerKeyId, provider_live_id: settled.providerLiveId });
+      const credits = Number(settled?.remainingCredits ?? walletCredits);
+      return res.json({
+        credits,
+        remainingCredits: credits,
+        shouldStop: Boolean(settled?.shouldStop),
+        forceEnd: Boolean(settled?.shouldStop),
+        reason: settled?.reason || null,
+      });
+    }
+
+    if (!activeSession) {
       return res.json({ credits: walletCredits, remainingCredits: walletCredits, shouldStop: walletCredits <= 0 });
     }
 

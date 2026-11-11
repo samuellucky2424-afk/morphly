@@ -63,7 +63,7 @@ function fakeClient(calls = {}) {
 }
 
 function handler(action, { client = fakeClient(), user = 'owner', authError,
-  rpc = async name => name === 'voice_session_active' ? { data: { active: true }, error: null } : { data: {}, error: null } } = {}) {
+  rpc = async name => name === 'bill_voice_convert' ? { data: { accepted: true }, error: null } : { data: { released: true }, error: null } } = {}) {
   return createVoiceHandler(action, {
     getClient: () => client,
     admin: () => ({ rpc }),
@@ -132,14 +132,14 @@ test('uploading a voice clones it under the caller\'s ownership', async () => {
 test('conversion streams 16 kHz PCM with max safe latency settings and a complete MP3 body', async () => {
   const calls = {};
   const response = await call('convert', { client: fakeClient(calls), body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm },
-    rpc: async (name, args) => { calls.billing = { name, args }; return { data: { active: true }, error: null }; } });
+    rpc: async (name, args) => { if (name === 'bill_voice_convert') calls.billing = { name, args }; return { data: { accepted: true, released: true }, error: null }; } });
   assert.equal(response.headers['content-type'], 'audio/mpeg');
   assert.equal(response.headers['cache-control'], 'no-store, no-transform');
   assert.equal(response.headers['x-accel-buffering'], 'no');
   assert.equal(response.headersFlushed, true);
   // Older clients read the finished body. Streaming must still deliver every byte.
   assert.deepEqual([...response.ended], [1, 2, 3]);
-  assert.equal(calls.billing.name, 'voice_session_active');
+  assert.equal(calls.billing.name, 'bill_voice_convert');
   assert.equal(calls.billing.args.p_session, 'voice_owner_12345678-1234');
   assert.equal(calls.stream.voiceId, 'premadeVoice01');
   assert.equal(calls.stream.request.fileFormat, 'pcm_s16le_16');
@@ -247,7 +247,7 @@ test('conversion and deletion reject other accounts\' voices and oversized audio
 test('conversion requires an active paid voice session', async () => {
   const client = fakeClient();
   const response = await call('convert', { client, body: { voiceId: 'premadeVoice01', sessionId: '12345678-1234', audio: pcm },
-    rpc: async () => ({ data: { active: false }, error: null }) });
+    rpc: async () => ({ data: { accepted: false }, error: null }) });
   assert.equal(response.statusCode, 402);
   assert.equal(response.body.code, 'billing_required');
   assert.equal(response.body.fatal, true);

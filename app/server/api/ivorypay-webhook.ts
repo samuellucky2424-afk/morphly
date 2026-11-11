@@ -3,11 +3,12 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
   applyVerifiedIvoryPayPayment,
-  extractIvoryPayPaymentContext,
   hasValidIvoryPaySignature,
   validateIvoryPayTransaction,
   verifyIvoryPayTransaction,
 } from '../ivorypay-payment.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { getCheckoutRecord } from '../payment-checkouts.js';
 
 function getHeader(headers, name) {
   const value = headers?.[name.toLowerCase()] || headers?.[name];
@@ -104,21 +105,15 @@ export default async function handler(req, res) {
     if (!paymentValidation.ok) {
       return res.status(200).json({ status: 'invalid', message: paymentValidation.message });
     }
-
-    const paymentContext = extractIvoryPayPaymentContext(verifiedTx, { reference });
-    if (!paymentContext.userId || !paymentContext.packageId) {
-      await logErrorEvent('ivorypay_webhook.missing_context', {
-        reference,
-        hasUserId: Boolean(paymentContext.userId),
-        hasPackageId: Boolean(paymentContext.packageId),
-      });
-      return res.status(200).json({ status: 'missing_context' });
+    const checkout = firebaseDb ? await getCheckoutRecord(firebaseDb, reference) : null;
+    if (!checkout || checkout.gateway !== 'ivorypay' || paymentValidation.amountPaidNGN < Number(checkout.amountNGN)) {
+      return res.status(200).json({ status: 'missing_context', message: 'Payment checkout was not created by Morphly' });
     }
 
     const result = await applyVerifiedIvoryPayPayment({
       reference: paymentValidation.reference,
-      userId: paymentContext.userId,
-      packageId: paymentContext.packageId,
+      userId: checkout.userId,
+      packageId: checkout.packageId,
       transactionId: verifiedTx.id || verifiedTx.reference || reference,
       amountPaidNGN: paymentValidation.amountPaidNGN,
       gatewayFeeNGN: Number(verifiedTx.platformFeeInFiat || verifiedTx.fee || 0),

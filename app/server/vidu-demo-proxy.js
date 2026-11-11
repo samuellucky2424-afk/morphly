@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { canonicalRelayOrigin, getViduDemoAudience, hasViduDemoProxySecret, isViduDemoProxyEnabled, validateViduDemoTicket } from './vidu-demo-ticket.js';
+import { HEARTBEAT_TIMEOUT_MS } from './firebase-realtime-billing.js';
+import { registerViduRelay } from './provider-revocation.js';
 
 const PATH = '/api/vidu/live';
 const UPSTREAM = 'wss://api.vidu.com/live/ws/live/connect';
@@ -32,8 +34,11 @@ export async function claimViduDemoLease(db, ticket, { now = Date.now(), startup
       || (row.vidu_demo_connection_id && row.vidu_demo_connection_id !== ticket.connectionId)) fail('TICKET_ALREADY_USED');
     if (wallets.size !== 1) fail('WALLET_UNAVAILABLE');
     const wallet = wallets.docs[0], credits = Number(wallet.data().credits);
-    if (!Number.isFinite(credits) || credits < 2) fail('INSUFFICIENT_CREDITS');
-    const maxSeconds = Math.min(ticket.maxSeconds, Math.floor(credits / 2.5), Number(row.provider_max_seconds) || 7200, 7200);
+    const prepaidUntil = Number(row.prepaid_until_epoch);
+    const prepaid = Number.isFinite(prepaidUntil) && prepaidUntil > Math.floor(now / 1000);
+    if (!prepaid && (!Number.isFinite(credits) || credits < 2.5)) fail('INSUFFICIENT_CREDITS');
+    let maxSeconds = Math.min(ticket.maxSeconds, Math.floor((Number.isFinite(credits) ? credits : 0) / 2.5) || ticket.maxSeconds, Number(row.provider_max_seconds) || 7200, 7200);
+    if (prepaid) maxSeconds = Math.min(maxSeconds, prepaidUntil - Math.floor(now / 1000));
     const startedAt = Number.isSafeInteger(row.vidu_demo_started_at) ? row.vidu_demo_started_at : now;
     const startupDeadline = Math.min(startedAt + startupMs, ticket.providerExpiresAt);
     if (startupDeadline <= now || maxSeconds < 1) fail('EXPIRED_TICKET');
@@ -41,7 +46,7 @@ export async function claimViduDemoLease(db, ticket, { now = Date.now(), startup
       vidu_demo_lease_id: leaseId, vidu_demo_connection_id: ticket.connectionId,
       vidu_demo_attempts: Number(row.vidu_demo_attempts || 0) + 1, vidu_demo_started_at: startedAt,
     });
-    return { leaseId, sessionRef, profileRef, walletRef: wallet.ref, maxSeconds, startupDeadline };
+    return { leaseId, sessionRef, profileRef, walletRef: wallet.ref, maxSeconds, startupDeadline, prepaid, prepaidUntilMs: prepaid ? prepaidUntil * 1000 : null };
   });
 }
 
@@ -67,6 +72,7 @@ export function createViduDemoProxyServer({
   createUpstream = (url, options) => new WebSocket(url, options), waitUntil = () => {},
   logger = console,
   now = Date.now, startupMs = 120000, drainMs = 500, authenticationMs = 5000, cleanupMs = 5000,
+  billingRecheckMs = 5000,
 } = {}) {
   startupMs = Math.max(1, Math.min(120000, startupMs));
   drainMs = Math.max(1, Math.min(1000, drainMs));
@@ -141,7 +147,8 @@ export function createViduDemoProxyServer({
       try { logger?.info?.('[Vidu] relay', { event, elapsedMs: Math.max(0, now() - startedAt), ...metadata }); } catch {}
     };
     let queue = [], queueBytes = 0, incomingBytes = 0, incoming = Promise.resolve(), lastSend = Promise.resolve();
-    let activeTimer, expiryTimer, startupTimer, resolveLifetime;
+    let activeTimer, expiryTimer, startupTimer, recheckTimer, resolveLifetime;
+    const unregisterRelay = registerViduRelay(payload.sessionId, reason => finish(reason, 4002));
     const subscriptions = [];
     const lifetime = new Promise(resolve => { resolveLifetime = resolve; });
     waitUntil(lifetime);
@@ -165,7 +172,8 @@ export function createViduDemoProxyServer({
       if (closed) return;
       closed = true;
       diagnostic('closed', { reason, initialized: ready, ...(upstreamStatus ? { upstreamStatus } : {}) });
-      clearTimeout(startupTimer); clearTimeout(activeTimer); clearTimeout(expiryTimer);
+      clearTimeout(startupTimer); clearTimeout(activeTimer); clearTimeout(expiryTimer); clearInterval(recheckTimer);
+      unregisterRelay();
       for (const unsubscribe of subscriptions) { try { unsubscribe(); } catch {} }
       queue = []; queueBytes = 0;
       if (client.readyState === WebSocket.OPEN) client.close(code, CLOSED);
@@ -271,7 +279,10 @@ export function createViduDemoProxyServer({
             diagnostic('initialized');
             // Allow the RTC/renderer startup window on top of the paid seconds; billing itself is enforced by /api/heartbeat.
             // 4002 tells the client this was the paid-time budget, not a network failure.
-            activeTimer = setTimeout(() => finish('SESSION_LIMIT', 4002), lease.maxSeconds * 1000 + startupMs);
+            const paidMs = Number.isFinite(lease.prepaidUntilMs) ? Math.max(1, lease.prepaidUntilMs - now()) : lease.maxSeconds * 1000;
+            const armPaidTimer = ms => { clearTimeout(activeTimer); activeTimer = setTimeout(() => finish('SESSION_LIMIT', 4002), Math.max(1, ms)); };
+            armPaidTimer(paidMs);
+            lease.armPaidTimer = armPaidTimer;
           }
           if (client.readyState !== WebSocket.OPEN) { finish('CLIENT_CLOSED'); return; }
           if (client.bufferedAmount > MAX_BUFFER) { finish('BUFFER_LIMIT', 1009); return; }
@@ -289,7 +300,20 @@ export function createViduDemoProxyServer({
       };
       watch(lease.sessionRef, row => authorized(row, payload.userId) && row.vidu_demo_lease_id === lease.leaseId);
       watch(lease.profileRef, row => row?.account_status === 'active');
-      watch(lease.walletRef, row => Number.isFinite(Number(row?.credits)) && Number(row.credits) >= 2);
+      watch(lease.walletRef, row => lease.prepaid || (Number.isFinite(Number(row?.credits)) && Number(row.credits) >= 2.5));
+      recheckTimer = setInterval(() => {
+        if (closed || typeof lease.sessionRef.get !== 'function') return;
+        void lease.sessionRef.get().then(snapshot => {
+          const row = snapshot?.data?.();
+          if (closed) return;
+          if (!authorized(row, payload.userId)) { finish('SESSION_UNAVAILABLE', 1008); return; }
+          const until = Number(row.prepaid_until_epoch);
+          if (Number.isFinite(until) && until * 1000 <= now()) { finish('BILLING_STOP', 4002); return; }
+          if (Number.isFinite(until) && lease.armPaidTimer) lease.armPaidTimer(until * 1000 - now());
+          const beat = Date.parse(row.last_heartbeat_at || '');
+          if (Number.isFinite(beat) && now() - beat > HEARTBEAT_TIMEOUT_MS) finish('HEARTBEAT_TIMEOUT', 4002);
+        }).catch(() => { if (!closed) finish('SESSION_UNAVAILABLE', 1011); });
+      }, Math.max(1000, billingRecheckMs));
     } catch { finish('UPSTREAM_UNAVAILABLE', 1011); }
   }
   return server;

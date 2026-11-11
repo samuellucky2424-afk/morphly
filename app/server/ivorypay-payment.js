@@ -256,17 +256,15 @@ export function validateIvoryPayTransaction(transaction, expectedReference) {
     return { ok: false, message: 'Payment reference mismatch' };
   }
 
-  // The package amount is stored in NGN, so only accept IvoryPay's fiat/base
-  // amount here—not the on-chain token amount.
-  const amountPaid = Number(
-    transaction?.amountInBaseFiat
-      || transaction?.amountInFiat
-      || transaction?.amount
-      || transaction?.amountPaid
-      || 0,
-  );
+  // Only the documented base-fiat NGN amount can be compared with the package
+  // price. Token amounts and unlabeled amount fields are not Naira.
+  const currency = String(transaction?.baseFiat || transaction?.currency || '').toUpperCase();
+  if (currency !== 'NGN') {
+    return { ok: false, message: 'Unexpected payment currency' };
+  }
+  const amountPaid = Number(transaction?.amountInBaseFiat);
   if (!(amountPaid > 0)) {
-    return { ok: false, message: 'Invalid verified crypto amount' };
+    return { ok: false, message: 'Invalid verified NGN amount' };
   }
 
   return { ok: true, reference: reference || expectedReference, amountPaidNGN: amountPaid };

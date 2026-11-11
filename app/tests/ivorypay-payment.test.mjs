@@ -16,20 +16,30 @@ import {
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 
-test('verified IvoryPay transaction qualification requires positive amount', () => {
+test('verified IvoryPay transaction qualification requires a positive NGN base-fiat amount', () => {
   assert.equal(validateIvoryPayTransaction({
     reference: 'morphly_crypto_123',
-    amount: 15.33,
+    baseFiat: 'NGN',
+    amountInBaseFiat: 15.33,
   }, 'morphly_crypto_123').ok, true);
 
   assert.equal(validateIvoryPayTransaction({
     reference: 'morphly_crypto_123',
-    amount: 0,
+    baseFiat: 'NGN',
+    amountInBaseFiat: 0,
+    amount: 15.33,
   }, 'morphly_crypto_123').ok, false);
 
   assert.equal(validateIvoryPayTransaction({
     reference: 'morphly_crypto_123',
-    amount: -10,
+    currency: 'USDT',
+    amountInBaseFiat: 15.33,
+  }, 'morphly_crypto_123').ok, false);
+
+  assert.equal(validateIvoryPayTransaction({
+    reference: 'morphly_crypto_123',
+    baseFiat: 'NGN',
+    amount: 50000,
   }, 'morphly_crypto_123').ok, false);
 });
 
@@ -37,7 +47,8 @@ test('IvoryPay payment reference mismatch is rejected', () => {
   assert.match(
     validateIvoryPayTransaction({
       reference: 'unexpected_ref',
-      amount: 20,
+      baseFiat: 'NGN',
+      amountInBaseFiat: 20,
     }, 'expected_ref').message,
     /reference mismatch/i,
   );
@@ -106,6 +117,7 @@ test('IvoryPay metadata is parsed when its API returns the documented JSON strin
 test('IvoryPay validates the paid base-fiat amount, not the crypto token amount', () => {
   const result = validateIvoryPayTransaction({
     reference: '550e8400-e29b-41d4-a716-446655440000',
+    baseFiat: 'NGN',
     amountInBaseFiat: 29000,
     amountInCrypto: 19.93,
   }, '550e8400-e29b-41d4-a716-446655440000');

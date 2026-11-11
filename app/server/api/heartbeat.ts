@@ -1,7 +1,11 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
-import { recordRealtimeVideo } from '../realtime-billing.js';
+import { settleRealtimeVideo } from '../realtime-billing.js';
+import { PROVIDER_CREDENTIAL_WINDOW_SECONDS } from '../firebase-realtime-billing.js';
+import { createXmaxTemporaryKey } from './start-session.ts';
+import { revokeProviderSession } from '../provider-revocation.js';
+import { rateLimit } from '../request-rate-limit.js';
 
 const HEARTBEAT_SECONDS = 30;
 const CREDITS_PER_SECOND = 2;
@@ -81,17 +85,34 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'sessionId is required' });
     }
 
+    if (!rateLimit(`heartbeat:${userId}`, { limit: 30, windowMs: 60_000 })) {
+      return res.status(429).json({ error: 'Too many usage updates. Wait a moment and try again.' });
+    }
     if (req.body?.billingVersion === 2) {
-      return res.json(await recordRealtimeVideo(supabaseAdmin, userId, req.body));
+      const result = await settleRealtimeVideo(supabaseAdmin, userId, sessionId, false, { extend: req.body?.acceptRenewal === true });
+      if (result?.ended) await revokeProviderSession({ id: sessionId, provider: result.provider, provider_key_id: result.providerKeyId, provider_live_id: result.providerLiveId });
+      if (result?.renewalDue && req.body?.acceptRenewal === true && !result.shouldStop && result.provider === 'xmax') {
+        const extended = await supabaseAdmin.rpc('reserve_realtime_video', {
+          p_user: userId, p_session: sessionId, p_window: PROVIDER_CREDENTIAL_WINDOW_SECONDS,
+        });
+        const addedSeconds = Number(extended.data?.reservedSeconds);
+        const minted = extended.error || addedSeconds < 1 ? null : await createXmaxTemporaryKey({ apiKey: process.env.XMAX_API_KEY?.trim(), maxSeconds: addedSeconds });
+        if (minted?.token) {
+          await supabaseAdmin.from('sessions').update({ provider_key_id: minted.token, credential_expires_at: minted.expiresAt }).eq('id', sessionId);
+          result.renewedToken = minted.token;
+          result.expiresAt = minted.expiresAt;
+          result.remainingCredits = extended.data?.remainingCredits ?? result.remainingCredits;
+        }
+      }
+      return res.json(result);
     }
     const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);
     if (secondsDelta <= 0) {
       return res.status(400).json({ error: 'secondsDelta must be greater than 0' });
     }
 
-    // New deployments debit the wallet and update the durable ledger in the
-    // same database transaction. Keep the legacy path temporarily so the API
-    // can be deployed immediately before the SQL migration is applied.
+    // Legacy sessions still settle through the atomic usage RPC. There is no
+    // fallback that records seconds without debiting the wallet.
     if (!usageRpcUnavailable) {
       const usageRpc = await supabaseAdmin.rpc('record_ai_session_usage', {
         p_user: userId,
@@ -110,53 +131,7 @@ export default async function handler(req, res) {
       usageRpcUnavailable = true;
     }
 
-    const [{ data: walletData, error: walletError }, { data: sessionData, error: sessionError }] = await Promise.all([
-      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
-      supabaseAdmin
-        .from('sessions')
-        .select('id, seconds_used, status')
-        .eq('id', sessionId)
-        .eq('user_id', userId)
-        .eq('status', 'active')
-        .maybeSingle(),
-    ]);
-
-    if (walletError) {
-      return res.status(500).json({ error: 'Failed to load wallet' });
-    }
-
-    if (sessionError) {
-      return res.status(500).json({ error: 'Failed to load session' });
-    }
-
-    if (!sessionData) {
-      return res.json({ shouldStop: true, reason: 'session_not_found', remainingCredits: 0 });
-    }
-
-    const currentCredits = normalizeCredits(walletData?.credits);
-    const currentSecondsUsed = normalizeSeconds(sessionData.seconds_used);
-    const maxBillableSeconds = Math.ceil(currentCredits / CREDITS_PER_SECOND);
-    const secondsToRecord = Math.min(secondsDelta, Math.max(0, maxBillableSeconds - currentSecondsUsed));
-
-    if (currentCredits <= 0 || secondsToRecord <= 0) {
-      return res.json({ shouldStop: true, reason: 'no_credits', remainingCredits: 0 });
-    }
-
-    const newSecondsUsed = currentSecondsUsed + secondsToRecord;
-    const recordedCreditsUsed = newSecondsUsed * CREDITS_PER_SECOND;
-    const remainingCredits = Math.max(0, currentCredits - recordedCreditsUsed);
-
-    const updateResult = await updateSessionUsage(sessionId, newSecondsUsed, recordedCreditsUsed);
-    if (updateResult.error) {
-      throw updateResult.error;
-    }
-
-    return res.json({
-      recordedSeconds: secondsToRecord,
-      totalBillableSeconds: newSecondsUsed,
-      remainingCredits,
-      shouldStop: remainingCredits <= 0,
-    });
+    return res.status(503).json({ error: 'Realtime billing is temporarily unavailable. Please try again later.' });
   } catch (error) {
     console.error('Heartbeat error:', error);
     return res.status(500).json({ error: 'Internal server error' });

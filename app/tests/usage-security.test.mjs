@@ -61,7 +61,7 @@ test('temporary keys stay scoped and large wallet grants are verified', () => {
   assert.match(startSession, /createScopedDecartKey/);
   assert.match(token, /allowedModels:\['lucy-2.5'\]/);
   assert.match(token, /maxSessionDuration:sessionLimit/);
-  assert.match(token, /expiresIn:Math.min\(3600,sessionLimit\+120\)/);
+  assert.match(token, /expiresIn:sessionLimit/);
   assert.match(token, /morphlySessionId:sessionId,morphlyUserId:userId/);
   assert.match(startSession, /start-session\.unverified_wallet_blocked/);
   assert.match(startSession, /hasWalletCreditProvenance/);

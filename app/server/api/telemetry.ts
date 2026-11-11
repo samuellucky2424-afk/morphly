@@ -2,6 +2,7 @@
 import crypto from 'crypto';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { rateLimit, trustedClientAddress } from '../request-rate-limit.js';
 
 const EVENTS = new Set(['download_clicked','first_app_open','signup_started','signup_completed','login_success','payment_started','payment_succeeded','payment_failed','xmax_key_requested','connection_started','connection_failed','first_frame_received','session_completed','session_disconnected']);
 const SAFE_METADATA_KEYS = new Set(['mode','stage','reason','durationMs','latencyMs','source','networkType']);
@@ -16,7 +17,13 @@ export default async function handler(req, res) {
   const eventName = text(req.body?.eventName);
   if (!EVENTS.has(eventName)) return res.status(400).json({ error:'Unsupported event' });
   const auth = await authenticateRequestUser(req, supabaseAdmin);
+  if (auth.error && !rateLimit(`telemetry:${trustedClientAddress(req)}`, { limit: 20, windowMs: 600_000 })) {
+    return res.status(429).json({ error: 'Too many events. Try again later.' });
+  }
   const userId = auth.error ? null : auth.user.id;
+  if (!auth.error && !rateLimit(`telemetry:${userId}`, { limit: 120, windowMs: 600_000 })) {
+    return res.status(429).json({ error: 'Too many events. Try again later.' });
+  }
   const { error } = await supabaseAdmin.from('analytics_events').insert({ user_id:userId, installation_id:text(req.body?.installationId), session_id:req.body?.sessionId || null,
     platform:text(req.body?.platform,30), app_version:text(req.body?.appVersion,30), acquisition_source:text(req.body?.acquisitionSource,60), event_name:eventName, metadata:safeMetadata(req.body?.metadata) });
   if (error) return res.status(500).json({ error:'Failed to record event' }); return res.status(202).json({ recorded:true });
@@ -25,7 +32,10 @@ export default async function handler(req, res) {
 export async function errorLogHandler(req,res) {
   res.setHeader('Access-Control-Allow-Origin','*'); res.setHeader('Access-Control-Allow-Methods','POST, OPTIONS'); res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end(); if (req.method !== 'POST') return res.status(405).json({error:'Method not allowed'});
-  const auth=await authenticateRequestUser(req,supabaseAdmin); const userId=auth.error?null:auth.user.id;
+  const auth=await authenticateRequestUser(req,supabaseAdmin);
+  if(auth.error)return res.status(auth.status).json({error:auth.error});
+  if(!rateLimit(`error-log:${auth.user.id}`,{limit:30,windowMs:600_000}))return res.status(429).json({error:'Too many error reports. Try again later.'});
+  const userId=auth.user.id;
   const errorCode=text(req.body?.errorCode,80)||'UNKNOWN'; const stage=text(req.body?.providerStage,60); const platform=text(req.body?.platform,30);
   const fingerprint=crypto.createHash('sha256').update(`${errorCode}|${stage}|${platform}`).digest('hex');
   const record={fingerprint,error_code:errorCode,safe_message:text(req.body?.safeMessage,240)||'Application error',user_id:userId,session_id:req.body?.sessionId||null,platform,

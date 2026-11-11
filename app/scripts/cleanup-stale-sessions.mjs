@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 
 import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
+import { revokeProviderSession } from '../server/provider-revocation.js';
 
 function printUsage() {
   process.stdout.write(
@@ -112,6 +113,36 @@ async function main() {
     return;
   }
 
+  if (process.env.FIREBASE_PROJECT_ID) {
+    const { firebaseAdmin, firebaseAdminConfigError } = await import('../server/firebase-admin.js');
+    if (!firebaseAdmin) throw new Error(firebaseAdminConfigError || 'Firebase admin is not configured');
+    let query = firebaseAdmin.from('sessions').select('id, user_id, start_time, seconds_used, cost, created_at, provider, provider_key_id, provider_live_id, status').eq('status', 'active').order('created_at', { ascending: true });
+    if (userId) query = query.eq('user_id', userId);
+    const { data, error } = await query;
+    if (error) throw error;
+    let sessions = data ?? [];
+    if (olderThanMinutes !== null) {
+      sessions = sessions.filter((session) => {
+        const ageMinutes = getSessionAgeMinutes(session.start_time);
+        return ageMinutes !== null && ageMinutes >= olderThanMinutes;
+      });
+    }
+    console.table(formatSessionsForOutput(sessions));
+    if (!apply || sessions.length === 0) {
+      process.stdout.write(sessions.length === 0 ? 'No matching active sessions found.\n' : `Dry run only. Re-run with --apply to close ${sessions.length} session(s).\n`);
+      return;
+    }
+    for (const session of sessions) {
+      const finalized = await firebaseAdmin.rpc('finalize_ai_session', {
+        p_user: session.user_id, p_session: session.id, p_final_seconds_delta: 0, p_reason: 'stale_cleanup',
+      });
+      if (finalized.error) throw finalized.error;
+      await revokeProviderSession(session);
+    }
+    process.stdout.write(`Closed ${sessions.length} active session(s).\n`);
+    return;
+  }
+
   const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -168,9 +199,16 @@ async function main() {
   }
 
   const closedAt = new Date().toISOString();
-  const results = await Promise.all(
-    sessions.map((session) =>
-      supabaseAdmin
+  const results = [];
+  for (const session of sessions) {
+    const finalized = await supabaseAdmin.rpc('finalize_ai_session', {
+      p_user: session.user_id,
+      p_session: session.id,
+      p_final_seconds_delta: 0,
+      p_reason: 'stale_cleanup',
+    });
+    if (finalized.error) {
+      results.push(await supabaseAdmin
         .from('sessions')
         .update({
           end_time: closedAt,
@@ -179,9 +217,12 @@ async function main() {
           cost: normalizeCost(session.cost),
         })
         .eq('id', session.id)
-        .eq('status', 'active'),
-    ),
-  );
+        .eq('status', 'active'));
+    } else {
+      results.push(finalized);
+    }
+    await revokeProviderSession(session);
+  }
 
   const failedResult = results.find((result) => result?.error);
   if (failedResult?.error) {

@@ -4,9 +4,32 @@ import {hash} from './firebase-store.js';
 const single=rows=>{if(rows.size!==1)throw new Error('Wallet not found or ambiguous');return rows.docs[0];};
 const epochId=(uid,second)=>hash(JSON.stringify([uid,String(second)]));
 export const VOICE_RATE_HALF=4; // 2 credits per second
-const VOICE_GRACE_MS=20000;
+export const VOICE_GRACE_MS=20000;
+export const HEARTBEAT_TIMEOUT_MS=90000;
+// Provider credentials are minted only for time that has already been debited.
+// Vidu relays renew this window while the wallet can pay. Plus keys are renewed
+// only when the client asks for the next key.
+export const PROVIDER_CREDENTIAL_WINDOW_SECONDS=180;
+export const MAX_COMMIT_SECONDS=120;
+export const VOICE_CONVERT_SLOTS=3;
+export const PCM_BYTES_PER_SECOND=32000;
+const SLOT_TTL_MS=30000;
 const utc=value=>Date.parse(typeof value==='string'&&/^\d{4}-\d\d-\d\d /.test(value)?value.replace(' ','T')+'Z':value);
-export function createFirebaseRealtimeBilling(db){
+
+export function paidCredentialSeconds(maxSeconds){
+  const paid=Math.floor(Number(maxSeconds)||0);
+  if(paid<1)return 0;
+  return Math.min(paid,PROVIDER_CREDENTIAL_WINDOW_SECONDS);
+}
+
+export function pcmDurationSeconds(byteLength){
+  const bytes=Number(byteLength);
+  if(!Number.isSafeInteger(bytes)||bytes<2||bytes%2!==0)throw new Error('Invalid audio duration');
+  return Math.max(1,Math.ceil(bytes/PCM_BYTES_PER_SECOND));
+}
+
+export function createFirebaseRealtimeBilling(db,options={}){
+  const now=()=>options.now?.()??Date.now();
   async function balance(uid){
     const [wallets,carry]=await Promise.all([db.collection('wallets').where('user_id','==',uid).get(),db.collection('realtime_credit_carry').doc(uid).get()]);
     return Number(single(wallets).data().credits)+Number(carry.data()?.half_credit||0)/2;
@@ -16,17 +39,133 @@ export function createFirebaseRealtimeBilling(db){
     return db.runTransaction(async tx=>{
       const ref=db.collection('sessions').doc(p.p_session),snapshot=await tx.get(ref),row=snapshot.data();
       if(!row||row.user_id!==p.p_user||row.status!=='active'||Number(row.seconds_used||0)!==0)throw new Error('Session not available');
+      const others=await tx.get(db.collection('sessions').where('user_id','==',p.p_user));
+      if(others.docs.some(doc=>doc.id!==p.p_session&&doc.data().status==='active'))throw new Error('Another streaming session is active');
       tx.update(ref,{billing_version:2,video_rate_half:p.p_rate_half});
-      return {billingVersion:2,serverNow:Date.now()};
+      return {billingVersion:2,serverNow:now()};
+    });
+  }
+  function payDelta(state,delta){
+    if(delta<0){state.available-=delta;return true;}
+    if(delta===0)return true;
+    const fromReserved=Math.min(state.reserved,delta);
+    state.reserved-=fromReserved;
+    const fromWallet=delta-fromReserved;
+    if(fromWallet>state.available)return false;
+    state.available-=fromWallet;
+    return true;
+  }
+  async function chargeSeconds(tx,state,seconds,kind,sessionId,close){
+    const refs=seconds.map(second=>db.collection('realtime_usage_seconds').doc(epochId(state.uid,second)));
+    const buckets=refs.length?await tx.getAll(...refs):[];
+    const ledgers=await Promise.all(seconds.map(second=>tx.get(db.collection('wallet_ledger').where('idempotency_key','==',`rt-second:${state.uid}:${second}`).limit(2))));
+    const changes=[],ledgerChanges=[];
+    let stopped=false;
+    for(let i=0;i<seconds.length;i++){
+      const second=seconds[i],old=buckets[i].data()||{},previousVideo=old.video_session||null;
+      if(kind==='video'&&previousVideo&&previousVideo!==sessionId)throw new Error('Overlapping video sessions');
+      const video=previousVideo||(kind==='video'?sessionId:null);
+      const voice=kind==='translation'&&close&&old.translation_session===sessionId?null:old.translation_session||(kind==='translation'?sessionId:null);
+      const rate=Math.max(Number(old.video_rate_half||0),kind==='video'?Number(state.videoRate):0);
+      const cost=voice?(video?rate+VOICE_RATE_HALF:VOICE_RATE_HALF):rate;
+      const delta=cost-Number(old.cost_half||0);
+      if(kind==='video'&&state.count>=Math.min(Number(state.cap||7200),7200)&&previousVideo!==sessionId){stopped=true;break;}
+      if(!payDelta(state,delta)){stopped=true;break;}
+      const beforeWallet=state.walletFloor;state.walletFloor=Math.floor(state.available/2);
+      changes.push({ref:refs[i],exists:buckets[i].exists,data:{user_id:state.uid,epoch_second:String(second),video_session:video,video_rate_half:rate,translation_session:voice,cost_half:cost}});
+      if(kind==='video'&&previousVideo!==sessionId)state.count++;
+      if(kind==='translation'&&!close)state.target++;
+      state.lastSecond=second;
+      if(beforeWallet!==state.walletFloor){
+        if(ledgers[i].size>1)throw new Error('Ambiguous usage ledger');
+        const oldLedger=ledgers[i].docs[0],id=oldLedger?.id||randomUUID();
+        ledgerChanges.push({ref:oldLedger?.ref||db.collection('wallet_ledger').doc(id),exists:!!oldLedger,data:{...(oldLedger?.data()||{id,user_id:state.uid,entry_type:'realtime_usage',reason:'Realtime usage; fractional change retained',idempotency_key:`rt-second:${state.uid}:${second}`,created_at:new Date(now()).toISOString()}),delta:Number(oldLedger?.data().delta||0)+state.walletFloor-beforeWallet,balance_after:state.walletFloor}});
+      }
+    }
+    return {changes,ledgerChanges,stopped};
+  }
+  function writeCharges(tx,state,wallet,carryRef,changes,ledgerChanges){
+    const timestamp=new Date(now()).toISOString();
+    tx.update(wallet.ref,{credits:Math.floor(state.available/2),updated_at:timestamp});
+    tx.set(carryRef,{user_id:state.uid,half_credit:state.available%2});
+    for(const change of changes)change.exists?tx.update(change.ref,change.data):tx.create(change.ref,change.data);
+    for(const change of ledgerChanges)change.exists?tx.update(change.ref,change.data):tx.create(change.ref,change.data);
+    return timestamp;
+  }
+  async function mutateVideo(p,mode){
+    const uid=p.p_user,sessionId=p.p_session;
+    if(!uid||!sessionId)throw new Error('Session ownership required');
+    return db.runTransaction(async tx=>{
+      const sessionRef=db.collection('sessions').doc(sessionId),carryRef=db.collection('realtime_credit_carry').doc(uid);
+      const [wallets,carry,session,profile,associated,owned]=await Promise.all([
+        tx.get(db.collection('wallets').where('user_id','==',uid)),tx.get(carryRef),tx.get(sessionRef),tx.get(db.collection('users').doc(uid)),
+        tx.get(db.collection('realtime_usage_seconds').where('video_session','==',sessionId)),
+        tx.get(db.collection('sessions').where('user_id','==',uid)),
+      ]);
+      if(profile.data()?.account_status!=='active')throw new Error('Account unavailable');
+      if(owned.docs.some(doc=>doc.id!==sessionId&&doc.data().status==='active'))throw new Error('Another streaming session is active');
+      const wallet=single(wallets);
+      const row=session.data();
+      if(!row||row.user_id!==uid||row.billing_version!==2)throw new Error('Session ownership or billing version mismatch');
+      const availableNow=Number(wallet.data().credits)*2+Number(carry.data()?.half_credit||0);
+      if(!Number.isSafeInteger(availableNow)||availableNow<0)throw new Error('Invalid wallet balance');
+      if(row.status!=='active')return {shouldStop:true,remainingCredits:availableNow/2,reason:'session_not_found',ended:true};
+      if(!Number.isSafeInteger(Number(row.video_rate_half))||Number(row.video_rate_half)<=0)throw new Error('Invalid video rate');
+      const time=Math.floor(now()/1000);
+      const start=Math.floor(utc(row.start_time)/1000);
+      const anchor=Number.isSafeInteger(start)?start:time;
+      const cap=Math.min(Number(row.provider_max_seconds||7200),7200);
+      const state={uid,available:availableNow,reserved:Number(row.reserved_half||0),walletFloor:Math.floor(availableNow/2),videoRate:Number(row.video_rate_half),count:associated.size,cap,target:0,lastSecond:Number.isSafeInteger(Number(row.last_billed_epoch))?Number(row.last_billed_epoch):anchor-1};
+      let prepaidUntil=Number(row.prepaid_until_epoch||anchor);
+      const expiresAt=Date.parse(row.credential_expires_at||'');
+      let close=p.p_close===true;
+      const lastBeat=Date.parse(row.last_heartbeat_at||row.start_time||0);
+      let reason=close?String(p.p_reason||'client_ended').slice(0,80):null;
+      if(!close&&Number.isFinite(lastBeat)&&row.last_heartbeat_at&&now()-lastBeat>HEARTBEAT_TIMEOUT_MS){close=true;reason='heartbeat_timeout';}
+      if(!close&&row.provider==='xmax'&&Number.isFinite(expiresAt)&&expiresAt<=now()){close=true;reason='credential_expired';}
+      const extend=!close&&(mode.reserveOnly||mode.extend||(row.provider==='vidu'&&!mode.reserveOnly));
+      let added=0;
+      if(extend||mode.reserveOnly){
+        const windowSeconds=Math.max(1,paidCredentialSeconds(p.p_window||PROVIDER_CREDENTIAL_WINDOW_SECONDS));
+        const targetExclusive=Math.min(anchor+cap,Math.max(prepaidUntil,time+windowSeconds));
+        added=Math.min(Math.max(0,targetExclusive-prepaidUntil),Math.floor(state.available/state.videoRate));
+        if(added>0){state.available-=added*state.videoRate;state.reserved+=added*state.videoRate;state.walletFloor=Math.floor(state.available/2);prepaidUntil+=added;}
+        if(mode.reserveOnly){
+          const timestamp=writeCharges(tx,state,wallet,carryRef,[],[]);
+          tx.update(sessionRef,{reserved_half:state.reserved,prepaid_until_epoch:prepaidUntil,last_heartbeat_at:timestamp});
+          return {reservedSeconds:added,prepaidUntilEpoch:prepaidUntil,remainingCredits:(state.available+state.reserved)/2,shouldStop:added<1&&prepaidUntil<=time};
+        }
+      }
+      // Sessions opened before prepaid windows still bill elapsed server time
+      // from the wallet instead of trusting a client timestamp list.
+      if(!Number.isFinite(Number(row.prepaid_until_epoch))&&prepaidUntil<=anchor)prepaidUntil=Math.min(anchor+cap,time);
+      const endInclusive=Math.min(time-1,prepaidUntil-1,anchor+cap-1);
+      const chunkEnd=Math.min(endInclusive,state.lastSecond+MAX_COMMIT_SECONDS);
+      const seconds=[];
+      for(let second=state.lastSecond+1;second<=chunkEnd;second++)seconds.push(second);
+      const charged=await chargeSeconds(tx,state,seconds,'video',sessionId,false);
+      const billingIncomplete=endInclusive>chunkEnd&&!charged.stopped;
+      let ended=false;
+      if(charged.stopped){close=true;reason='no_credits';}
+      if(close&&!billingIncomplete){state.available+=state.reserved;state.reserved=0;state.walletFloor=Math.floor(state.available/2);ended=true;}
+      const timestamp=writeCharges(tx,state,wallet,carryRef,charged.changes,charged.ledgerChanges);
+      tx.update(sessionRef,{
+        seconds_used:state.count,last_billed_epoch:state.lastSecond,reserved_half:state.reserved,prepaid_until_epoch:prepaidUntil,
+        last_usage_at:timestamp,last_heartbeat_at:timestamp,
+        ...ended?{status:'ended',end_time:timestamp,end_reason:reason}:{}});
+      const remainingCredits=(state.available+state.reserved)/2;
+      const renewalDue=!ended&&row.provider==='xmax'&&Number.isFinite(expiresAt)&&expiresAt-now()<45000&&expiresAt>now();
+      return {totalBillableSeconds:state.count,remainingCredits,shouldStop:ended||remainingCredits<state.videoRate/2,billingIncomplete,ended,reason,renewalDue,
+        provider:row.provider,providerKeyId:row.provider_key_id||null,providerLiveId:row.provider_live_id||null,prepaidUntilEpoch:prepaidUntil};
     });
   }
   // Per-second usage buckets record which features ran in each second.
   // `translation` sessions now meter the voice changer (the collection names
   // are kept for compatibility with existing records).
   async function meter(kind,p){
-    const uid=p.p_user,sessionId=p.p_session,close=p.p_close===true,time=Math.floor(Date.now()/1000),auto=p.p_auto===true;
+    const uid=p.p_user,sessionId=p.p_session,close=p.p_close===true,time=Math.floor(now()/1000),auto=p.p_auto===true;
     if(!uid||!sessionId)throw new Error('Session ownership required');
-    if(kind==='video'&&(!Array.isArray(p.p_epoch_seconds)||p.p_epoch_seconds.length>60||p.p_epoch_seconds.some(s=>!Number.isSafeInteger(s))))throw new Error('Invalid video usage timestamps');
+    if(kind==='video')return mutateVideo(p,{reserveOnly:false,extend:p.p_extend===true});
     if(kind==='translation'&&!auto&&(!Number.isInteger(p.p_seconds)||p.p_seconds<0||p.p_seconds>7200))throw new Error('Invalid voice duration');
     return db.runTransaction(async tx=>{
       const sessionRef=db.collection(kind==='video'?'sessions':'translation_sessions').doc(sessionId),carryRef=db.collection('realtime_credit_carry').doc(uid);
@@ -37,86 +176,90 @@ export function createFirebaseRealtimeBilling(db){
         kind==='translation'?tx.get(db.collection('translation_sessions').where('user_id','==',uid)):Promise.resolve(null),
       ]);
       if(profile.data()?.account_status!=='active')throw new Error('Account unavailable');
-      const wallet=single(wallets);let available=Number(wallet.data().credits)*2+Number(carry.data()?.half_credit||0);
-      if(!Number.isSafeInteger(available)||available<0)throw new Error('Invalid wallet balance');
+      const wallet=single(wallets);
+      const state={uid,available:Number(wallet.data().credits)*2+Number(carry.data()?.half_credit||0),reserved:0,walletFloor:0,videoRate:0,count:associated.size,cap:7200,target:0,lastSecond:null};
+      state.walletFloor=Math.floor(state.available/2);
+      if(!Number.isSafeInteger(state.available)||state.available<0)throw new Error('Invalid wallet balance');
       let row=session.data();
       if(row&&row.user_id!==uid)throw new Error('Session ownership mismatch');
-      if(kind==='video'&&(!row||row.billing_version!==2))throw new Error('Session ownership or billing version mismatch');
-      if(kind==='video'&&row.status!=='active')return {shouldStop:true,remainingCredits:available/2};
-      if(kind==='translation'&&row?.closed_at)return {closed:true,authorizedSeconds:Number(row.authorized_seconds),remainingCredits:available/2};
-      let seconds,target=0,requested=0;
+      if(kind==='translation'&&row?.closed_at)return {closed:true,authorizedSeconds:Number(row.authorized_seconds),remainingCredits:state.available/2};
       const stale=[];
-      if(kind==='video'){
-        seconds=[...new Set(p.p_epoch_seconds)].sort((a,b)=>a-b);
-        if(seconds.some(s=>s>time||s<time-120||s<Math.floor(utc(row.start_time)/1000)))throw new Error('Invalid usage timestamp');
-      }else{
-        if(!close&&videoSessions.docs.some(d=>d.data().status==='active'&&d.data().billing_version!==2))throw new Error('Restart face streaming in the updated app before using the voice changer');
-        for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw Object.assign(new Error('The voice changer is already running on another device or window. Stop it there first.'),{code:'23505'});}
-        row||={id:sessionId,user_id:uid,started_epoch:String(time),authorized_seconds:0,closed_at:null};
-        target=Number(row.authorized_seconds);
-        // Auto mode lets the server decide the duration from its own clock:
-        // reserve five seconds ahead while running, and refund the rest on close.
-        const elapsed=Math.max(0,time-Number(row.started_epoch));
-        requested=auto?(close?elapsed+1:elapsed+5):p.p_seconds;
-        if(close){target=Math.min(requested,target);seconds=associated.docs.map(d=>Number(d.data().epoch_second)).filter(s=>s>=Number(row.started_epoch)+target).sort((a,b)=>a-b);}
-        else{
-          if(requested>elapsed+5)throw new Error('Reservation too far ahead');
-          seconds=Array.from({length:Math.max(0,requested-target)},(_,i)=>Number(row.started_epoch)+target+i);
-        }
-        // Normal reservations are a few seconds. Bound a delayed request so its
-        // ledger and bucket writes remain within one Firestore commit.
-        if(seconds.length>120)throw new Error('Voice changer reservation expired; start voice conversion again');
+      if(!close&&videoSessions.docs.some(doc=>doc.data().status==='active'&&doc.data().billing_version!==2))throw new Error('Restart face streaming in the updated app before using the voice changer');
+      for(const doc of translationSessions.docs){const other=doc.data();if(doc.id===sessionId||other.closed_at)continue;if(Number(other.started_epoch)+Number(other.authorized_seconds)+30<time)stale.push(doc);else throw Object.assign(new Error('The voice changer is already running on another device or window. Stop it there first.'),{code:'23505'});}
+      const existed=session.exists;
+      row||={id:sessionId,user_id:uid,started_epoch:String(time),authorized_seconds:0,closed_at:null};
+      state.target=Number(row.authorized_seconds);
+      const elapsed=Math.max(0,time-Number(row.started_epoch));
+      const requested=auto?(close?elapsed+1:elapsed+5):p.p_seconds;
+      let seconds;
+      if(close){state.target=Math.min(requested,state.target);seconds=associated.docs.map(doc=>Number(doc.data().epoch_second)).filter(second=>second>=Number(row.started_epoch)+state.target).sort((a,b)=>a-b);}
+      else{
+        if(requested>elapsed+5)throw new Error('Reservation too far ahead');
+        seconds=Array.from({length:Math.max(0,requested-state.target)},(_,index)=>Number(row.started_epoch)+state.target+index);
       }
-      const refs=seconds.map(s=>db.collection('realtime_usage_seconds').doc(epochId(uid,s)));
-      const buckets=refs.length?await tx.getAll(...refs):[];
-      const ledgers=await Promise.all(seconds.map(s=>tx.get(db.collection('wallet_ledger').where('idempotency_key','==',`rt-second:${uid}:${s}`).limit(2))));
-      const changes=[],ledgerChanges=[];let count=associated.size,stopped=false;
-      for(let i=0;i<seconds.length;i++){
-        const second=seconds[i],old=buckets[i].data()||{},previousVideo=old.video_session||null;
-        if(kind==='video'&&previousVideo&&previousVideo!==sessionId)throw new Error('Overlapping video sessions');
-        const video=previousVideo||(kind==='video'?sessionId:null);
-        const voice=kind==='translation'&&close&&old.translation_session===sessionId?null:old.translation_session||(kind==='translation'?sessionId:null);
-        // Costs are in half-credits. Video uses its fixed rate (Plus: 2 cr/s);
-        // the voice changer adds 2 cr/s, so Plus + voice is 4 cr/s and either
-        // feature alone is 2 cr/s.
-        const rate=Math.max(Number(old.video_rate_half||0),kind==='video'?Number(row.video_rate_half):0);
-        const cost=voice?(video?rate+VOICE_RATE_HALF:VOICE_RATE_HALF):rate,delta=cost-Number(old.cost_half||0);
-        if(kind==='video'&&count>=Math.min(Number(row.provider_max_seconds||7200),7200)&&previousVideo!==sessionId){stopped=true;break;}
-        if(delta>available){stopped=true;break;}
-        const beforeWallet=Math.floor(available/2);available-=delta;const afterWallet=Math.floor(available/2);
-        changes.push({ref:refs[i],exists:buckets[i].exists,data:{user_id:uid,epoch_second:String(second),video_session:video,video_rate_half:rate,translation_session:voice,cost_half:cost}});
-        if(kind==='video'&&previousVideo!==sessionId)count++;
-        if(kind==='translation'&&!close)target++;
-        if(beforeWallet!==afterWallet){
-          if(ledgers[i].size>1)throw new Error('Ambiguous usage ledger');
-          const oldLedger=ledgers[i].docs[0],id=oldLedger?.id||randomUUID();
-          ledgerChanges.push({ref:oldLedger?.ref||db.collection('wallet_ledger').doc(id),exists:!!oldLedger,data:{...(oldLedger?.data()||{id,user_id:uid,entry_type:'realtime_usage',reason:'Realtime usage; fractional change retained',idempotency_key:`rt-second:${uid}:${second}`,created_at:new Date().toISOString()}),delta:Number(oldLedger?.data().delta||0)+afterWallet-beforeWallet,balance_after:afterWallet}});
-        }
+      if(seconds.length>120)throw new Error('Voice changer reservation expired; start voice conversion again');
+      const charged=await chargeSeconds(tx,state,seconds,'translation',sessionId,close);
+      if(!existed&&state.target===0){
+        for(const doc of stale)tx.update(doc.ref,{closed_at:new Date(now()).toISOString()});
+        return {closed:false,authorizedSeconds:0,requestedSeconds:requested,outOfCredits:true,startedAtMs:null,remainingCredits:state.available/2};
       }
-      const timestamp=new Date().toISOString();
-      tx.update(wallet.ref,{credits:Math.floor(available/2),updated_at:timestamp});tx.set(carryRef,{user_id:uid,half_credit:available%2});
-      for(const change of changes)change.exists?tx.update(change.ref,change.data):tx.create(change.ref,change.data);
-      for(const change of ledgerChanges)change.exists?tx.update(change.ref,change.data):tx.create(change.ref,change.data);
+      const timestamp=writeCharges(tx,state,wallet,carryRef,charged.changes,charged.ledgerChanges);
       for(const doc of stale)tx.update(doc.ref,{closed_at:timestamp});
-      if(kind==='video'){
-        tx.update(sessionRef,{seconds_used:count,last_usage_at:timestamp,...close?{status:'ended',end_time:timestamp}:{}});
-        return {totalBillableSeconds:count,remainingCredits:available/2,shouldStop:stopped||available<Number(row.video_rate_half)};
-      }
-      const updated={...row,authorized_seconds:target,...close?{closed_at:timestamp}:{}};
-      session.exists?tx.update(sessionRef,updated):tx.create(sessionRef,updated);
-      return {closed:close,authorizedSeconds:target,requestedSeconds:requested,outOfCredits:!close&&target<requested,
-        startedAtMs:Number(row.started_epoch)*1000,remainingCredits:available/2};
+      const updated={...row,authorized_seconds:state.target,audio_seconds_consumed:Number(row.audio_seconds_consumed||0),...close?{closed_at:timestamp}:{}};
+      existed?tx.update(sessionRef,updated):tx.create(sessionRef,updated);
+      return {closed:close,authorizedSeconds:state.target,requestedSeconds:requested,outOfCredits:!close&&state.target<requested,
+        startedAtMs:Number(row.started_epoch)*1000,remainingCredits:state.available/2};
     });
   }
-  // A voice conversion is allowed only inside a paid, running voice session.
-  // A short grace keeps phrases that were spoken just before Stop.
+  async function billVoiceConvert(p){
+    const uid=p.p_user,sessionId=p.p_session;
+    const duration=pcmDurationSeconds(p.p_bytes);
+    const slot=typeof p.p_slot==='string'&&p.p_slot.length>0?p.p_slot:randomUUID();
+    return db.runTransaction(async tx=>{
+      const sessionRef=db.collection('translation_sessions').doc(sessionId),carryRef=db.collection('realtime_credit_carry').doc(uid);
+      const [wallets,carry,session,profile]=await Promise.all([
+        tx.get(db.collection('wallets').where('user_id','==',uid)),tx.get(carryRef),tx.get(sessionRef),tx.get(db.collection('users').doc(uid)),
+      ]);
+      if(profile.data()?.account_status!=='active')throw new Error('Account unavailable');
+      const row=session.data();
+      if(!row||row.user_id!==uid||Number(row.authorized_seconds)<=0)return {accepted:false,outOfCredits:true,remainingCredits:0};
+      const closed=Boolean(row.closed_at);
+      if(closed&&(row.grace_phrase_used||now()-Date.parse(row.closed_at)>VOICE_GRACE_MS))return {accepted:false,outOfCredits:true,remainingCredits:0};
+      const slots=(Array.isArray(row.voice_convert_slots)?row.voice_convert_slots:[]).filter(item=>item&&now()-Number(item.at)<SLOT_TTL_MS);
+      if(slots.length>=VOICE_CONVERT_SLOTS)throw Object.assign(new Error('Too many voice conversions are already running.'),{code:'voice_busy'});
+      const wallet=single(wallets);
+      const state={uid,available:Number(wallet.data().credits)*2+Number(carry.data()?.half_credit||0),reserved:0,walletFloor:0,videoRate:0,count:0,cap:7200,target:Number(row.authorized_seconds),lastSecond:null};
+      state.walletFloor=Math.floor(state.available/2);
+      if(!Number.isSafeInteger(state.available)||state.available<0)throw new Error('Invalid wallet balance');
+      const consumed=Number(row.audio_seconds_consumed||0);
+      const covered=Math.max(0,state.target-consumed);
+      const shortfall=Math.max(0,duration-covered);
+      const seconds=Array.from({length:shortfall},(_,index)=>Number(row.started_epoch)+state.target+index);
+      const charged=shortfall?await chargeSeconds(tx,state,seconds,'translation',sessionId,false):{changes:[],ledgerChanges:[],stopped:false};
+      if(charged.stopped||state.target<Number(row.authorized_seconds)+shortfall)return {accepted:false,outOfCredits:true,remainingCredits:state.available/2};
+      const timestamp=writeCharges(tx,state,wallet,carryRef,charged.changes,charged.ledgerChanges);
+      tx.update(sessionRef,{authorized_seconds:state.target,audio_seconds_consumed:consumed+duration,voice_convert_slots:[...slots,{id:slot,at:now()}],...closed?{grace_phrase_used:true}:{}});
+      return {accepted:true,slot,durationSeconds:duration,outOfCredits:false,remainingCredits:state.available/2,authorizedSeconds:state.target,closed,paidUntilMs:(Number(row.started_epoch)+state.target)*1000,timestamp};
+    });
+  }
+  async function releaseVoiceConvert(p){
+    const ref=db.collection('translation_sessions').doc(p.p_session);
+    await db.runTransaction(async tx=>{
+      const snapshot=await tx.get(ref),row=snapshot.data();
+      if(!row||row.user_id!==p.p_user||!Array.isArray(row.voice_convert_slots))return;
+      tx.update(ref,{voice_convert_slots:row.voice_convert_slots.filter(item=>item?.id!==p.p_slot)});
+    });
+    return {released:true};
+  }
+  // A voice conversion is allowed only inside a paid voice session.
+  // Grace covers one phrase spoken just before Stop, and only after time was billed.
   async function voiceActive(p){
     const snapshot=await db.collection('translation_sessions').doc(p.p_session).get(),row=snapshot.data();
-    if(!row||row.user_id!==p.p_user)return {active:false};
-    const now=Date.now(),paidUntilMs=(Number(row.started_epoch)+Number(row.authorized_seconds))*1000;
-    if(row.closed_at)return {active:now-Date.parse(row.closed_at)<=VOICE_GRACE_MS&&Number(row.authorized_seconds)>0};
-    return {active:paidUntilMs+VOICE_GRACE_MS>=now};
+    if(!row||row.user_id!==p.p_user||Number(row.authorized_seconds)<=0)return {active:false};
+    if(row.closed_at)return {active:now()-Date.parse(row.closed_at)<=VOICE_GRACE_MS&&!row.grace_phrase_used};
+    const paidUntilMs=(Number(row.started_epoch)+Number(row.authorized_seconds))*1000;
+    return {active:paidUntilMs>=now()};
   }
-  return {balance,configure,video:p=>meter('video',p),translation:p=>meter('translation',p),
-    voice:p=>meter('translation',{...p,p_auto:true}),voiceActive};
+  return {balance,configure,video:p=>mutateVideo(p,{reserveOnly:false,extend:p.p_extend===true}),reserveVideo:p=>mutateVideo(p,{reserveOnly:true,extend:true}),
+    translation:p=>meter('translation',p),voice:p=>meter('translation',{...p,p_auto:true}),voiceActive,billVoiceConvert,releaseVoiceConvert};
 }

@@ -206,6 +206,9 @@ test('production preflight rejects invalid relay configuration and origins befor
         if (name === '../../../shared/backend-logger.js') return { logErrorEvent() {}, logRequestEvent() {} };
         if (name === '../realtime-billing.js') return { realtimeWalletBalance: Number };
         if (name === '../decart-token.js') return {};
+        if (name === '../firebase-realtime-billing.js') return { paidCredentialSeconds: value => Math.max(0, Math.min(180, Math.floor(Number(value) || 0))), PROVIDER_CREDENTIAL_WINDOW_SECONDS: 180 };
+        if (name === '../provider-revocation.js') return { revokeProviderSession: async () => {} };
+        if (name === '../request-rate-limit.js') return { rateLimit: () => true };
         throw new Error(`Unexpected import ${name}`);
       },
     });

@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { randomUUID } from 'node:crypto';
+import { rateLimit } from '../request-rate-limit.js';
 import {
   CLONE_AUDIO_TYPES, MAX_CLONE_BYTES, MAX_CONVERT_BYTES,
   STS_OPTIMIZE_STREAMING_LATENCY, STS_STREAM_OUTPUT_FORMAT, STS_VOICE_SETTINGS_JSON,
@@ -111,13 +113,23 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
       // documented path that still runs the text normalizer.
       const audio = decodeBase64Audio(req.body?.audio, MAX_CONVERT_BYTES);
       if (!audio || audio.length % 2 !== 0) return res.status(400).json({ error: 'Invalid audio segment.' });
+      if (!rateLimit(`voice-convert:${userId}`, { limit: 30, windowMs: 10_000 })) {
+        return res.status(429).json({ error: 'Too many voice conversions. Wait a moment and try again.', code: 'rate_limited', fatal: false });
+      }
       const sessionId = voiceBillingSessionId(userId, req.body?.sessionId);
-      const paid = sessionId ? await supabase.rpc('voice_session_active', { p_user: userId, p_session: sessionId }) : null;
-      if (!paid?.data?.active) {
+      const slot = randomUUID();
+      const paid = sessionId ? await supabase.rpc('bill_voice_convert', { p_user: userId, p_session: sessionId, p_bytes: audio.length, p_slot: slot }) : null;
+      if (paid?.error?.code === 'voice_busy') {
+        return res.status(429).json({ error: paid.error.message, code: 'voice_busy', fatal: false });
+      }
+      if (paid?.error || !paid?.data?.accepted) {
         return res.status(402).json({ error: 'Your voice conversion time is not paid for. Check your credits, then start voice conversion again.',
           code: 'billing_required', fatal: true });
       }
-      const stream = await client.speechToSpeech.stream(voiceId, {
+      let stream;
+      let streaming = false;
+      try {
+      stream = await client.speechToSpeech.stream(voiceId, {
         audio: { data: audio, filename: 'speech.pcm', contentType: 'application/octet-stream' },
         fileFormat: 'pcm_s16le_16',
         modelId: getStsModel(),
@@ -134,8 +146,6 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
       // Headers go out before the body so a new client can play the first
       // MP3 bytes while ElevenLabs is still synthesizing the rest. Older
       // clients keep calling this route and decoding the completed MP3.
-      let streaming = false;
-      try {
         beginStreamedAudio(res);
         streaming = true;
         await pipeAudioStream(stream, res);
@@ -146,6 +156,8 @@ export function createVoiceHandler(action, { getClient = getElevenLabsClient, au
         if (!res.writableEnded && typeof res.end === 'function') {
           try { res.end(); } catch { /* the response is already closed */ }
         }
+      } finally {
+        await supabase.rpc('release_voice_convert', { p_user: userId, p_session: sessionId, p_slot: slot }).catch(() => {});
       }
       return;
     } catch (error) {

@@ -51,6 +51,11 @@ scripts/monitor-morphly.ps1
 
 # IDE
 .vscode/*.log
+.kilocode/
+.push-fix/
+firestore-debug.log
+firebase-debug.log
+ui-debug.log
 .vercel
 .env*.local
 .env*

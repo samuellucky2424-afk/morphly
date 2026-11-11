@@ -79,69 +79,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const verification = transactionId
-      ? await verifyFlutterwaveTransaction(transactionId, flutterwaveSecretKey)
-      : await verifyFlutterwaveTransactionByReference(reference, flutterwaveSecretKey);
-    const verifiedTransactionId = verification.transaction?.id || transactionId;
-
-    if (!verification.isVerified) {
-      await logPaymentEvent('verify-payment.rejected', {
-        reference,
-        transactionId,
-        userId,
-        message: verification.data?.message || 'Payment verification failed',
-      });
-      return res.status(400).json({ status: 'failed', message: verification.data?.message || 'Payment verification failed' });
-    }
-    if (!verifiedTransactionId) {
-      return res.status(400).json({ status: 'failed', message: 'Missing verified Flutterwave transaction ID' });
-    }
-
-    const paymentContext = extractFlutterwavePaymentContext(verification.transaction, {
-      reference,
-      userId,
-      credits,
-      packageId,
-      priceUSD,
-    });
-    if (!paymentContext.userId) {
-      return res.status(400).json({ status: 'failed', message: 'Missing payment userId metadata' });
-    }
-
-    if (!paymentContext.packageId) {
-      return res.status(400).json({ status: 'failed', message: 'Missing payment packageId metadata' });
-    }
-
-    const validation = validateFlutterwaveTransaction(verification.transaction, paymentContext.reference);
-    if (!validation.ok) {
-      await logPaymentEvent('verify-payment.invalid', {
-        reference,
-        transactionId,
-        userId: paymentContext.userId,
-        message: validation.message,
-      });
-      return res.status(400).json({ status: 'failed', message: validation.message });
-    }
-
-    const result = await applyVerifiedFlutterwavePayment({
-      reference: validation.reference,
-      userId: paymentContext.userId,
-      packageId: paymentContext.packageId,
-      transactionId: verifiedTransactionId,
-      amountPaidNGN: validation.amountPaidNGN,
-      gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
-    });
-
-    await logPaymentEvent('verify-payment.processed', {
-      reference: validation.reference,
-      transactionId: verifiedTransactionId,
-      userId: paymentContext.userId,
-      creditsAdded: result.creditsAdded,
-      newCredits: result.newCredits,
-      duplicate: Boolean(result.duplicate),
-    });
-
-    res.json(result);
+    return res.status(400).json({ status: 'failed', message: 'Payment checkout was not created by Morphly' });
   } catch (error) {
     await logErrorEvent('verify-payment.exception', error, {
       reference,
