@@ -6,6 +6,7 @@ import { hash } from '../firebase-store.js';
 import { validSignature } from '../firebase-payment-runtime.mjs';
 
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { settleCheckout } from '../payment-checkouts.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
   applyVerifiedFlutterwavePayment,
@@ -33,14 +34,17 @@ async function readRawBody(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+function sameSecret(left, right) {
+  const a = Buffer.from(String(left));
+  const b = Buffer.from(String(right));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 function hasValidFlutterwaveSignature(rawBody, signature, secretHash) {
   if (!signature || !secretHash) return false;
-  if (signature === secretHash) return true;
-
-  const expected = crypto.createHmac('sha256', secretHash).update(rawBody).digest('base64');
-  if (expected.length !== String(signature).length) return false;
-
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(String(signature)));
+  const provided = String(signature);
+  const hmac = crypto.createHmac('sha256', secretHash).update(rawBody).digest('base64');
+  return sameSecret(provided, secretHash) || sameSecret(provided, hmac);
 }
 
 export default async function handler(req, res) {
@@ -115,44 +119,22 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: verification.data?.message || 'Payment verification failed' });
     }
 
-    const fallbackReference = webhookTransaction?.tx_ref || webhookTransaction?.reference || null;
-    const paymentContext = extractFlutterwavePaymentContext(verification.transaction, {
-      reference: fallbackReference,
-      userId: webhookTransaction?.meta?.userId || webhookTransaction?.meta?.user_id,
-      credits: webhookTransaction?.meta?.credits,
-      packageId: webhookTransaction?.meta?.packageId || webhookTransaction?.meta?.package_id,
-    });
-
-    if (!paymentContext.userId) {
-      return res.status(400).json({ status: 'failed', message: 'Missing payment userId metadata' });
+    const reference = verification.transaction?.tx_ref || verification.transaction?.reference;
+    if (!firebaseDb || !reference) {
+      return res.status(400).json({ status: 'failed', message: 'Payment checkout was not created by Morphly' });
     }
-
-    const validation = validateFlutterwaveTransaction(verification.transaction, paymentContext.reference);
-    if (!validation.ok) {
-      await logPaymentEvent('flutterwave-webhook.invalid', {
-        transactionId,
-        userId: paymentContext.userId,
-        message: validation.message,
-      });
-      return res.status(400).json({ status: 'failed', message: validation.message });
+    const checkout = await settleCheckout(firebaseDb, reference, { secretKey: flutterwaveSecretKey, transactionId });
+    if (!checkout || checkout.state !== 'credited') {
+      return res.status(checkout?.state === 'pending' ? 202 : 400).json({ status: 'failed', message: checkout?.message || 'Payment checkout was not created by Morphly' });
     }
-
-    const result = await applyVerifiedFlutterwavePayment({
-      reference: validation.reference,
-      userId: paymentContext.userId,
-      packageId: paymentContext.packageId,
-      transactionId,
-      amountPaidNGN: validation.amountPaidNGN,
-      gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
-    });
+    const result = checkout;
 
     await logPaymentEvent('flutterwave-webhook.processed', {
-      reference: validation.reference,
+      reference,
       transactionId,
-      userId: paymentContext.userId,
       creditsAdded: result.creditsAdded,
       newCredits: result.newCredits,
-      status: result.status,
+      status: result.state,
     });
 
     return res.status(200).json({ received: true, processed: true, ...result });

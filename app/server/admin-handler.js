@@ -229,8 +229,8 @@ async function handleAdminUsers(req, res, routeConfig) {
         return res.json(result);
       }
       const adjustment = Number(req.body?.adjustment ?? req.body?.amount ?? req.body?.creditsToAdd);
-      if (adjustment < 0 && adminContext.admin.role !== 'super_admin') {
-        return res.status(403).json({ error: 'Super admin access is required to remove credits' });
+      if (adminContext.admin.role !== 'super_admin') {
+        return res.status(403).json({ error: 'Super admin access is required to adjust credits' });
       }
       const result = await adjustUserCredits(supabaseAdmin, {
         userId: req.body?.userId,
@@ -259,8 +259,13 @@ async function handleAdminUsers(req, res, routeConfig) {
       return res.status(400).json({ error: 'You cannot delete your own admin account from this dashboard' });
     }
 
+    if (adminContext.admin.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Super admin access is required to delete accounts' });
+    }
     const result = await deleteUserAccount(supabaseAdmin, {
       userId: req.body?.userId,
+      actorUserId: adminContext.user.id,
+      actorRole: adminContext.admin.role,
     });
 
     await logRequestEvent('admin-users.deleted', {
@@ -295,6 +300,9 @@ async function handleAdminCreditPackages(req, res, routeConfig) {
     if (req.method === 'GET') {
       const packages = await listCreditPackages(supabaseAdmin, { includeInactive: true });
       return res.json({ packages });
+    }
+    if (adminContext.admin.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Super admin access is required to edit packages' });
     }
 
     if (req.method === 'POST') {

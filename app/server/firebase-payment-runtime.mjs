@@ -78,6 +78,9 @@ export function createPaymentRuntime(db) {
         }else if(!referrer?.exists||referrer.data().account_status!=='active'){
           tx.update(referral.ref,{...qualification,status:'disqualified',disqualified_at:now,disqualification_reason:'Referrer is unavailable or ineligible'});
           audit('referral.disqualified',{reason:'Referrer is unavailable or ineligible'});
+        }else if(referralData.suspicious){
+          tx.update(referral.ref,{...qualification,status:'qualified'});
+          audit('referral.reward_skipped',{reason:'suspicious'});
         }else if(!rewardExists.size){
           const rw=one(referrerWallet),rwRef=rw?.ref??db.collection('wallets').doc(randomUUID()),rewardId=randomUUID(),rewardLedger=randomUUID();
           const newCredits=credits(credits(rw?.data().credits??0)+200);
@@ -109,7 +112,7 @@ export function createPaymentRuntime(db) {
     return db.runTransaction(async tx=>{
       const [admin,profile,rows,seen,historic]=await Promise.all([tx.get(db.collection('admin_users').doc(adminId)),tx.get(db.collection('users').doc(adminId)),tx.get(query('wallets','user_id',userId)),tx.get(marker),tx.get(query('wallet_ledger','idempotency_key',key.trim()))]);
       if(!admin.exists||!admin.data().is_active||!profile.exists||profile.data().account_status!=='active')throw new Error('Admin access required');
-      if(amount<0&&admin.data().role!=='super_admin')throw new Error('Super admin required');
+      if(admin.data().role!=='super_admin')throw new Error('Super admin required');
       const wallet=one(rows);if(!wallet)throw new Error('Wallet not found');
       const previous=seen.exists?seen.data():one(historic)?.data();
       if(previous){if(previous.user_id!==userId||previous.actor_user_id!==adminId||previous.delta!==amount||previous.reason!==reason.trim())throw new Error('Idempotency key conflict');return {duplicate:true,newCredits:credits(wallet.data().credits)};}

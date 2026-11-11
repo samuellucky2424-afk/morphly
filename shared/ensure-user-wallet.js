@@ -113,7 +113,7 @@ export function createEnsureUserWalletHandler({ supabaseAdmin, supabaseAdminConf
     }
 
     try {
-      const authResult = await authenticateRequestUser(req, supabaseAdmin);
+      const authResult = await authenticateRequestUser(req, supabaseAdmin, { allowMissingProfile: true });
       if (authResult.error) {
         return res.status(authResult.status).json({ error: authResult.error });
       }

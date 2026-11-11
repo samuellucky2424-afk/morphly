@@ -22,10 +22,10 @@ const PROVIDER_FAILED_STATES = ['failed', 'cancelled', 'canceled', 'error', 'dec
 
 const recordRef = (db, reference) => db.collection('payment_checkouts').doc(hash(String(reference)));
 
-export async function createCheckoutRecord(db, { reference, userId, packageId, credits, amountNGN }) {
+export async function createCheckoutRecord(db, { reference, userId, packageId, credits, amountNGN, gateway = 'flutterwave' }) {
   const now = new Date().toISOString();
   await recordRef(db, reference).create({
-    reference, userId, packageId, credits, amountNGN,
+    reference, userId, packageId, credits, amountNGN, gateway,
     status: 'pending', created_at: now, updated_at: now,
   });
 }
@@ -85,6 +85,10 @@ export async function settleCheckout(db, reference, { secretKey, transactionId =
     packageId: record.packageId,
     credits: record.credits,
   });
+  if (paymentContext.userId !== record.userId || paymentContext.packageId !== record.packageId) {
+    await updateRecord(db, reference, { status: 'failed', failure_reason: 'checkout_mismatch' });
+    return { state: 'failed', message: 'Verified payment does not match the Morphly checkout.' };
+  }
   const validation = validateFlutterwaveTransaction(verification.transaction, reference);
   if (!validation.ok) {
     await updateRecord(db, reference, { status: 'failed', failure_reason: validation.message });
@@ -95,7 +99,7 @@ export async function settleCheckout(db, reference, { secretKey, transactionId =
   const result = await applyVerifiedFlutterwavePayment({
     reference: validation.reference,
     userId: record.userId,
-    packageId: paymentContext.packageId || record.packageId,
+    packageId: record.packageId,
     transactionId: providerTransactionId,
     amountPaidNGN: validation.amountPaidNGN,
     gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),

@@ -3,6 +3,9 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
 import { createDecartTemporaryKey as createScopedDecartKey } from '../decart-token.js';
 import { realtimeWalletBalance } from '../realtime-billing.js';
+import { paidCredentialSeconds, PROVIDER_CREDENTIAL_WINDOW_SECONDS } from '../firebase-realtime-billing.js';
+import { revokeProviderSession } from '../provider-revocation.js';
+import { rateLimit } from '../request-rate-limit.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
@@ -142,7 +145,8 @@ function getXmaxApiKey() {
  * The permanent key never leaves the server.
  */
 export async function createXmaxTemporaryKey({ apiKey, maxSeconds, fetchImpl = fetch }) {
-  const expireSeconds = Math.max(60, Math.min(Math.ceil(Number(maxSeconds) || 0) + 120, 4 * 3600));
+  const expireSeconds = paidCredentialSeconds(maxSeconds);
+  if (expireSeconds < 1) return { error: { error: 'INSUFFICIENT_CREDITS', details: 'Plus needs more credits before it can start.' } };
   const pointsLimit = Math.max(1, Number(process.env.XMAX_TEMP_KEY_POINTS_LIMIT) || 100000);
   let response;
   try {
@@ -559,7 +563,7 @@ function isMissingColumnError(error, columnName) {
 async function selectActiveSessions(userId) {
   const withCost = await supabaseAdmin
     .from('sessions')
-    .select('id, seconds_used, cost')
+    .select('id, seconds_used, cost, provider, provider_key_id, provider_live_id, billing_version')
     .eq('user_id', userId)
     .eq('status', 'active');
 
@@ -710,6 +714,9 @@ export default async function handler(req, res) {
     if (authResult.error) return res.status(authResult.status).json({ allowed: false, error: authResult.error });
     const authorizationMs = Date.now() - requestStartedAt;
     const userId = authResult.user.id;
+    if (!rateLimit(`start-session:${userId}`, { limit: 8, windowMs: 60_000 })) {
+      return res.status(429).json({ allowed: false, error: 'Too many session starts. Wait a moment and try again.' });
+    }
     if (req.body?.userId && req.body.userId !== userId) return res.status(403).json({ allowed: false, error: 'User mismatch' });
     const installationId = normalizeClientLabel(req.body?.installationId, 120);
     const platform = normalizeClientLabel(req.body?.platform, 30);
@@ -743,8 +750,8 @@ export default async function handler(req, res) {
     ]);
 
     if (profileResult.error) throw profileResult.error;
-    if (profileResult.data?.account_status === 'suspended') {
-      return res.status(403).json({ allowed: false, error: 'Account suspended' });
+    if (profileResult.data?.account_status !== 'active') {
+      return res.status(403).json({ allowed: false, error: 'Account unavailable' });
     }
 
     if (activeSessionsResult.error) {
@@ -765,7 +772,11 @@ export default async function handler(req, res) {
     // preserves the previous deployment behavior until the migration exists.
     if (existingActiveSessions && existingActiveSessions.length > 0) {
       const cleanupResults = await Promise.all(
-        existingActiveSessions.map(session => finalizeExistingSession(session, userId)),
+        existingActiveSessions.map(async session => {
+          const finalized = await finalizeExistingSession(session, userId);
+          if (!finalized?.error) await revokeProviderSession(session);
+          return finalized;
+        }),
       );
 
       const cleanupError = cleanupResults.find(result => result?.error);
@@ -848,11 +859,25 @@ export default async function handler(req, res) {
       await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
       throw providerAuditError;
     }
+    const reserved = await supabaseAdmin.rpc('reserve_realtime_video', {
+      p_user: userId,
+      p_session: newSession.id,
+      // Plus reserves the whole affordable lifetime up front, capped at the
+      // Xmax key maximum, so the one key returned to current desktop builds
+      // stays paid until the balance runs out. Pro keeps a short rolling hold.
+      p_window: isXmax ? maxSeconds : PROVIDER_CREDENTIAL_WINDOW_SECONDS,
+    });
+    if (reserved.error || !reserved.data || Number(reserved.data.reservedSeconds) < 1) {
+      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      const message = reserved.error ? 'Realtime billing is temporarily unavailable. Please try again later.' : `${getProviderPublicLabel(provider)} needs at least ${getEngineMinimumCredits(provider)} credits to start (${minimumCreditRate} cr/sec). Top up and try again.`;
+      return res.status(reserved.error ? 503 : 200).json({ allowed: false, error: message });
+    }
+    const paidSeconds = Number(reserved.data.reservedSeconds);
     const providerCredentialStartedAt = Date.now();
     let providerSession = await createProviderTemporaryCredential({
       provider,
       apiKey: providerApiKey,
-      maxSeconds,
+      maxSeconds: paidSeconds,
       allowedOrigins,
       userId,
       sessionId: newSession.id,
@@ -875,20 +900,32 @@ export default async function handler(req, res) {
         status: 'failed',
         providerStatus: providerSession.error.providerStatus,
       });
-      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      await finalizeExistingSession({ id: newSession.id }, userId);
       return res.status(502).json({ allowed: false, ...providerSession.error });
     }
 
+    const providerSecret = providerSession.token;
+    const providerLiveId = providerSession.liveId || null;
     if (!isXmax) try {
       providerSession = createViduDemoSignalingSession(providerSession, proxyContext, { userId, sessionId: newSession.id });
     } catch {
-      await closeExistingSession({ id: newSession.id, seconds_used: 0, cost: 0 });
+      await finalizeExistingSession({ id: newSession.id }, userId);
       return res.status(503).json({ allowed: false, ...VIDU_CONFIG_ERROR });
+    }
+    const credentialSaved = await supabaseAdmin.from('sessions').update({
+      provider_key_id: providerSecret,
+      provider_live_id: providerLiveId,
+      credential_expires_at: providerSession.expiresAt,
+    }).eq('id', newSession.id);
+    if (credentialSaved.error && !isMissingColumnError(credentialSaved.error, 'provider_key_id')) {
+      await finalizeExistingSession({ id: newSession.id, provider, provider_key_id: providerSecret, provider_live_id: providerLiveId }, userId);
+      await revokeProviderSession({ id: newSession.id, provider, provider_key_id: providerSecret, provider_live_id: providerLiveId });
+      throw credentialSaved.error;
     }
 
     const auditStartedAt = Date.now();
     if (supabaseAdmin.provider === 'firebase') {
-      const saved = await supabaseAdmin.from('sessions').update({provider,provider_max_seconds:providerSession.sessionLimit || maxSeconds}).eq('id',newSession.id);
+      const saved = await supabaseAdmin.from('sessions').update({provider,provider_max_seconds:maxSeconds}).eq('id',newSession.id);
       if (saved.error) throw saved.error;
     }
     // Provider attribution lives in analytics_events. The optional provider

@@ -13,6 +13,7 @@ import { validateCameraSelectionForTrustedProcess } from './camera-validation.js
 import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
+import { classifyWindowTarget } from './navigation-guard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1149,6 +1150,14 @@ function createWindow() {
       mainWindow.webContents.send('window:full-screen-changed', false);
     }
   });
+  const guardNavigation = (event, url) => {
+    const decision = classifyWindowTarget(url, { packaged: isPackagedRuntime });
+    if (decision === 'allow') return;
+    event.preventDefault();
+    if (decision === 'external') void shell.openExternal(url);
+  };
+  mainWindow.webContents.on('will-navigate', guardNavigation);
+  mainWindow.webContents.on('will-redirect', guardNavigation);
   mainWindow.webContents.setWindowOpenHandler((details) => {
     if (isMorphlyCamPopup(details)) {
       return {
@@ -1156,8 +1165,9 @@ function createWindow() {
         overrideBrowserWindowOptions: createMorphlyCamWindowOptions()
       };
     }
-
-    return { action: 'allow' };
+    const decision = classifyWindowTarget(details.url, { packaged: isPackagedRuntime });
+    if (decision === 'external') void shell.openExternal(details.url);
+    return { action: 'deny' };
   });
   mainWindow.webContents.on('did-create-window', (window, details) => {
     if (isMorphlyCamPopup(details)) {

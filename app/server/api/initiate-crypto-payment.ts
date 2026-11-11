@@ -4,6 +4,8 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logRequestEvent, logErrorEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
 import { initiateIvoryPayTransaction } from '../ivorypay-payment.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { createCheckoutRecord } from '../payment-checkouts.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -15,7 +17,7 @@ export default async function handler(req, res) {
   if (process.env.MORPHLY_PAYMENT_MODE === 'sandbox') return res.status(503).json({status:'failed',message:'Crypto payments are not enabled in this sandbox review'});
   if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
 
-  const { packageId, credits, priceUSD, redirectUrl } = req.body || {};
+    const { packageId, redirectUrl } = req.body || {};
 
   try {
     const authResult = await authenticateRequestUser(req, supabaseAdmin);
@@ -26,7 +28,7 @@ export default async function handler(req, res) {
     const user = authResult.user;
     const userId = user.id;
 
-    if (!packageId || !credits || !priceUSD || Number(credits) <= 0 || Number(priceUSD) <= 0) {
+    if (!packageId) {
       return res.status(400).json({ status: 'failed', message: 'Invalid package or amount parameters' });
     }
 
@@ -51,18 +53,22 @@ export default async function handler(req, res) {
     await logRequestEvent('initiate-crypto-payment.request', {
       userId,
       packageId,
-      credits,
-      priceUSD,
+      credits: pkg.credits,
       priceNGN: pkg.price_ngn,
       reference,
     });
+    if (firebaseDb) {
+      await createCheckoutRecord(firebaseDb, {
+        reference, userId, packageId: pkg.id, credits: Number(pkg.credits), amountNGN: Number(pkg.price_ngn), gateway: 'ivorypay',
+      });
+    }
 
     const session = await initiateIvoryPayTransaction({
       userId,
       email: user.email,
-      amountUSD: Number(priceUSD),
+      amountUSD: 0,
       priceNGN: Number(pkg.price_ngn || 0),
-      credits: Number(credits),
+      credits: Number(pkg.credits),
       packageId,
       reference,
       redirectUrl,

@@ -13,7 +13,7 @@ export function extractBearerToken(req) {
   return match?.[1]?.trim() || null;
 }
 
-export async function authenticateRequestUser(req, supabaseAdmin) {
+export async function authenticateRequestUser(req, supabaseAdmin, options = {}) {
   const token = extractBearerToken(req);
   if (!token) {
     return { error: 'Missing Authorization bearer token', status: 401 };
@@ -30,7 +30,7 @@ export async function authenticateRequestUser(req, supabaseAdmin) {
   if (supabaseAdmin.provider === 'firebase') {
     const profile = await supabaseAdmin.from('users').select('account_status').eq('id',data.user.id).maybeSingle();
     if (profile.error) return {error:'Account access could not be checked',status:503};
-    if (profile.data && profile.data.account_status !== 'active') return {error:'Account suspended',status:403};
+    if (profile.data?.account_status !== 'active' && !(options.allowMissingProfile && !profile.data)) return {error:'Account unavailable',status:403};
   }
 
   return { user: data.user, token };

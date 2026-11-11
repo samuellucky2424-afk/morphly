@@ -59,6 +59,7 @@ export function createFirebaseOperations(db,auth,env=process.env){
       const balance=Number(wallet.data().credits||0),s=session.data();
       if(!s||s.user_id!==p.p_user||s.status!=='active')return {duplicate:true,shouldStop:true,reason:'session_not_found',remainingCredits:balance,creditsUsed:Number(s?.cost||0)};
       if(s.billing_version===2)throw new Error('Timestamp billing is required for this historical session');
+      if(profile.data()?.account_status!=='active')return {duplicate:false,shouldStop:true,reason:'account_unavailable',remainingCredits:balance,creditsUsed:Number(s?.cost||0)};
       const seconds=Math.min(finalize?7200:60,Math.max(0,Number(finalize?p.p_final_seconds_delta:p.p_seconds_delta)||0));
       if(!finalize&&seconds<=0)throw new Error('A positive seconds delta is required');
       const providerMultiplier=s.provider==='decart'?1.25:1;
@@ -90,6 +91,9 @@ export function createFirebaseOperations(db,auth,env=process.env){
     if(name==='authorize_translation_usage')return realtime.translation(p);
     if(name==='authorize_voice_usage')return realtime.voice(p);
     if(name==='voice_session_active')return realtime.voiceActive(p);
+    if(name==='reserve_realtime_video')return realtime.reserveVideo(p);
+    if(name==='bill_voice_convert')return realtime.billVoiceConvert(p);
+    if(name==='release_voice_convert')return realtime.releaseVoiceConvert(p);
     if(name==='apply_verified_package_payment'||name==='apply_verified_ivorypay_payment'){
       const result=await payment.applyPayment({userId:p.p_user,packageId:p.p_package,reference:p.p_reference,gateway:name==='apply_verified_package_payment'?'flutterwave':'ivorypay',gatewayId:String(p.p_gateway_id),amount:p.p_amount,fee:p.p_fee??0});
       if(result.transactionId){

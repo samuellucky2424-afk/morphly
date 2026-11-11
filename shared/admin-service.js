@@ -1337,8 +1337,17 @@ export async function disqualifyAdminReferral(supabaseAdmin, payload) {
 
 export async function deleteUserAccount(supabaseAdmin, payload) {
   const userId = String(payload.userId || '').trim();
+  const actorRole = String(payload.actorRole || '').trim();
   if (!userId) {
     throw new Error('userId is required');
+  }
+  if (actorRole !== 'super_admin') {
+    throw new Error('Super admin access is required to delete accounts');
+  }
+  const { data: targetAdmin } = await supabaseAdmin.from('admin_users').select('role, is_active').eq('user_id', userId).maybeSingle();
+  const rank = role => role === 'super_admin' ? 2 : role ? 1 : 0;
+  if (targetAdmin?.is_active && rank(targetAdmin.role) >= rank(actorRole)) {
+    throw new Error('You cannot delete an administrator of equal or higher role');
   }
 
   const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(userId);

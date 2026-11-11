@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Morphly wallets, sessions, and admin records are written only by the
+    // Admin SDK. Client SDKs, including a signed-in user calling the REST API,
+    // cannot read or write any document.
+    // Owner deploy (do not run from an agent): npx firebase-tools deploy --only firestore:rules --project luckyweb-f546e
+    // Emulator check: npx firebase-tools emulators:exec --only firestore --project morphly-rules-test "node app/tests/firestore-rules.emulator.mjs"
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -10,18 +10,20 @@ export function isReferralCodeFormatValid(value) {
   return REFERRAL_CODE_PATTERN.test(normalizeReferralCode(value));
 }
 
-function firstHeaderValue(value) {
-  if (Array.isArray(value)) return value[0] || '';
-  return typeof value === 'string' ? value : '';
+function trustedAddress(req) {
+  const read = name => {
+    const value = req.headers?.[name] ?? req.headers?.[name.toLowerCase()];
+    return Array.isArray(value) ? value[0] : value;
+  };
+  const real = String(read('x-real-ip') || '').trim();
+  if (real) return real.slice(0, 80);
+  const parts = String(read('x-forwarded-for') || '').split(',').map(part => part.trim()).filter(Boolean);
+  if (parts.length) return parts[parts.length - 1].slice(0, 80);
+  return String(req.socket?.remoteAddress || req.ip || 'unknown').slice(0, 80);
 }
 
 export function getReferralRequestFingerprint(req, secret) {
-  const forwardedFor = firstHeaderValue(req.headers?.['x-forwarded-for'])
-    .split(',')[0]
-    .trim();
-  const remoteAddress = String(req.socket?.remoteAddress || req.ip || '').trim();
-  const userAgent = firstHeaderValue(req.headers?.['user-agent']).slice(0, 300);
-  const identity = `${forwardedFor || remoteAddress || 'unknown'}|${userAgent}`;
+  const identity = trustedAddress(req);
   const key = String(secret || 'morphly-referral-validation').slice(0, 256);
 
   return crypto.createHmac('sha256', key).update(identity).digest('hex');

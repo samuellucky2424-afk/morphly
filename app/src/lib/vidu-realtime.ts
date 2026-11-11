@@ -387,6 +387,10 @@ export class ViduRealtimeClient {
       });
       engine.on('bye', () => fail('Plus RTC session ended. Start a new session.'));
       engine.on('authInfoExpired', () => fail('Plus session expired. Start a new session.'));
+      engine.on('authInfoWillExpire', () => {
+        // Do not request or apply a replacement Agora token. The paid window,
+        // heartbeat, and relay decide when this session ends.
+      });
       // Supply our already selected camera track; do not open another camera or microphone.
       await Promise.race([engine.publishLocalAudioStream(false), failurePromise]);
       assertActive();

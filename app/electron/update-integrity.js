@@ -46,16 +46,12 @@ export async function verifyUpdateFile(filePath, options = {}) {
       return { valid: false, reason: 'missing-or-empty', size: stats.size };
     }
 
-    if (!expectedChecksum && !expectedSize) {
-      return { valid: false, reason: 'missing-integrity-metadata', size: stats.size };
+    if (!expectedChecksum) {
+      return { valid: false, reason: expectedSize ? 'missing-checksum' : 'missing-integrity-metadata', size: stats.size, expectedSize };
     }
 
     if (expectedSize && stats.size !== expectedSize) {
       return { valid: false, reason: 'size-mismatch', size: stats.size, expectedSize };
-    }
-
-    if (!expectedChecksum) {
-      return { valid: true, reason: null, size: stats.size, checksumVerified: null };
     }
 
     const { hexDigest, base64Digest } = await hashFileSha256(filePath);

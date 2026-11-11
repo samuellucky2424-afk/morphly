@@ -765,7 +765,7 @@ function Dashboard() {
     const epochSeconds = [...pendingVideoSecondsRef.current.keys()].sort((a,b) => a-b).slice(0,60);
     const blendedSeconds = epochSeconds.filter(second => pendingVideoSecondsRef.current.get(second));
     const preciseBilling = billingVersionRef.current === 2;
-    if (preciseBilling ? epochSeconds.length === 0 : secondsDelta <= 0) {
+    if (!preciseBilling && secondsDelta <= 0) {
       return true;
     }
 
@@ -785,6 +785,9 @@ function Dashboard() {
       const response = await apiRequest<{
         remainingCredits?: number;
         shouldStop?: boolean;
+        reason?: string | null;
+        renewedToken?: string;
+        expiresAt?: string;
       }>('/heartbeat', {
         method: 'POST',
         keepalive: options?.keepalive,
@@ -792,20 +795,28 @@ function Dashboard() {
           userId: user.id,
           sessionId: sessionIdRef.current,
           secondsDelta,
-          ...(preciseBilling ? { billingVersion: 2, epochSeconds, blendedSeconds } : {}),
+          ...(preciseBilling ? { billingVersion: 2, epochSeconds, blendedSeconds, acceptRenewal: true } : {}),
         }),
       });
 
       if (response.remainingCredits !== undefined) {
         setCredits(response.remainingCredits);
       }
+      if (response.renewedToken) {
+        sessionTokenRef.current = response.renewedToken;
+        sessionTokenExpiresAtRef.current = Date.parse(response.expiresAt || '') || sessionTokenExpiresAtRef.current;
+        void restartRealtimeSessionRef.current?.('credential-renewal', { immediate: true });
+      }
       finishFlush();
 
       if (response.shouldStop && !options?.suppressAutoStop) {
         await handleStopRef.current?.({ silent: true });
+        const windowEnded = response.reason === 'credential_expired' && (response.remainingCredits ?? 0) > 0;
         setDashboardError({
           title: 'Session ended',
-          message: 'Your credit balance is too low to continue. Add credits, then start again.',
+          message: windowEnded
+            ? 'This paid session window ended. Start again to continue.'
+            : 'Your credit balance is too low to continue. Add credits, then start again.',
         });
       }
 
@@ -2100,7 +2111,7 @@ function Dashboard() {
     reason: string,
     options?: { immediate?: boolean },
   ) => {
-    if (isReferenceImageProvider(sessionProviderRef.current)) {
+    if (isReferenceImageProvider(sessionProviderRef.current) && reason !== 'credential-renewal') {
       await handleStopRef.current?.({ silent: true });
       setDashboardError({ title: 'Plus session ended', message: 'Start a new Plus session to continue.', canRetry: true });
       return;
@@ -2332,6 +2343,7 @@ function Dashboard() {
         remainingCredits?: number;
         shouldStop: boolean;
         forceEnd?: boolean;
+        reason?: string | null;
       }>(`/session-status?userId=${user.id}`);
 
       const live = response.remainingCredits ?? response.credits;
@@ -2339,9 +2351,12 @@ function Dashboard() {
 
       if (response.shouldStop || response.forceEnd) {
         await handleStop({ silent: true });
+        const windowEnded = response.reason === 'credential_expired' && live > 0;
         setDashboardError({
           title: 'Session ended',
-          message: 'Your credit balance is too low to continue. Add credits, then start again.',
+          message: windowEnded
+            ? 'This paid session window ended. Start again to continue.'
+            : 'Your credit balance is too low to continue. Add credits, then start again.',
         });
       }
     } catch (error) {

@@ -3,11 +3,12 @@ import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import {
   applyVerifiedIvoryPayPayment,
-  extractIvoryPayPaymentContext,
   validateIvoryPayTransaction,
   verifyIvoryPayTransaction,
 } from '../ivorypay-payment.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { firebaseDb } from '../firebase-admin.js';
+import { getCheckoutRecord } from '../payment-checkouts.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -67,23 +68,23 @@ export default async function handler(req, res) {
       });
     }
 
+    const checkout = firebaseDb ? await getCheckoutRecord(firebaseDb, reference) : null;
+    if (!checkout || checkout.gateway !== 'ivorypay' || checkout.userId !== userId) {
+      return res.status(400).json({ status: 'failed', message: 'Payment checkout was not created by Morphly' });
+    }
     const transaction = verification.transaction;
     const paymentValidation = validateIvoryPayTransaction(transaction, reference);
     if (!paymentValidation.ok) {
       return res.status(400).json({ status: 'failed', message: paymentValidation.message });
     }
-
-    const paymentContext = extractIvoryPayPaymentContext(transaction, {
-      reference,
-      userId,
-      credits,
-      packageId,
-    });
+    if (paymentValidation.amountPaidNGN < Number(checkout.amountNGN)) {
+      return res.status(400).json({ status: 'failed', message: 'Verified amount below package price' });
+    }
 
     const result = await applyVerifiedIvoryPayPayment({
       reference: paymentValidation.reference,
-      userId: paymentContext.userId,
-      packageId: paymentContext.packageId,
+      userId: checkout.userId,
+      packageId: checkout.packageId,
       transactionId: transaction.id || transaction.reference || reference,
       amountPaidNGN: paymentValidation.amountPaidNGN,
       gatewayFeeNGN: Number(transaction.platformFeeInFiat || transaction.fee || 0),
