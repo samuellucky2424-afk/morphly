@@ -51,8 +51,8 @@
   }
 
   function tabs() {
-    return ["overview", "partners", "commissions", "withdrawals", "analytics", "settings", "audit"].map((id) => {
-      const label = { overview: "Overview", partners: "Affiliates", commissions: "Commissions", withdrawals: "Withdrawals", analytics: "Analytics", settings: "Settings", audit: "Audit" }[id];
+    return ["overview", "partners", "commissions", "withdrawals", "analytics", "settings", "banks", "audit"].map((id) => {
+      const label = { overview: "Overview", partners: "Affiliates", commissions: "Commissions", withdrawals: "Withdrawals", analytics: "Analytics", settings: "Settings", banks: "Banks", audit: "Audit" }[id];
       return `<button type="button" class="${state.tab === id ? "primary-button" : "secondary-button"}" data-aff-tab="${id}">${label}</button>`;
     }).join(" ");
   }
@@ -144,6 +144,29 @@
       </form></article>`;
   }
 
+  function banks(data) {
+    const locked = state.role === "super_admin" ? "" : "disabled";
+    const rows = data.banks || [];
+    const table = rows.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Code</th><th>Source</th><th>Enabled</th></tr></thead><tbody>${rows.map((row) => `<tr>
+        <td><form class="aff-bank-rename" data-code="${escapeHtml(row.code)}" style="display:flex;gap:6px;align-items:center">
+          <input name="name" value="${escapeHtml(row.name)}" maxlength="80" aria-label="Bank name for ${escapeHtml(row.code)}" ${locked} style="width:220px">
+          <button class="secondary-button" type="submit" ${locked}>Rename</button>
+        </form></td>
+        <td><span class="mono">${escapeHtml(row.code)}</span></td>
+        <td><span class="status-pill ${row.builtin ? "info" : "success"}">${row.builtin ? "Built-in" : "Custom"}</span></td>
+        <td><label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" data-bank-enabled="${escapeHtml(row.code)}" aria-label="Enabled ${escapeHtml(row.name)}" ${row.enabled ? "checked" : ""} ${locked} style="width:16px;min-height:16px"> ${row.enabled ? "Enabled" : "Disabled"}</label></td>
+      </tr>`).join("")}</tbody></table></div>`
+      : `<p class="empty-cell">No banks configured.</p>`;
+    return `<article class="panel"><p>Affiliates choose from the built-in Nigerian banks plus any banks you add. Disabling a bank hides it from new payout accounts. Accounts and payouts already saved keep the bank name stored on them.</p>
+      ${state.role === "super_admin" ? "" : "<p>Only a super admin can change the bank list.</p>"}
+      <form id="affBankAdd" style="display:grid;gap:11px;max-width:420px;margin-top:12px">
+        <label><span>Bank name</span><input name="name" maxlength="80" required ${locked}></label>
+        <label><span>Bank code</span><input name="code" inputmode="numeric" maxlength="6" required ${locked} placeholder="3 to 6 digits"></label>
+        <button class="primary-button" type="submit" ${locked}>Add bank</button>
+      </form></article>${table}`;
+  }
+
   function analytics(data) {
     const max = Math.max(1, ...(data.series || []).map((row) => row.revenueKobo));
     const bars = (data.series || []).map((row) => `<div style="display:flex;align-items:flex-end;gap:4px;height:120px"><div title="${escapeHtml(row.day)}" style="width:18px;height:${Math.max(4, Math.round((row.revenueKobo / max) * 110))}px;background:#c82436;border-radius:4px 4px 0 0"></div></div>`).join("");
@@ -173,6 +196,7 @@
     if (state.tab === "withdrawals") return withdrawals(data.withdrawals || []);
     if (state.tab === "analytics") return analytics(data);
     if (state.tab === "settings") return settings(data);
+    if (state.tab === "banks") return banks(data);
     const audit = data.audit || [];
     if (!audit.length) return `<p class="empty-cell">No affiliate audit events yet.</p>`;
     return `<div class="table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Detail</th></tr></thead><tbody>${audit.map((row) => `<tr><td>${escapeHtml(row.at)}</td><td>${escapeHtml(row.action)}</td><td>${escapeHtml(row.actor)}</td><td>${escapeHtml(JSON.stringify(row.payload || {}))}</td></tr>`).join("")}</tbody></table></div>`;
@@ -191,6 +215,7 @@
       withdrawals: `/api/admin-affiliates?view=withdrawals&status=${encodeURIComponent(state.status)}&q=${encodeURIComponent(state.search)}`,
       analytics: `/api/admin-affiliates?view=analytics&preset=${encodeURIComponent(state.preset)}&from=${encodeURIComponent(state.from)}&to=${encodeURIComponent(state.to)}`,
       settings: "/api/admin-affiliates?view=settings",
+      banks: "/api/admin-affiliates?view=banks",
       audit: "/api/admin-affiliates?view=audit",
     }[state.tab];
     try {
@@ -294,6 +319,10 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target?.matches?.("[data-bank-enabled]")) {
+      void act("bank-update", { code: event.target.dataset.bankEnabled, enabled: event.target.checked });
+      return;
+    }
     if (event.target?.id === "affStatus") {
       state.status = event.target.value;
       void load();
@@ -302,6 +331,16 @@
 
   document.addEventListener("submit", (event) => {
     const form = event.target;
+    if (form?.id === "affBankAdd") {
+      event.preventDefault();
+      void act("bank-add", { code: form.code.value.trim(), name: form.name.value.trim() });
+      return;
+    }
+    if (form?.classList?.contains("aff-bank-rename")) {
+      event.preventDefault();
+      void act("bank-update", { code: form.dataset.code, name: form.name.value });
+      return;
+    }
     if (form?.id !== "affSettings") return;
     event.preventDefault();
     const settings = {

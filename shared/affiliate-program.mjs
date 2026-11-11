@@ -56,8 +56,76 @@ export function affiliateError(message, status = 400, code = 'AFFILIATE_ERROR') 
   return error;
 }
 
+/** Built-in catalog only. Payout-account checks must use the effective list. */
 export function bankByCode(code) {
   return BANK_BY_CODE.get(String(code || '').trim()) || null;
+}
+
+export function normalizeBankCode(code) {
+  const value = String(code ?? '').trim();
+  if (!/^\d{3,6}$/.test(value)) {
+    throw affiliateError('Bank code must be 3 to 6 digits');
+  }
+  return value;
+}
+
+export function normalizeBankName(name) {
+  const value = String(name ?? '').trim();
+  if (value.length < 2 || value.length > 80) {
+    throw affiliateError('Bank name must be 2 to 80 characters');
+  }
+  return value;
+}
+
+/**
+ * Built-in Nigerian banks plus admin records. An admin record with the same
+ * code renames or disables the built-in bank. Disabled banks stay in this
+ * list so admins can see them; callers that serve affiliates must filter.
+ */
+export function effectiveBanks(overrides = []) {
+  const byCode = new Map(NIGERIAN_BANKS.map((bank) => [bank.code, {
+    code: bank.code,
+    name: bank.name,
+    enabled: true,
+    builtin: true,
+    created_at: null,
+    updated_at: null,
+    updated_by: null,
+  }]));
+  for (const row of overrides || []) {
+    const code = String(row?.code || '').trim();
+    if (!/^\d{3,6}$/.test(code)) continue;
+    const name = String(row?.name || '').trim();
+    const enabled = typeof row?.enabled === 'boolean' ? row.enabled : true;
+    const current = byCode.get(code);
+    const stamps = {
+      created_at: row.created_at || null,
+      updated_at: row.updated_at || null,
+      updated_by: row.updated_by || null,
+    };
+    if (current?.builtin) {
+      byCode.set(code, { ...current, name: name || current.name, enabled, ...stamps });
+    } else if (name) {
+      byCode.set(code, { code, name, enabled, builtin: false, ...stamps });
+    }
+  }
+  return [...byCode.values()].sort((left, right) => (
+    left.name.localeCompare(right.name, 'en', { sensitivity: 'base' }) || left.code.localeCompare(right.code)
+  ));
+}
+
+export function publicBanks(overrides = []) {
+  return effectiveBanks(overrides)
+    .filter((bank) => bank.enabled)
+    .map((bank) => ({ code: bank.code, name: bank.name }));
+}
+
+export function selectableBank(code, overrides = []) {
+  const normalized = String(code || '').trim();
+  if (!/^\d{3,6}$/.test(normalized)) return null;
+  const match = effectiveBanks(overrides).find((bank) => bank.code === normalized);
+  if (!match?.enabled) return null;
+  return { code: match.code, name: match.name };
 }
 
 export function isNuban(value) {
