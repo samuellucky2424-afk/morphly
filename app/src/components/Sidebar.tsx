@@ -8,13 +8,15 @@ import {
   LogOut,
   Menu,
   Settings,
-  ShieldCheck
+  ShieldCheck,
+  BadgePercent,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useUI } from '@/context/UIContext';
 import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/lib/routes';
+import { useAffiliateEntry } from '@/hooks/useAffiliateEntry';
 
 interface NavItem {
   path: string;
@@ -37,7 +39,11 @@ export default function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUI();
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const navItems = user?.isAdmin ? adminNavItems : userNavItems;
+  const affiliateEntry = useAffiliateEntry();
+  const navItems = user?.isAdmin ? adminNavItems : [
+    ...userNavItems,
+    ...(affiliateEntry ? [{ path: ROUTES.PROTECTED.AFFILIATE, label: 'Affiliate', icon: BadgePercent }] : []),
+  ];
 
   const handleLogout = () => {
     logout();

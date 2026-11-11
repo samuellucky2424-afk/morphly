@@ -285,10 +285,10 @@ function Settings() {
   };
 
   const referralBaseUrl = String(
-    import.meta.env.VITE_PUBLIC_APP_URL || 'https://morphly-alpha.vercel.app',
+    import.meta.env.VITE_PUBLIC_APP_URL || 'https://live.morphly.fun',
   ).replace(/\/+$/, '');
   const referralLink = referralSummary?.referralCode
-    ? `${referralBaseUrl}/#/signup?ref=${encodeURIComponent(referralSummary.referralCode)}`
+    ? `${referralBaseUrl}/ref/${encodeURIComponent(referralSummary.referralCode)}`
     : '';
 
 

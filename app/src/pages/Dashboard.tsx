@@ -16,9 +16,12 @@ import {
   RefreshCw,
   CircleAlert,
   X,
+  BadgePercent,
 } from 'lucide-react';
 import type { ViduProxySignaling, ViduRealtimeSession } from '@/lib/vidu-realtime';
 import { useAuth } from '@/context/AuthContext';
+import { ROUTES } from '@/lib/routes';
+import { useAffiliateEntry } from '@/hooks/useAffiliateEntry';
 import { useApp } from '@/context/AppContext';
 import { apiFetchWithAuth, getTrustedApiOrigin, isMorphlyDesktopRuntime } from '@/lib/api-client';
 import {
@@ -445,6 +448,7 @@ function Dashboard() {
   const [onboardingChecked, setOnboardingChecked] = useState(false);
   const { credits, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
+  const affiliateEntry = useAffiliateEntry();
 
   const [isStreaming, setIsStreaming] = useState(false);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
@@ -569,7 +573,6 @@ function Dashboard() {
 
   const isEngineReady = selectedProvider ? engineReadiness[selectedProvider] : false;
   const engineLoadError = selectedProvider ? engineLoadErrors[selectedProvider] : null;
-  const activeProviderLabel = selectedProvider ? getRealtimeProviderLabel(selectedProvider) : 'Choose engine';
   const activeMode = (isReferenceImageProvider(selectedProvider) || (selectedProvider as string) === 'decart')
     ? 'hd'
     : clampQualityMode(preferredMode, runtimeModeCap);
@@ -3171,15 +3174,21 @@ function Dashboard() {
           </div>
         )}
 
-            <div className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-md border border-border bg-background px-3 py-2 backdrop-blur-md">
-              <span className={`size-1.5 rounded-full ${isStreaming ? 'bg-success' : 'bg-muted'}`} />
-              <span className="flex flex-col">
-                <span className="text-[11px] font-semibold text-foreground">Live output</span>
-                <span className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">
-                  {selectedProvider ? `${activeProviderLabel} realtime` : 'Choose an engine'}
+            {affiliateEntry ? (
+              <button
+                type="button"
+                data-testid="affiliate-program-button"
+                title="Open the affiliate program"
+                onClick={() => navigate(ROUTES.PROTECTED.AFFILIATE, { state: { view: affiliateEntry.view } })}
+                className="absolute left-4 top-4 z-20 inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-left backdrop-blur-md transition-colors duration-200 hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                <BadgePercent aria-hidden="true" className="size-4 text-primary" />
+                <span className="flex flex-col">
+                  <span className="text-[11px] font-semibold leading-tight text-foreground">Affiliate program</span>
+                  <span className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground">{affiliateEntry.sublabel}</span>
                 </span>
-          </span>
-        </div>
+              </button>
+            ) : null}
 
             <div className="absolute right-4 top-4 z-20 flex items-center gap-1.5">
           <button

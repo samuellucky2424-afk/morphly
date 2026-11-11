@@ -34,6 +34,7 @@ if (!firebaseAdminConfigError) {
     provision:operations.provision,
     auth:{
       getUser:createFirebaseUserLookup({auth,mapUser}),
+      verifyIdToken: token => auth.verifyIdToken(token),
       admin:{
         getUserById:wrapped(async id=>({user:await mapUser(await auth.getUser(id))})),
         deleteUser:wrapped(async id=>{await auth.deleteUser(id);return {}; }),

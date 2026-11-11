@@ -27,7 +27,7 @@ export default defineConfig(({ command, mode }) => {
       const source = path.resolve(__dirname, '../morphly-admin-dashboard');
       const destination = path.resolve(__dirname, 'dist/private/morphly/login');
       fs.mkdirSync(destination, { recursive: true });
-      for (const fileName of ['index.html', 'styles.css', 'app.js', 'engagement.js']) {
+      for (const fileName of ['index.html', 'styles.css', 'app.js', 'engagement.js', 'affiliate-admin.js']) {
         fs.copyFileSync(path.join(source, fileName), path.join(destination, fileName));
       }
       fs.copyFileSync(path.resolve(__dirname, 'src/components/admin-engagement.css'), path.join(destination, 'engagement.css'));
