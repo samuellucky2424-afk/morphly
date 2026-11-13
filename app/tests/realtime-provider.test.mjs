@@ -11,6 +11,7 @@ import {
   getViduRealtimeUserMessage,
   getViduStartErrorMessage,
   getRealtimeProviderLabel,
+  streamStatusLabel,
   resolveRealtimeModel,
   resolveRealtimeProvider,
 } from '../src/lib/realtime-provider.ts';
@@ -19,6 +20,21 @@ const appDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const dashboard = fs.readFileSync(path.join(appDirectory, 'src/pages/Dashboard.tsx'), 'utf8');
 const appShell = fs.readFileSync(path.join(appDirectory, 'src/App.tsx'), 'utf8');
 const startSessionApi = fs.readFileSync(path.join(appDirectory, 'server/api/start-session.ts'), 'utf8');
+
+test('status text names the selected engine', () => {
+  assert.equal(streamStatusLabel('vidu', 'connecting'), 'Connecting to Pro...');
+  assert.equal(streamStatusLabel('vidu', 'preparing'), 'Preparing Pro output...');
+  assert.equal(streamStatusLabel('vidu', 'starting'), 'Preparing Pro...');
+  assert.equal(streamStatusLabel('vidu', 'reconnecting'), 'Reconnecting Pro...');
+  assert.equal(streamStatusLabel('xmax', 'connecting'), 'Connecting to Plus...');
+  assert.equal(streamStatusLabel('xmax', 'preparing'), 'Preparing Plus output...');
+  const viduBlock = dashboard.slice(dashboard.indexOf('const connectToVidu'), dashboard.indexOf('const connectToXmax'));
+  assert.match(viduBlock, /streamStatusLabel\(VIDU_REALTIME_PROVIDER, options\?\.isRecovery \? 'reconnecting' : 'connecting'\)/);
+  assert.match(viduBlock, /streamStatusLabel\(VIDU_REALTIME_PROVIDER, 'preparing'\)/);
+  assert.doesNotMatch(viduBlock, /Connecting to Plus/);
+  assert.doesNotMatch(viduBlock, /Preparing Plus/);
+  assert.match(dashboard, /streamStatusLabel\(VIDU_REALTIME_PROVIDER, 'starting'\)/);
+});
 
 test('Plus (Xmax) and Pro (Vidu) are the two realtime engines', () => {
   assert.equal(DEFAULT_REALTIME_PROVIDER, 'xmax');

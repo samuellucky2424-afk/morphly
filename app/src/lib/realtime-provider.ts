@@ -21,6 +21,15 @@ export function isReferenceImageProvider(value: unknown): boolean {
 export function getRealtimeProviderLabel(provider: RealtimeProvider): string {
   return provider === XMAX_REALTIME_PROVIDER ? 'Plus' : 'Pro';
 }
+export type StreamStatusPhase = 'starting' | 'connecting' | 'preparing' | 'reconnecting';
+/** Status pill text. The name is the selected engine, never a stale Plus/Pro label. */
+export function streamStatusLabel(provider: RealtimeProvider, phase: StreamStatusPhase): string {
+  const name = getRealtimeProviderLabel(provider);
+  if (phase === 'starting') return `Preparing ${name}...`;
+  if (phase === 'preparing') return `Preparing ${name} output...`;
+  if (phase === 'reconnecting') return `Reconnecting ${name}...`;
+  return `Connecting to ${name}...`;
+}
 /** Vidu (Pro) internals still say "Plus" in their messages; relabel at display time. */
 export function relabelProviderMessage(message: string, provider: RealtimeProvider): string {
   return provider === XMAX_REALTIME_PROVIDER ? message : message.replace(/\bPlus(?=\b|’|')/g, 'Pro');

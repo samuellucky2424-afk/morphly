@@ -79,6 +79,7 @@ import {
   getMinimumCreditsToStart,
   getNotEnoughCreditsMessage,
   getRealtimeProviderLabel,
+  streamStatusLabel,
   resolveRealtimeModel,
   resolveRealtimeProvider,
   type RealtimeProvider,
@@ -1735,7 +1736,7 @@ function Dashboard() {
         firstFrameReadyRef.current = null;
       }
       rejectFirstFrame?.(new Error(
-        getRealtimeSdkErrorMessage(error) || 'Plus failed before delivering video output.',
+        getRealtimeSdkErrorMessage(error) || 'Pro failed before delivering video output.',
       ));
     };
 
@@ -1745,7 +1746,7 @@ function Dashboard() {
       setHasRemoteFrame(false);
       lastRemoteFrameAtRef.current = 0;
       firstFrameReadyRef.current = confirmFirstFrame;
-      setUiStatus(options?.isRecovery ? 'Reconnecting Pro...' : 'Connecting to Plus...');
+      setUiStatus(streamStatusLabel(VIDU_REALTIME_PROVIDER, options?.isRecovery ? 'reconnecting' : 'connecting'));
 
       if (morphlyCamWindowEnabledRef.current && morphlyCamWindowRef.current && !morphlyCamWindowRef.current.closed) {
         updateMorphlyCamStatus(options?.isRecovery ? 'Reconnecting Morphly cam...' : 'Connecting Morphly cam...');
@@ -1765,8 +1766,8 @@ function Dashboard() {
           sessionEverConnectedRef.current = true;
           restartRetryDelayRef.current = INITIAL_RETRY_DELAY_MS;
           restartFailureCountRef.current = 0;
-          setDashboardError((current) => current?.title === 'Plus stream interrupted' ? null : current);
-          setUiStatus(hasRemoteFrameRef.current ? 'Live' : 'Preparing Plus output...');
+          setDashboardError((current) => current?.title === 'Pro stream interrupted' ? null : current);
+          setUiStatus(hasRemoteFrameRef.current ? 'Live' : streamStatusLabel(VIDU_REALTIME_PROVIDER, 'preparing'));
           return;
         }
 
@@ -1775,7 +1776,7 @@ function Dashboard() {
           void flushBillableUsage();
 
           if (!hasRemoteFrameRef.current) {
-            failBeforeFirstFrame(new Error('Plus disconnected before delivering video output.'));
+            failBeforeFirstFrame(new Error('Pro disconnected before delivering video output.'));
           } else if (!restartInFlightRef.current && isStreamingRef.current) {
             void handleStopRef.current?.({ silent: true });
           }
@@ -1863,14 +1864,14 @@ function Dashboard() {
         failBeforeFirstFrame(error);
         if (hadFirstFrame) {
           setDashboardError({
-            title: 'Plus stream interrupted',
+            title: 'Pro stream interrupted',
             message: getViduRealtimeUserMessage(error),
           });
         }
       };
       realtimeSession.on('error', handleError);
 
-      setUiStatus('Preparing Plus output...');
+      setUiStatus(streamStatusLabel(VIDU_REALTIME_PROVIDER, 'preparing'));
 
       const realtimeClient: RealtimeClient = {
         disconnect: async () => {
@@ -1895,7 +1896,7 @@ function Dashboard() {
       const currentState = realtimeClient.getConnectionState();
       connectionStateRef.current = currentState;
       setConnectionState(currentState);
-      setUiStatus('Preparing Plus output...');
+      setUiStatus(streamStatusLabel(VIDU_REALTIME_PROVIDER, 'preparing'));
       setStreamMetrics(createEmptyStreamMetrics());
       lastAppliedTransformRef.current = initialTransform;
       console.log('[Vidu] S2-Editing startup state acknowledged.');
@@ -1903,7 +1904,7 @@ function Dashboard() {
       await withTimeout(
         firstFramePromise,
         AI_FIRST_FRAME_TIMEOUT_MS,
-        `Plus connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`,
+        `Pro connected but no video output arrived within ${AI_FIRST_FRAME_TIMEOUT_MS / 1000}s.`,
       );
 
       if (!firstFrameTrackedRef.current) {
@@ -2781,7 +2782,7 @@ function Dashboard() {
 
     try {
       if (requestedProvider === VIDU_REALTIME_PROVIDER) {
-        setUiStatus('Preparing Plus...');
+        setUiStatus(streamStatusLabel(VIDU_REALTIME_PROVIDER, 'starting'));
         await viduSdkReadyPromise;
       }
       setUiStatus('Opening camera...');
