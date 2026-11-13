@@ -85,7 +85,7 @@ export default async function handler(req, res) {
 
     if (activeSession?.billing_version === 2) {
       const settled = await settleRealtimeVideo(supabaseAdmin, userId, activeSession.id, false);
-      if (settled?.ended) await revokeProviderSession({ id: activeSession.id, provider: settled.provider, provider_key_id: settled.providerKeyId, provider_live_id: settled.providerLiveId });
+      if (settled?.ended || settled?.shouldStop) await revokeProviderSession({ id: activeSession.id, provider: settled.provider, provider_key_id: settled.providerKeyId, provider_live_id: settled.providerLiveId });
       const credits = Number(settled?.remainingCredits ?? walletCredits);
       return res.json({
         credits,

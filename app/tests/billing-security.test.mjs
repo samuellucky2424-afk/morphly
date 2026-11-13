@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFirebaseRealtimeBilling, pcmDurationSeconds } from '../server/firebase-realtime-billing.js';
+import { createFirebaseRealtimeBilling, pcmDurationSeconds, CONNECT_ALLOWANCE_SECONDS, providerCredentialSeconds } from '../server/firebase-realtime-billing.js';
 
 function memoryDb() {
   const rows = new Map();
@@ -51,6 +51,12 @@ function memoryDb() {
 async function account(db, { uid = 'user', credits = 0 } = {}) {
   await db.collection('users').doc(uid).set({ id: uid, account_status: 'active' });
   await db.collection('wallets').doc(`wallet-${uid}`).set({ id: `wallet-${uid}`, user_id: uid, credits });
+}
+
+async function confirmOutputAtStart(db, id) {
+  const row = db.row(`sessions/${id}`);
+  const start = Math.floor(Date.parse(row.start_time) / 1000);
+  await db.collection('sessions').doc(id).set({ ...row, output_started_epoch: start });
 }
 
 test('zero-balance voice does not open a session and parallel converts stay unpaid', async () => {
@@ -105,6 +111,7 @@ test('silent heartbeats and closes bill server elapsed time for Plus', async () 
   const reserved = await billing.reserveVideo({ p_user: 'user', p_session: 'plus', p_window: 180 });
   assert.equal(reserved.reservedSeconds, 50);
   assert.equal(db.row('wallets/wallet-user').credits, 0);
+  await confirmOutputAtStart(db, 'plus');
   now += 20000;
   const silent = await billing.video({ p_user: 'user', p_session: 'plus', p_epoch_seconds: [], p_close: false });
   assert.equal(silent.shouldStop, false);
@@ -159,6 +166,7 @@ test('Plus keeps one prepaid key for field clients and revokes it when the heart
     ...db.row('sessions/plus-long'),
     credential_expires_at: new Date(now + 500000).toISOString(),
   });
+  await confirmOutputAtStart(db, 'plus-long');
   for (let minute = 0; minute < 6; minute += 1) {
     now += 60000;
     const beat = await billing.video({ p_user: 'user', p_session: 'plus-long', p_epoch_seconds: [], p_close: false });
@@ -191,6 +199,7 @@ test('closing without a client timestamp still bills a long gap in commit-sized 
     credential_expires_at: new Date(now + 180000).toISOString(),
   });
   await billing.reserveVideo({ p_user: 'user', p_session: 'long', p_window: 180 });
+  await confirmOutputAtStart(db, 'long');
   now += 121000;
   const first = await billing.video({ p_user: 'user', p_session: 'long', p_epoch_seconds: [], p_close: true });
   assert.equal(first.billingIncomplete, true);
@@ -198,4 +207,83 @@ test('closing without a client timestamp still bills a long gap in commit-sized 
   const second = await billing.video({ p_user: 'user', p_session: 'long', p_epoch_seconds: [], p_close: true });
   assert.equal(second.ended, true);
   assert.equal(second.totalBillableSeconds, 121);
+});
+
+test('provider credentials include unpaid connect time and still cap at 30 minutes', () => {
+  assert.equal(providerCredentialSeconds(20), 20 + CONNECT_ALLOWANCE_SECONDS);
+  assert.equal(providerCredentialSeconds(1800), 1800);
+  assert.equal(providerCredentialSeconds(0), 0);
+});
+
+test('a Pro balance that covers the connect is not ended or charged before output', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 50 });
+  let now = Date.parse('2026-11-11T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('pro').set({
+    id: 'pro', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 5,
+    provider: 'vidu', provider_max_seconds: 20, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  const reserved = await billing.reserveVideo({ p_user: 'user', p_session: 'pro', p_window: 180 });
+  assert.equal(reserved.reservedSeconds, 20);
+  assert.equal(reserved.shouldStop, false);
+  assert.ok(reserved.prepaidUntilEpoch >= Math.floor(now / 1000) + 20 + CONNECT_ALLOWANCE_SECONDS);
+  now += 20000;
+  const connecting = await billing.video({
+    p_user: 'user', p_session: 'pro', p_epoch_seconds: [1, 2, 3], p_close: false,
+  });
+  assert.equal(connecting.shouldStop, false);
+  assert.notEqual(connecting.reason, 'no_credits');
+  assert.equal(connecting.totalBillableSeconds, 0);
+  assert.equal(connecting.remainingCredits, 50);
+  const closed = await billing.video({
+    p_user: 'user', p_session: 'pro', p_epoch_seconds: [99], p_close: true, p_reason: 'client_ended',
+  });
+  assert.equal(closed.ended, true);
+  assert.notEqual(closed.reason, 'no_credits');
+  assert.equal(closed.totalBillableSeconds, 0);
+  assert.equal(closed.remainingCredits, 50);
+  assert.equal(db.row('wallets/wallet-user').credits, 50);
+  assert.equal(db.row('sessions/pro').status, 'ended');
+});
+
+test('closing before any output heartbeat refunds the whole Pro hold', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 40 });
+  let now = Date.parse('2026-11-11T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('short').set({
+    id: 'short', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 5,
+    provider: 'vidu', provider_max_seconds: 16, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  const reserved = await billing.reserveVideo({ p_user: 'user', p_session: 'short', p_window: 180 });
+  assert.equal(reserved.reservedSeconds, 16);
+  assert.equal(reserved.shouldStop, false);
+  now += 30000;
+  const closed = await billing.video({ p_user: 'user', p_session: 'short', p_epoch_seconds: [], p_close: true });
+  assert.equal(closed.totalBillableSeconds, 0);
+  assert.notEqual(closed.reason, 'no_credits');
+  assert.equal(db.row('wallets/wallet-user').credits, 40);
+});
+
+test('after output starts, connect time is free and server time is billed', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 100 });
+  let now = Date.parse('2026-11-11T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('pro-live').set({
+    id: 'pro-live', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 5,
+    provider: 'vidu', provider_max_seconds: 40, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  await billing.reserveVideo({ p_user: 'user', p_session: 'pro-live', p_window: 180 });
+  now += 20000;
+  const connected = await billing.video({ p_user: 'user', p_session: 'pro-live', p_epoch_seconds: [1], p_close: false });
+  assert.equal(connected.totalBillableSeconds, 0);
+  assert.equal(connected.shouldStop, false);
+  assert.equal(connected.remainingCredits, 100);
+  now += 20000;
+  const live = await billing.video({ p_user: 'user', p_session: 'pro-live', p_epoch_seconds: [], p_close: false });
+  assert.equal(live.totalBillableSeconds, 20);
+  assert.equal(live.shouldStop, false);
+  assert.equal(live.remainingCredits, 50);
 });

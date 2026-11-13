@@ -3,7 +3,7 @@ import { isLocalPreviewRequest } from '../local-preview.js';
 import crypto from 'crypto';
 import { createDecartTemporaryKey as createScopedDecartKey } from '../decart-token.js';
 import { realtimeWalletBalance } from '../realtime-billing.js';
-import { paidCredentialSeconds, PROVIDER_CREDENTIAL_WINDOW_SECONDS } from '../firebase-realtime-billing.js';
+import { paidCredentialSeconds, providerCredentialSeconds, PROVIDER_CREDENTIAL_WINDOW_SECONDS } from '../firebase-realtime-billing.js';
 import { revokeProviderSession } from '../provider-revocation.js';
 import { rateLimit } from '../request-rate-limit.js';
 import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
@@ -877,7 +877,9 @@ export default async function handler(req, res) {
     let providerSession = await createProviderTemporaryCredential({
       provider,
       apiKey: providerApiKey,
-      maxSeconds: paidSeconds,
+      // The key has to stay valid through connect. Those extra seconds are not
+      // billable; heartbeats revoke the key once paid output time is used up.
+      maxSeconds: providerCredentialSeconds(paidSeconds),
       allowedOrigins,
       userId,
       sessionId: newSession.id,

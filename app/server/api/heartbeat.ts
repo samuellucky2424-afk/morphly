@@ -91,7 +91,7 @@ export default async function handler(req, res) {
       // top up here; the original Plus key is kept so field desktop builds
       // do not have to apply a replacement credential.
       const result = await settleRealtimeVideo(supabaseAdmin, userId, sessionId, false, { extend: true });
-      if (result?.ended) await revokeProviderSession({ id: sessionId, provider: result.provider, provider_key_id: result.providerKeyId, provider_live_id: result.providerLiveId });
+      if (result?.ended || result?.shouldStop) await revokeProviderSession({ id: sessionId, provider: result.provider, provider_key_id: result.providerKeyId, provider_live_id: result.providerLiveId });
       return res.json(result);
     }
     const secondsDelta = normalizeHeartbeatSeconds(req.body?.secondsDelta ?? req.body?.seconds);

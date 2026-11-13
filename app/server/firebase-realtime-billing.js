@@ -7,14 +7,29 @@ export const VOICE_RATE_HALF=4; // 2 credits per second
 export const VOICE_GRACE_MS=20000;
 export const HEARTBEAT_TIMEOUT_MS=90000;
 // Vidu keeps a short rolling hold because its relay can follow server time.
-// Plus keeps one Xmax key for the whole prepaid lifetime (up to 30 minutes, the
-// provider cap). Heartbeats and session-status extend that hold while credits
-// remain, so desktop builds that cannot swap keys are not cut off. The key is
-// never valid for time that has not been reserved, and it is revoked when the
-// balance cannot cover the next second or a heartbeat is missed.
+// Plus keeps one Xmax key for the prepaid output lifetime (up to 30 minutes, the
+// provider cap) plus a fixed unpaid connect allowance, so a short balance is not
+// cut off while the engine is still starting. Heartbeats bill server time only
+// after output is confirmed. The key is revoked when the session ends or the
+// balance cannot cover the next output second, and a missed heartbeat ends it.
 export const PROVIDER_CREDENTIAL_WINDOW_SECONDS=180;
 export const XMAX_KEY_MAX_SECONDS=1800;
 export const MAX_COMMIT_SECONDS=120;
+// Connecting and preparing are not output. The provider credential and the
+// relay deadline include this unpaid allowance so a balance of N seconds is
+// not spent, and the session is not ended, while the engine is still starting.
+// 150s covers the desktop proxy connect timeout (145s). It is not billable.
+export const CONNECT_ALLOWANCE_SECONDS=150;
+// A session that ends this soon after output is confirmed was a provider or
+// connect failure. The desktop sends the confirming heartbeat and the close as
+// two requests, so the window covers a slow link. Charge nothing. A session
+// that keeps running is billed from the confirmation, including this window.
+export const OUTPUT_GRACE_SECONDS=15;
+export function providerCredentialSeconds(paidSeconds,ceiling=XMAX_KEY_MAX_SECONDS){
+  const paid=Math.floor(Number(paidSeconds)||0);
+  if(paid<1)return 0;
+  return Math.min(ceiling,paid+CONNECT_ALLOWANCE_SECONDS);
+}
 export const VOICE_CONVERT_SLOTS=3;
 export const PCM_BYTES_PER_SECOND=32000;
 const SLOT_TTL_MS=30000;
@@ -120,6 +135,8 @@ export function createFirebaseRealtimeBilling(db,options={}){
       const anchor=Number.isSafeInteger(start)?start:time;
       const cap=Math.min(Number(row.provider_max_seconds||7200),7200);
       const state={uid,available:availableNow,reserved:Number(row.reserved_half||0),walletFloor:Math.floor(availableNow/2),videoRate:Number(row.video_rate_half),count:associated.size,cap,target:0,lastSecond:Number.isSafeInteger(Number(row.last_billed_epoch))?Number(row.last_billed_epoch):anchor-1};
+      let outputStarted=Number.isSafeInteger(Number(row.output_started_epoch))?Number(row.output_started_epoch):null;
+      let outputBudget=Number.isFinite(Number(row.output_budget_seconds))?Number(row.output_budget_seconds):null;
       let prepaidUntil=Number(row.prepaid_until_epoch||anchor);
       const expiresAt=Date.parse(row.credential_expires_at||'');
       let close=p.p_close===true;
@@ -129,50 +146,82 @@ export function createFirebaseRealtimeBilling(db,options={}){
       if(!close&&row.provider==='xmax'&&Number.isFinite(expiresAt)&&expiresAt<=now()){close=true;reason='credential_expired';}
       // Plus and Pro both top up on every server touch. Plus is capped at the
       // key already issued, so an old client keeps that key and unpaid time is
-      // never added past it.
+      // never added past it. The paid window is measured from confirmed output,
+      // not from session creation, so connect time is not reserved as spent.
       const extend=!close&&(mode.reserveOnly||mode.extend||row.provider==='vidu'||row.provider==='xmax');
       let added=0;
+      const capAnchor=outputStarted??anchor;
       if(extend||mode.reserveOnly){
         const requested=Math.max(1,Math.floor(Number(p.p_window)||(row.provider==='xmax'?cap:PROVIDER_CREDENTIAL_WINDOW_SECONDS)));
         const windowCap=row.provider==='xmax'?XMAX_KEY_MAX_SECONDS:PROVIDER_CREDENTIAL_WINDOW_SECONDS;
         const windowSeconds=Math.min(requested,windowCap);
         let horizon=time+windowSeconds;
         if(!mode.reserveOnly&&row.provider==='xmax'&&Number.isFinite(expiresAt))horizon=Math.min(horizon,Math.floor(expiresAt/1000));
-        const targetExclusive=Math.min(anchor+cap,Math.max(prepaidUntil,horizon));
+        const targetExclusive=Math.min(capAnchor+cap,Math.max(prepaidUntil,horizon));
         added=Math.min(Math.max(0,targetExclusive-prepaidUntil),Math.floor(state.available/state.videoRate));
         if(added>0){state.available-=added*state.videoRate;state.reserved+=added*state.videoRate;state.walletFloor=Math.floor(state.available/2);prepaidUntil+=added;}
+        // One unpaid connect allowance, fixed at reservation. Later heartbeats must
+        // not slide it forward, or a client could keep the relay open without output.
+        if(outputStarted==null&&!Number.isFinite(Number(row.prepaid_until_epoch))){
+          const held=Math.floor(state.reserved/state.videoRate);
+          prepaidUntil=time+CONNECT_ALLOWANCE_SECONDS+held;
+        }
         if(mode.reserveOnly){
           const timestamp=writeCharges(tx,state,wallet,carryRef,[],[]);
           tx.update(sessionRef,{reserved_half:state.reserved,prepaid_until_epoch:prepaidUntil,last_heartbeat_at:timestamp});
-          return {reservedSeconds:added,prepaidUntilEpoch:prepaidUntil,remainingCredits:(state.available+state.reserved)/2,shouldStop:added<1&&prepaidUntil<=time};
+          return {reservedSeconds:added,prepaidUntilEpoch:prepaidUntil,remainingCredits:(state.available+state.reserved)/2,shouldStop:added<1};
         }
+      }
+      // A live heartbeat or session-status poll is the server's confirmation that
+      // output started. Client epoch lists are ignored. The clock starts at this
+      // server second, so earlier connect time is never billed. A close with no
+      // prior confirmation, or a close inside the short grace window, charges nothing.
+      if(outputStarted==null&&!close&&!mode.reserveOnly){
+        outputStarted=time;
+        outputBudget=Math.floor((state.available+state.reserved)/state.videoRate);
+      }
+      const startup=outputStarted==null||time-outputStarted<=OUTPUT_GRACE_SECONDS;
+      if(!startup&&outputStarted!=null){
+        const budget=outputBudget??Math.floor((state.available+state.reserved)/state.videoRate)+state.count;
+        const paidEnd=outputStarted+budget;
+        if(prepaidUntil>paidEnd)prepaidUntil=paidEnd;
       }
       // Sessions opened before prepaid windows still bill elapsed server time
       // from the wallet instead of trusting a client timestamp list.
-      if(!Number.isFinite(Number(row.prepaid_until_epoch))&&prepaidUntil<=anchor)prepaidUntil=Math.min(anchor+cap,time);
+      if(!startup&&!Number.isFinite(Number(row.prepaid_until_epoch))&&prepaidUntil<=outputStarted)prepaidUntil=Math.min(outputStarted+cap,time);
       const keyEnd=Number.isFinite(expiresAt)?Math.floor(expiresAt/1000):prepaidUntil;
       const timeoutEnd=Math.floor((lastBeat+HEARTBEAT_TIMEOUT_MS)/1000);
       // A late or missing heartbeat bills through the moment the session should
       // have stopped when that is still before the key expires. After the key
       // itself has expired, the prepaid lifetime was usable and is billed.
+      // Nothing before output confirmation is included.
       const usageThrough=reason==='heartbeat_timeout'&&time<keyEnd?Math.min(time,timeoutEnd):reason==='credential_expired'?Math.min(time,keyEnd):time;
-      const endInclusive=Math.min(usageThrough-1,prepaidUntil-1,anchor+cap-1);
-      const chunkEnd=Math.min(endInclusive,state.lastSecond+MAX_COMMIT_SECONDS);
+      const billAnchor=outputStarted??time;
+      const endInclusive=startup?-1:Math.min(usageThrough-1,prepaidUntil-1,billAnchor+cap-1);
+      const chunkEnd=Math.min(endInclusive,Math.max(state.lastSecond,billAnchor-1)+MAX_COMMIT_SECONDS);
       const seconds=[];
-      for(let second=state.lastSecond+1;second<=chunkEnd;second++)seconds.push(second);
+      if(!startup){
+        for(let second=Math.max(state.lastSecond+1,billAnchor);second<=chunkEnd;second++)seconds.push(second);
+      }
       const charged=await chargeSeconds(tx,state,seconds,'video',sessionId,false);
-      const billingIncomplete=endInclusive>chunkEnd&&!charged.stopped;
+      const billingIncomplete=!startup&&endInclusive>chunkEnd&&!charged.stopped;
       let ended=false;
       if(charged.stopped){close=true;reason='no_credits';}
       if(close&&!billingIncomplete){state.available+=state.reserved;state.reserved=0;state.walletFloor=Math.floor(state.available/2);ended=true;}
       const timestamp=writeCharges(tx,state,wallet,carryRef,charged.changes,charged.ledgerChanges);
       tx.update(sessionRef,{
         seconds_used:state.count,last_billed_epoch:state.lastSecond,reserved_half:state.reserved,prepaid_until_epoch:prepaidUntil,
+        ...outputStarted!=null?{output_started_epoch:outputStarted}:{},
+        ...outputBudget!=null?{output_budget_seconds:outputBudget}:{},
         last_usage_at:timestamp,last_heartbeat_at:timestamp,
         ...ended?{status:'ended',end_time:timestamp,end_reason:reason}:{}});
       const remainingCredits=(state.available+state.reserved)/2;
+      const covered=Math.floor((state.available+state.reserved)/state.videoRate)>=1;
+      // Connecting must not look like an empty wallet. The hold is still the
+      // customer's balance until output is confirmed and the grace window passes.
+      const shouldStop=ended||(!startup&&remainingCredits<state.videoRate/2)||(startup&&!ended&&!covered);
       const renewalDue=!ended&&row.provider==='xmax'&&Number.isFinite(expiresAt)&&expiresAt-now()<45000&&expiresAt>now();
-      return {totalBillableSeconds:state.count,remainingCredits,shouldStop:ended||remainingCredits<state.videoRate/2,billingIncomplete,ended,reason,renewalDue,
+      return {totalBillableSeconds:state.count,remainingCredits,shouldStop,billingIncomplete,ended,reason,renewalDue,
         provider:row.provider,providerKeyId:row.provider_key_id||null,providerLiveId:row.provider_live_id||null,prepaidUntilEpoch:prepaidUntil};
     });
   }
