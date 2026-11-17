@@ -22,7 +22,7 @@ import type { ViduProxySignaling, ViduRealtimeSession } from '@/lib/vidu-realtim
 import { useAuth } from '@/context/AuthContext';
 import { ROUTES } from '@/lib/routes';
 import { useAffiliateEntry } from '@/hooks/useAffiliateEntry';
-import { useApp } from '@/context/AppContext';
+import { formatCreditBalance, useApp } from '@/context/AppContext';
 import { apiFetchWithAuth, getTrustedApiOrigin, isMorphlyDesktopRuntime } from '@/lib/api-client';
 import {
   getCreditRatePerSecond,
@@ -447,7 +447,7 @@ const viduSdkReadyPromise = import('@/lib/vidu-realtime').then(async module => {
 function Dashboard() {
   const { user, logout } = useAuth();
   const [onboardingChecked, setOnboardingChecked] = useState(false);
-  const { credits, setCredits, setSessionStatus } = useApp();
+  const { credits, creditsReady, setCredits, setSessionStatus } = useApp();
   const navigate = useNavigate();
   const affiliateEntry = useAffiliateEntry();
 
@@ -2661,6 +2661,7 @@ function Dashboard() {
       return 'Upload a reference image before starting.';
     }
     if (isValidatingImage) return 'Morphly is checking the reference image.';
+    if (!isDevOrPreview && !creditsReady) return 'Checking your credit balance.';
     if (!isDevOrPreview && credits < minCreditsToStart) {
       return getNotEnoughCreditsMessage(selectedProvider, minCreditsToStart);
     }
@@ -2685,6 +2686,9 @@ function Dashboard() {
     }
     if (!isEngineReady) {
       throw new Error(engineLoadError || 'The Morphly engine is not ready yet.');
+    }
+    if (!isDevOrPreview && !creditsReady) {
+      throw new Error('Checking your credit balance.');
     }
     if (!isDevOrPreview && credits < minCreditsToStart) {
       throw new Error(getNotEnoughCreditsMessage(selectedProvider, minCreditsToStart));
@@ -3363,7 +3367,7 @@ function Dashboard() {
                 </div>
                 <div className="flex items-center gap-1">
                   <Coins aria-hidden="true" className="size-3.5 text-primary" />
-                  <span className="text-xs font-semibold tabular-nums text-foreground">{Math.round(credits).toLocaleString()}</span>
+                  <span className="text-xs font-semibold tabular-nums text-foreground" aria-busy={!creditsReady} aria-label={creditsReady ? undefined : 'Credit balance loading'}>{formatCreditBalance(credits, creditsReady)}</span>
                 </div>
               </div>
               <button
