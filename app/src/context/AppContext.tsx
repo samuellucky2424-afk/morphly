@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useCallback, useMemo, useEffect } 
 import type { ReactNode } from 'react';
 import { apiFetchWithAuth } from '@/lib/api-client';
 import { useAuth } from './AuthContext';
+import { formatCreditBalance } from '@/lib/credit-balance';
 
 export interface Transaction {
   id: string;
@@ -15,6 +16,7 @@ export interface Transaction {
 interface AppContextType {
   balance: number;
   credits: number;
+  creditsReady: boolean;
   setBalance: (balance: number) => void;
   setCredits: (credits: number) => void;
   addBalance: (amount: number) => void;
@@ -45,27 +47,40 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const BALANCE_KEY = 'morphly_balance';
 const CREDITS_KEY = 'morphly_credits';
 const TRANSACTIONS_KEY = 'morphly_transactions';
+const LOCAL_PREVIEW_USER = '00000000-0000-0000-0000-000000000001';
+
+export { formatCreditBalance };
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const isLocalPreview = import.meta.env.DEV && import.meta.env.VITE_LOCAL_PREVIEW === 'true';
   const [balance, setBalanceState] = useState(isLocalPreview ? 10000 : 0);
   const [credits, setCreditsState] = useState(isLocalPreview ? 999999 : 0);
+  // The number above starts at 0. That 0 is not a balance until this matches
+  // the signed-in user, so a slow or failed login cannot show an empty wallet.
+  const [creditOwner, setCreditOwner] = useState<string | null>(isLocalPreview ? LOCAL_PREVIEW_USER : null);
   const [sessionStatus, setSessionStatus] = useState<'LIVE' | 'IDLE'>('IDLE');
   const [isLoading, setLoading] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
 
   useEffect(() => {
-    if (isLocalPreview || user?.id === '00000000-0000-0000-0000-000000000001') {
+    if (isLocalPreview || user?.id === LOCAL_PREVIEW_USER) {
       setBalanceState(10000);
       setCreditsState(999999);
+      setCreditOwner(user?.id ?? LOCAL_PREVIEW_USER);
       return;
     }
 
-    if (user?.id) {
-      apiFetchWithAuth(`/wallet?userId=${user.id}`)
-        .then(async res => {
+    if (!user?.id) return;
+
+    let cancelled = false;
+    const userId = user.id;
+    const loadWallet = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (cancelled) return;
+        try {
+          const res = await apiFetchWithAuth(`/wallet?userId=${userId}`);
           if (!res.ok) {
             const rawBody = await res.text();
             let apiError = rawBody;
@@ -75,31 +90,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
             } catch {
               // Keep raw body when response is not JSON.
             }
-
             const errorDetail = apiError ? `: ${apiError}` : '';
             throw new Error(`API returned ${res.status}${errorDetail}`);
           }
           const text = await res.text();
+          let data: { balance?: unknown; credits?: unknown; transactions?: Transaction[] };
           try {
-            return JSON.parse(text);
-          } catch (e) {
+            data = JSON.parse(text);
+          } catch {
             throw new Error(`Invalid JSON format from API: ${text.substring(0, 20)}`);
           }
-        })
-        .then(data => {
-          if (data) {
-            if (data.balance !== undefined) {
-              setBalanceState(data.balance);
-            }
-            if (data.credits !== undefined) {
-              setCreditsState(data.credits);
-            }
-            setTransactions(data.transactions || []);
+          if (cancelled) return;
+          if (typeof data.balance === 'number' && Number.isFinite(data.balance)) setBalanceState(data.balance);
+          if (typeof data.credits === 'number' && Number.isFinite(data.credits)) {
+            setCreditsState(data.credits);
+            setCreditOwner(userId);
           }
-        })
-        .catch(err => console.warn('Failed to sync wallet data:', err));
-    }
+          setTransactions(data.transactions || []);
+          return;
+        } catch (err) {
+          console.warn('Failed to sync wallet data:', err);
+          if (attempt < 2 && !cancelled) await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+        }
+      }
+    };
+    void loadWallet();
+    return () => {
+      cancelled = true;
+    };
   }, [isLocalPreview, user?.id]);
+
+  const creditsReady = isLocalPreview || (Boolean(user?.id) && creditOwner === user?.id);
 
   const setBalance = useCallback((newBalance: number) => {
     setBalanceState(newBalance);
@@ -108,8 +129,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setCredits = useCallback((newCredits: number) => {
     setCreditsState(newCredits);
+    setCreditOwner(user?.id ?? null);
     localStorage.setItem(CREDITS_KEY, newCredits.toString());
-  }, []);
+  }, [user?.id]);
 
   const addBalance = useCallback((amount: number) => {
     const transaction: Transaction = {
@@ -144,6 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       timestamp: new Date().toISOString(),
     };
     
+    setCreditOwner(user?.id ?? null);
     setCreditsState(prev => {
       const newCredits = prev + amount;
       localStorage.setItem(CREDITS_KEY, newCredits.toString());
@@ -155,7 +178,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(updated));
       return updated;
     });
-  }, []);
+  }, [user?.id]);
 
   const deductBalance = useCallback((amount: number) => {
     const transaction: Transaction = {
@@ -190,6 +213,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       timestamp: new Date().toISOString(),
     };
     
+    setCreditOwner(user?.id ?? null);
     setCreditsState(prev => {
       const newCredits = Math.max(0, prev - amount);
       localStorage.setItem(CREDITS_KEY, newCredits.toString());
@@ -201,7 +225,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(TRANSACTIONS_KEY, JSON.stringify(updated));
       return updated;
     });
-  }, []);
+  }, [user?.id]);
 
   const addTransaction = useCallback((transactionData: Omit<Transaction, 'id' | 'timestamp'>) => {
     const transaction: Transaction = {
@@ -241,6 +265,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({
     balance,
     credits,
+    creditsReady,
     setBalance,
     setCredits,
     addBalance,
@@ -256,7 +281,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     notifications,
     addNotification,
     clearNotifications,
-  }), [balance, credits, setBalance, setCredits, addBalance, addCredits, deductBalance, deductCredits, sessionStatus, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
+  }), [balance, credits, creditsReady, setBalance, setCredits, addBalance, addCredits, deductBalance, deductCredits, sessionStatus, isLoading, transactions, addTransaction, notifications, addNotification, clearNotifications]);
 
   return (
     <AppContext.Provider value={value}>

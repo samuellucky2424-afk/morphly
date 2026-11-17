@@ -5,12 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
-import { useApp } from '@/context/AppContext';
+import { formatCreditBalance, useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
 import { apiFetchWithAuth } from '@/lib/api-client';
 
 function Wallet() {
-  const { credits, transactions, setBalance, setCredits } = useApp();
+  const { credits, creditsReady, transactions, setBalance, setCredits } = useApp();
   const { user } = useAuth();
   const navigate = useNavigate();
   const refreshInFlightRef = useRef(false);
@@ -91,13 +91,13 @@ function Wallet() {
               <Coins className="w-6 h-6 text-primary" />
             </div>
             <div>
-              <p className="text-4xl font-semibold text-foreground">{Math.round(credits).toLocaleString()}</p>
+              <p className="text-4xl font-semibold text-foreground" aria-busy={!creditsReady} aria-label={creditsReady ? undefined : 'Credit balance loading'}>{formatCreditBalance(credits, creditsReady)}</p>
               <p className="text-sm text-muted-foreground">credits</p>
             </div>
           </div>
           <div className="bg-background rounded-lg p-4 border border-border">
             <p className="text-sm text-muted-foreground">
-              Estimated stream time: <span className="text-foreground font-semibold">~{estimatedMinutes}m {Math.round(estimatedRemainingSeconds)}s</span>
+              Estimated stream time: <span className="text-foreground font-semibold">{creditsReady ? `~${estimatedMinutes}m ${Math.round(estimatedRemainingSeconds)}s` : '…'}</span>
             </p>
             <p className="text-xs text-muted-foreground mt-1">Based on the Plus rate of 2 credits per second.</p>
           </div>

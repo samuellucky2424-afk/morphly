@@ -3,7 +3,7 @@ import { Video, ChevronDown, LogOut, Coins, Wallet, LayoutDashboard, Settings } 
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
 import { useAuth } from '@/context/AuthContext';
-import { useApp } from '@/context/AppContext';
+import { formatCreditBalance, useApp } from '@/context/AppContext';
 import { ROUTES } from '@/lib/routes';
 
 interface NavigationProps {
@@ -18,7 +18,7 @@ interface NavItem {
 
 export function Navigation({ children }: NavigationProps) {
   const { user, logout } = useAuth();
-  const { credits, sessionStatus } = useApp();
+  const { credits, creditsReady, sessionStatus } = useApp();
 
   const navItems: NavItem[] = [
     { path: ROUTES.PROTECTED.DASHBOARD, label: 'Dashboard', icon: LayoutDashboard },
@@ -96,7 +96,7 @@ export function Navigation({ children }: NavigationProps) {
               }
             >
               <Coins className="w-3.5 h-3.5 text-muted-foreground" />
-              <span className="text-sm font-bold text-foreground tracking-tight">{Math.round(credits).toLocaleString()}</span>
+              <span className="text-sm font-bold text-foreground tracking-tight" aria-busy={!creditsReady} aria-label={creditsReady ? undefined : 'Credit balance loading'}>{formatCreditBalance(credits, creditsReady)}</span>
               <span className="px-2 py-0.5 text-[9px] font-bold text-primary bg-accent rounded-full tracking-wide border border-primary/20">CREDITS</span>
             </NavLink>
             <Separator orientation="vertical" className="h-6 bg-background" />

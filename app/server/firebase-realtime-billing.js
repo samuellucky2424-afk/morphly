@@ -49,9 +49,71 @@ export function pcmDurationSeconds(byteLength){
 
 export function createFirebaseRealtimeBilling(db,options={}){
   const now=()=>options.now?.()??Date.now();
+  function holdIsStale(row,time){
+    const beat=utc(row.last_heartbeat_at||'');
+    const start=utc(row.start_time||'');
+    const mark=Number.isFinite(beat)?beat:start;
+    return Number.isFinite(mark)&&time-mark>HEARTBEAT_TIMEOUT_MS;
+  }
+  // A session that was marked ended without the billing close still has the
+  // prepaid hold in reserved_half and the same amount missing from the wallet.
+  async function restoreEndedHold(uid,sessionId){
+    return db.runTransaction(async tx=>{
+      const sessionRef=db.collection('sessions').doc(sessionId),carryRef=db.collection('realtime_credit_carry').doc(uid);
+      const [session,wallets,carry]=await Promise.all([tx.get(sessionRef),tx.get(db.collection('wallets').where('user_id','==',uid)),tx.get(carryRef)]);
+      const row=session.data();
+      if(!row||row.user_id!==uid||row.status==='active')return {restored:0};
+      const reserved=Number(row.reserved_half||0);
+      if(!Number.isSafeInteger(reserved)||reserved<=0)return {restored:0};
+      const wallet=single(wallets);
+      const before=Number(wallet.data().credits);
+      const carryHalf=Number(carry.data()?.half_credit||0);
+      const available=before*2+carryHalf+reserved;
+      if(!Number.isSafeInteger(before)||!Number.isSafeInteger(carryHalf)||!Number.isSafeInteger(available)||available<0)throw new Error('Invalid wallet balance');
+      const credits=Math.floor(available/2),timestamp=new Date(now()).toISOString();
+      tx.update(wallet.ref,{credits,updated_at:timestamp});
+      tx.set(carryRef,{user_id:uid,half_credit:available%2});
+      tx.update(sessionRef,{reserved_half:0,hold_released_at:timestamp,updated_at:timestamp});
+      if(credits!==before){
+        const id=hash(`hold-release:${sessionId}`);
+        tx.set(db.collection('wallet_ledger').doc(id),{id,user_id:uid,delta:credits-before,balance_after:credits,entry_type:'hold_release',reason:'Returned a prepaid hold that was never billed',idempotency_key:`hold-release:${sessionId}`,created_at:timestamp},{merge:true});
+      }
+      return {restored:reserved/2};
+    });
+  }
+  // Login and balance reads settle sessions the desktop never closed. A live
+  // heartbeat is left alone so an open stream keeps its hold.
+  async function repairAbandonedHolds(uid){
+    if(!uid)return;
+    const sessions=await db.collection('sessions').where('user_id','==',uid).get();
+    const time=now();
+    for(const doc of sessions.docs){
+      const row=doc.data()||{};
+      try{
+        if(row.status!=='active'){
+          if(Number(row.reserved_half)>0)await restoreEndedHold(uid,doc.id);
+        }else if(holdIsStale(row,time)){
+          await mutateVideo({p_user:uid,p_session:doc.id,p_close:true,p_reason:'heartbeat_timeout'},{reserveOnly:false,extend:false,settleAbandoned:true});
+        }
+      }catch{/* The balance read still counts a hold that could not be released. */}
+    }
+  }
   async function balance(uid){
-    const [wallets,carry]=await Promise.all([db.collection('wallets').where('user_id','==',uid).get(),db.collection('realtime_credit_carry').doc(uid).get()]);
-    return Number(single(wallets).data().credits)+Number(carry.data()?.half_credit||0)/2;
+    try{await repairAbandonedHolds(uid);}catch{/* Report whatever is still recorded. */}
+    const [wallets,carry,sessions]=await Promise.all([
+      db.collection('wallets').where('user_id','==',uid).get(),
+      db.collection('realtime_credit_carry').doc(uid).get(),
+      db.collection('sessions').where('user_id','==',uid).get(),
+    ]);
+    const reserved=sessions.docs.reduce((sum,doc)=>{
+      const half=Number(doc.data()?.reserved_half||0);
+      return sum+(Number.isFinite(half)&&half>0?half:0);
+    },0);
+    const credits=Number(single(wallets).data().credits);
+    const half=Number(carry.data()?.half_credit||0);
+    const total=credits+half/2+reserved/2;
+    if(!Number.isFinite(total))throw new Error('Invalid wallet balance');
+    return total;
   }
   async function configure(p){
     if(![4,5,8].includes(p.p_rate_half))throw new Error('Invalid video rate');
@@ -122,7 +184,7 @@ export function createFirebaseRealtimeBilling(db,options={}){
         tx.get(db.collection('sessions').where('user_id','==',uid)),
       ]);
       if(profile.data()?.account_status!=='active')throw new Error('Account unavailable');
-      if(owned.docs.some(doc=>doc.id!==sessionId&&doc.data().status==='active'))throw new Error('Another streaming session is active');
+      if(!mode.settleAbandoned&&owned.docs.some(doc=>doc.id!==sessionId&&doc.data().status==='active'))throw new Error('Another streaming session is active');
       const wallet=single(wallets);
       const row=session.data();
       if(!row||row.user_id!==uid||row.billing_version!==2)throw new Error('Session ownership or billing version mismatch');
@@ -326,6 +388,6 @@ export function createFirebaseRealtimeBilling(db,options={}){
     const paidUntilMs=(Number(row.started_epoch)+Number(row.authorized_seconds))*1000;
     return {active:paidUntilMs>=now()};
   }
-  return {balance,configure,video:p=>mutateVideo(p,{reserveOnly:false,extend:p.p_extend===true}),reserveVideo:p=>mutateVideo(p,{reserveOnly:true,extend:true}),
+  return {balance,repairAbandonedHolds,configure,video:p=>mutateVideo(p,{reserveOnly:false,extend:p.p_extend===true}),reserveVideo:p=>mutateVideo(p,{reserveOnly:true,extend:true}),
     translation:p=>meter('translation',p),voice:p=>meter('translation',{...p,p_auto:true}),voiceActive,billVoiceConvert,releaseVoiceConvert};
 }
