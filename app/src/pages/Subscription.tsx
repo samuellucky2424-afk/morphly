@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
-import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
+import { apiFetch, apiFetchWithAuth, getTrustedApiOrigin } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
 import { trackEvent, trackPaymentStarted, trackPaymentSucceeded, trackPaymentFailed } from '@/lib/telemetry-client';
 
@@ -659,9 +659,9 @@ function Subscription() {
   const handleFlutterwavePayment = async () => {
     if (!selectedPlan || !user || isProcessing || !quote || quote.country !== country || Date.now() >= quote.expiresAt) return;
 
-    const useSystemBrowser = Boolean(window.electron?.isElectron);
+    const useDesktopCheckout = Boolean(window.electron?.isElectron);
     let checkoutWindow: Window | null = null;
-    if (!useSystemBrowser) {
+    if (!useDesktopCheckout) {
       checkoutWindow = window.open(
         'about:blank',
         '_blank',
@@ -702,14 +702,20 @@ function Subscription() {
         country,
         currency: quote.currency,
       });
-      if (useSystemBrowser) {
-        const opened = await window.electron!.invoke('payment:open-flutterwave-checkout', data.checkoutUrl);
-        if (!opened?.success) throw new Error(opened?.error || 'Could not open Flutterwave checkout.');
-
+      if (useDesktopCheckout) {
         setIsCheckoutOpen(false);
-        setIsProcessing(false);
-        toast.info('Flutterwave checkout opened in your browser. Complete payment there, then return to Morphly.');
-        navigate('/wallet', { replace: true });
+        const result = await window.electron!.invoke('payment:open-flutterwave-checkout', {
+          checkoutUrl: data.checkoutUrl,
+          apiOrigin: getTrustedApiOrigin(),
+          reference: data.reference,
+        });
+        if (!result?.success) throw new Error(result?.error || 'Could not open Flutterwave checkout.');
+        setFlutterwaveReturn({
+          status: result.status,
+          reference: data.reference,
+          transactionId: result.transactionId,
+          isReturn: true,
+        });
         return;
       }
 
@@ -751,6 +757,7 @@ function Subscription() {
       trackPaymentFailed({ packageId: selectedPlan.id!, country, currency: quote.currency, reason: 'gateway_init_failed' });
       setQuote(null);
       setQuoteError(error instanceof Error ? error.message : 'Failed to initialize payment gateway');
+      if (useDesktopCheckout) setIsCheckoutOpen(true);
       setIsProcessing(false);
     }
   };

@@ -14,6 +14,7 @@ import { selectVirtualCameraProfile } from './virtual-camera-profile.js';
 import { buildCameraRepairCommand, createCameraRepairService, executeCameraRepair, supportsMediaFoundationCamera } from './virtual-camera-repair.js';
 import { loadMorphlyEnvironment } from '../shared/load-environment.js';
 import { classifyWindowTarget } from './navigation-guard.js';
+import { openFlutterwaveCheckout } from './flutterwave-checkout.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1368,7 +1369,7 @@ function registerDeveloperToolsHandlers() {
 }
 
 function registerPaymentHandlers() {
-  ipcMain.handle('payment:open-flutterwave-checkout', async (event, checkoutUrl) => {
+  ipcMain.handle('payment:open-flutterwave-checkout', async (event, checkoutSession) => {
     if (
       !mainWindow
       || mainWindow.isDestroyed()
@@ -1378,22 +1379,7 @@ function registerPaymentHandlers() {
       throw new Error('Payment checkout can only be opened from the Morphly dashboard.');
     }
 
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(String(checkoutUrl || ''));
-    } catch {
-      return { success: false, error: 'Flutterwave returned an invalid checkout link.' };
-    }
-    if (
-      parsedUrl.protocol !== 'https:'
-      || parsedUrl.hostname !== 'checkout.flutterwave.com'
-      || !parsedUrl.pathname.startsWith('/v3/hosted/pay/')
-    ) {
-      return { success: false, error: 'Flutterwave returned an untrusted checkout link.' };
-    }
-
-    await shell.openExternal(parsedUrl.toString());
-    return { success: true };
+    return openFlutterwaveCheckout(BrowserWindow, mainWindow, checkoutSession || {});
   });
 }
 
