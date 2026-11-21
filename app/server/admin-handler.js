@@ -18,13 +18,14 @@ import {
 } from '../../shared/admin-service.js';
 import { createCreditPackage } from '../../shared/credit-packages.js';
 import { logErrorEvent, logRequestEvent } from '../../shared/backend-logger.js';
-import { supabaseAdmin, supabaseAdminConfigError } from './supabase-admin.js';
+import { firebaseAdmin as supabaseAdmin, firebaseAdminConfigError as supabaseAdminConfigError, firebaseDb } from './firebase-admin.js';
 import {
   applyVerifiedFlutterwavePayment,
   extractFlutterwavePaymentContext,
   validateFlutterwaveTransaction,
   verifyFlutterwaveTransaction,
 } from './flutterwave-payment.js';
+import { getCheckoutRecord, settleCheckout } from './payment-checkouts.js';
 
 const ADMIN_ROUTE_CONFIG = {
   me: {
@@ -382,6 +383,24 @@ async function handleAdminTransactions(req, res) {
     const context = extractFlutterwavePaymentContext(verification.transaction, { reference: expectedReference, userId, packageId });
     const gatewayPackageId = verification.transaction?.meta?.packageId || verification.transaction?.meta?.package_id;
     if (gatewayPackageId && gatewayPackageId !== packageId) return res.status(400).json({ error: 'Payment package mismatch' });
+    const checkout = firebaseDb && context.reference ? await getCheckoutRecord(firebaseDb, context.reference) : null;
+    if (checkout) {
+      if (checkout.packageId !== packageId || checkout.userId !== userId) {
+        return res.status(400).json({ error: 'Payment does not match the Morphly checkout' });
+      }
+      const settled = await settleCheckout(firebaseDb, context.reference, {
+        secretKey, transactionId, expectedUserId: userId,
+      });
+      if (settled?.state !== 'credited') {
+        return res.status(400).json({ error: settled?.message || 'Payment could not be confirmed' });
+      }
+      await supabaseAdmin.from('admin_audit_logs').insert({
+        admin_user_id: admin.user.id, action: 'payment.reconciled', target_type: 'transaction',
+        target_id: String(transactionId), reason: 'Admin verified against Flutterwave',
+        after_data: { userId, packageId, reference: context.reference, currency: checkout.currency || 'NGN', ...settled },
+      });
+      return res.json({ status: 'success', ...settled });
+    }
     const validation = validateFlutterwaveTransaction(verification.transaction, context.reference);
     if (!validation.ok) return res.status(400).json({ error: validation.message });
 

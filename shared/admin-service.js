@@ -906,7 +906,7 @@ export async function listSystemLogs(supabaseAdmin, options = {}) {
     fetchOptionalRows(queryAnalyticsEvents(
       supabaseAdmin,
       filters,
-      'id, event_name, user_id, platform, acquisition_source, created_at',
+      'id, event_name, user_id, platform, acquisition_source, created_at, metadata',
       false,
     ), 'analytics_events', SYSTEM_LOG_SOURCE_LIMIT),
     fetchOptionalRows(
@@ -978,9 +978,16 @@ export async function listSystemLogs(supabaseAdmin, options = {}) {
   }
 
   for (const event of analyticsResult.rows) {
+    const details = [];
+    if (event.event_name?.startsWith('payment_')) {
+      const { country, currency, reason } = event.metadata || {};
+      if (typeof country === 'string' && /^[A-Z]{2}$/.test(country)) details.push(country);
+      if (typeof currency === 'string' && /^[A-Z]{3}$/.test(currency)) details.push(currency);
+      if (typeof reason === 'string' && /^[a-z_]{1,50}$/.test(reason)) details.push(reason.replaceAll('_', ' '));
+    }
     addGroupedSystemLog(logsByKey, {
       event: event.event_name || 'ANALYTICS_EVENT',
-      message: `${humanizeEventName(event.event_name)} recorded`,
+      message: [`${humanizeEventName(event.event_name)} recorded`, ...details].join(' · '),
       userId: event.user_id,
       user: emailById.get(event.user_id) || event.user_id || null,
       platform: event.platform || 'unknown',

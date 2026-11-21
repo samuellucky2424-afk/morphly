@@ -17,7 +17,7 @@ const purchase = row => (row.transaction_type==='credit_purchase'||['credit_purc
 export function createPaymentRuntime(db) {
   const query=(name,field,value)=>db.collection(name).where(field,'==',value).limit(2);
   async function applyPayment(input) {
-    const {userId,packageId,reference,gateway,gatewayId}=input;
+    const {userId,packageId,reference,gateway,gatewayId,checkout}=input;
     if(!userId||!packageId||typeof reference!=='string'||reference.trim().length<3||!gatewayId||!['flutterwave','ivorypay'].includes(gateway))throw new Error('Invalid payment context');
     const paid=money(input.amount),fee=money(input.fee??0);
     if(paid<=0n)throw new Error('Invalid verified amount');
@@ -28,7 +28,8 @@ export function createPaymentRuntime(db) {
       // Read old transactions as well as new markers: migrated purchases must
       // never be credited again when a delayed provider callback arrives.
       const [profile,pkg,walletRows,seen,seenGateway,byReference,byGateway,prior,referrals,affiliateAttribution]=await Promise.all([
-        tx.get(db.collection('users').doc(userId)),tx.get(db.collection('credit_packages').doc(packageId)),
+        tx.get(db.collection('users').doc(userId)),
+        checkout ? null : tx.get(db.collection('credit_packages').doc(packageId)),
         tx.get(query('wallets','user_id',userId)),tx.get(marker),tx.get(gatewayMarker),
         tx.get(query('transactions','reference',reference)),tx.get(db.collection('transactions').where('gateway_transaction_id','==',String(gatewayId))),
         tx.get(db.collection('transactions').where('user_id','==',userId)),tx.get(query('referrals','referred_user_id',userId)),
@@ -43,8 +44,13 @@ export function createPaymentRuntime(db) {
         if(existing.user_id!==userId||(existing.package_id&&existing.package_id!==packageId)||(existing.payment_gateway&&existing.payment_gateway!==gateway))throw new Error('Payment context mismatch');
         return {status:'success',duplicate:true,transactionId:existing.transaction_id??historic?.id,creditsAdded:credits(existing.package_credits_snapshot??existing.credits??0),newCredits:old,referralRewarded:false};
       }
-      if(!pkg.exists||pkg.data().status!=='active'||pkg.data().is_active!==true)throw new Error('Package unavailable');
-      const packageData=pkg.data(),added=credits(packageData.credits);
+      if (!checkout && (!pkg.exists || pkg.data().status !== 'active' || pkg.data().is_active !== true)) {
+        throw new Error('Package unavailable');
+      }
+      const packageData = checkout
+        ? { name: checkout.packageName, price_ngn: checkout.amountNGN, credits: checkout.credits }
+        : pkg.data();
+      const added = credits(packageData.credits);
       if(added===0||paid<money(packageData.price_ngn))throw new Error('Verified amount below package price');
       const updated=credits(old+added),first=!prior.docs.some(d=>purchase(d.data()));
       const referral=first?one(referrals):null,referralData=referral?.data();
@@ -62,6 +68,13 @@ export function createPaymentRuntime(db) {
       const suppressReferralReward=affiliateAttribution.exists;
       const walletRef=wallet?.ref??db.collection('wallets').doc(randomUUID());
       const record={id:txId,user_id:userId,package_id:packageId,reference,payment_gateway:gateway,gateway_transaction_id:String(gatewayId),amount:amountString(paid),amount_naira:amountString(paid),gateway_fee_ngn:amountString(fee),credits:added,package_name_snapshot:packageData.name,package_price_snapshot_ngn:packageData.price_ngn,package_credits_snapshot:added,type:'credit_purchase',transaction_type:'credit_purchase',status:'success',refund_status:'none',description:`${packageData.name} purchased`,created_at:now,verified_at:now};
+      if (checkout) {
+        Object.assign(record, {
+          payment_country: checkout.country, payment_currency: checkout.currency,
+          payment_amount: checkout.amountPaid, payment_gateway_fee: checkout.gatewayFee,
+          payment_exchange_rate: checkout.rate,
+        });
+      }
       tx.create(db.collection('transactions').doc(txId),record);
       tx.set(walletRef,{...(wallet?.data()??{id:walletRef.id,user_id:userId,balance:'0.00',created_at:now}),credits:updated,updated_at:now});
       tx.create(db.collection('wallet_ledger').doc(ledgerId),{id:ledgerId,user_id:userId,transaction_id:txId,delta:added,balance_after:updated,entry_type:'package_purchase',reason:`Verified ${gateway} payment`,idempotency_key:`payment:${reference}`,created_at:now});

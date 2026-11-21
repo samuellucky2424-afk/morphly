@@ -7,6 +7,8 @@ type TelemetryEventName =
   | 'signup_completed'
   | 'login_success'
   | 'payment_started'
+  | 'payment_checkout_viewed'
+  | 'payment_country_selected'
   | 'payment_succeeded'
   | 'payment_failed'
   | 'xmax_key_requested'

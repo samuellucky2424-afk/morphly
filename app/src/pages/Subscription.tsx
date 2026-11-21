@@ -5,11 +5,12 @@ import { toast } from 'sonner';
 import QRCode from 'qrcode';
 
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { useApp } from '@/context/AppContext';
 import { useAuth } from '@/context/AuthContext';
 import { apiFetch, apiFetchWithAuth } from '@/lib/api-client';
 import { CREDITS_PER_SECOND } from '@/lib/billing';
-import { trackPaymentStarted, trackPaymentSucceeded, trackPaymentFailed } from '@/lib/telemetry-client';
+import { trackEvent, trackPaymentStarted, trackPaymentSucceeded, trackPaymentFailed } from '@/lib/telemetry-client';
 
 interface CreditPlan {
   id?: string;
@@ -22,12 +23,42 @@ interface CreditPlan {
 
 type PaymentMethod = 'flutterwave' | 'crypto';
 
+type PaymentMarket = { country: string; name: string };
+type PaymentQuote = {
+  country: string;
+  currency: string;
+  amount: number;
+  amountNGN: number;
+  credits: number;
+  methods: string[];
+  expiresAt: number;
+  token?: string;
+};
+
+async function requestFlutterwaveCheckout(body: Record<string, unknown>, signal?: AbortSignal) {
+  const res = await apiFetchWithAuth('/initiate-flutterwave-payment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.message || 'Flutterwave checkout is unavailable');
+  return data;
+}
+
+function formatPaymentAmount(amount: number, currency: string) {
+  return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(amount);
+}
+
 const FLUTTERWAVE_PENDING_PAYMENT_KEY = 'morphly.flutterwave.pending-payment';
 
 interface PendingFlutterwavePayment {
   reference: string;
   packageId?: string;
   credits?: number;
+  country?: string;
+  currency?: string;
 }
 
 interface FlutterwaveReturn {
@@ -122,6 +153,12 @@ function Subscription() {
   const [selectedPlan, setSelectedPlan] = useState<CreditPlan | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('flutterwave');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+  const [markets, setMarkets] = useState<PaymentMarket[]>([{ country: 'NG', name: 'Nigeria' }]);
+  const [country, setCountry] = useState('NG');
+  const [quote, setQuote] = useState<PaymentQuote | null>(null);
+  const [quoteError, setQuoteError] = useState('');
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [ngnRate, setNgnRate] = useState<number>(1500);
   const [isLoadingRate, setIsLoadingRate] = useState(true);
   const [isLoadingPlans, setIsLoadingPlans] = useState(true);
@@ -150,6 +187,52 @@ function Subscription() {
   const flutterwaveCheckoutWindowRef = useRef<Window | null>(null);
   const flutterwaveCheckoutCloseTimerRef = useRef<number | null>(null);
   const flutterwaveReturnReceivedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isCheckoutOpen) return;
+    const controller = new AbortController();
+    void requestFlutterwaveCheckout({ action: 'markets' }, controller.signal)
+      .then((data) => {
+        if (!controller.signal.aborted && Array.isArray(data.markets) && data.markets.length) {
+          setMarkets(data.markets);
+          setCountry((current) => data.markets.some((market: PaymentMarket) => market.country === current) ? current : 'NG');
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setMarkets([{ country: 'NG', name: 'Nigeria' }]);
+          setCountry('NG');
+        }
+      });
+    return () => controller.abort();
+  }, [isCheckoutOpen]);
+
+  const selectedPackageId = selectedPlan?.id;
+  useEffect(() => {
+    if (!isCheckoutOpen || !selectedPackageId) return;
+    const controller = new AbortController();
+    void requestFlutterwaveCheckout({ action: 'quote', packageId: selectedPackageId, country }, controller.signal)
+      .then((data: PaymentQuote) => {
+        if (controller.signal.aborted) return;
+        if (data.country !== country || !data.amount || !data.expiresAt) throw new Error('Payment quote is unavailable.');
+        setQuote(data);
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setQuoteError(error instanceof Error ? error.message : 'Payment quote is unavailable.');
+        trackPaymentFailed({ country, reason: 'quote_failed' });
+      });
+    return () => controller.abort();
+  }, [country, isCheckoutOpen, quoteAttempt, selectedPackageId]);
+
+  useEffect(() => {
+    if (!quote || !isCheckoutOpen) return;
+    const timer = window.setTimeout(() => {
+      setQuote(null);
+      setQuoteError('Your payment quote expired. Refresh it to continue.');
+    }, Math.max(0, quote.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [isCheckoutOpen, quote]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -240,6 +323,8 @@ function Subscription() {
       if (pendingPayment?.packageId) {
         trackPaymentFailed({
           packageId: pendingPayment.packageId,
+          country: pendingPayment.country || 'NG',
+          currency: pendingPayment.currency || 'NGN',
           reason: isCancelled ? 'user_cancelled' : 'payment_failed',
         });
       }
@@ -256,7 +341,7 @@ function Subscription() {
     if (!paymentReturn.reference) {
       flutterwaveReturnHandledRef.current = true;
       if (pendingPayment?.packageId) {
-        trackPaymentFailed({ packageId: pendingPayment.packageId, reason: 'missing_transaction_reference' });
+        trackPaymentFailed({ packageId: pendingPayment.packageId, country: pendingPayment.country || 'NG', reason: 'missing_transaction_reference' });
       }
       clearPendingFlutterwavePayment();
       clearFlutterwaveReturnUrl();
@@ -310,6 +395,8 @@ function Subscription() {
           transactionId: data.transactionId || paymentReturn.transactionId || paymentReturn.reference,
         };
         if (pendingPayment?.packageId) successMetadata.packageId = pendingPayment.packageId;
+        if (pendingPayment?.country) successMetadata.country = pendingPayment.country;
+        if (pendingPayment?.currency) successMetadata.currency = pendingPayment.currency;
         trackPaymentSucceeded(successMetadata);
 
         const creditsAdded = Number(data.creditsAdded || pendingPayment?.credits || 0);
@@ -325,7 +412,7 @@ function Subscription() {
         console.error(error);
         if (paymentReturn.status === 'closed') {
           if (pendingPayment?.packageId) {
-            trackPaymentFailed({ packageId: pendingPayment.packageId, reason: 'user_cancelled' });
+            trackPaymentFailed({ packageId: pendingPayment.packageId, country: pendingPayment.country || 'NG', reason: 'user_cancelled' });
           }
           clearPendingFlutterwavePayment();
           toast.info('Payment cancelled or not completed.');
@@ -336,6 +423,8 @@ function Subscription() {
           message: error instanceof Error ? error.message : 'Unknown',
         };
         if (pendingPayment?.packageId) failureMetadata.packageId = pendingPayment.packageId;
+        if (pendingPayment?.country) failureMetadata.country = pendingPayment.country;
+        if (pendingPayment?.currency) failureMetadata.currency = pendingPayment.currency;
         trackPaymentFailed(failureMetadata);
         toast.error(error instanceof Error ? error.message : 'Payment could not be verified.');
       } finally {
@@ -460,7 +549,14 @@ function Subscription() {
     if (paymentMethod === 'crypto') {
       await handleCryptoPayment();
     } else {
-      await handleFlutterwavePayment();
+      if (!selectedPlan.id) {
+        toast.error('Credit packages are still loading. Please try again.');
+        return;
+      }
+      setQuote(null);
+      setQuoteError('');
+      setIsCheckoutOpen(true);
+      void trackEvent('payment_checkout_viewed', { metadata: { country }, allowDuplicate: true });
     }
   };
 
@@ -561,7 +657,7 @@ function Subscription() {
   };
 
   const handleFlutterwavePayment = async () => {
-    if (!selectedPlan || !user) return;
+    if (!selectedPlan || !user || isProcessing || !quote || quote.country !== country || Date.now() >= quote.expiresAt) return;
 
     const useSystemBrowser = Boolean(window.electron?.isElectron);
     let checkoutWindow: Window | null = null;
@@ -572,7 +668,7 @@ function Subscription() {
         'popup=yes,width=520,height=760,resizable=yes,scrollbars=yes',
       );
       if (!checkoutWindow) {
-        trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'checkout_popup_blocked' });
+        trackPaymentFailed({ packageId: selectedPlan.id!, country, currency: quote.currency, reason: 'checkout_popup_blocked' });
         toast.error('Please allow payment pop-ups for Morphly and try again.');
         return;
       }
@@ -584,21 +680,17 @@ function Subscription() {
     flutterwaveReturnHandledRef.current = false;
     setFlutterwaveReturn(EMPTY_FLUTTERWAVE_RETURN);
     setIsProcessing(true);
-    trackPaymentStarted({ packageId: selectedPlan.id!, amount: selectedPlan.priceNGN, currency: 'NGN' });
+    trackPaymentStarted({ packageId: selectedPlan.id!, amount: quote.amount, country, currency: quote.currency });
 
     let initiatedReference = '';
     try {
-      const res = await apiFetchWithAuth('/initiate-flutterwave-payment', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          packageId: selectedPlan.id,
-          priceUSD,
-        }),
+      const data = await requestFlutterwaveCheckout({
+        packageId: selectedPlan.id,
+        priceUSD,
+        country,
+        quoteToken: quote.token,
       });
-
-      const data = await res.json();
-      if (!res.ok || !data.reference || !data.checkoutUrl) {
+      if (!data.reference || !data.checkoutUrl) {
         throw new Error(data.message || 'Failed to initialize Flutterwave checkout');
       }
       initiatedReference = data.reference;
@@ -606,12 +698,15 @@ function Subscription() {
       storePendingFlutterwavePayment({
         reference: data.reference,
         packageId: selectedPlan.id,
-        credits: selectedPlan.credits,
+        credits: quote.credits,
+        country,
+        currency: quote.currency,
       });
       if (useSystemBrowser) {
         const opened = await window.electron!.invoke('payment:open-flutterwave-checkout', data.checkoutUrl);
         if (!opened?.success) throw new Error(opened?.error || 'Could not open Flutterwave checkout.');
 
+        setIsCheckoutOpen(false);
         setIsProcessing(false);
         toast.info('Flutterwave checkout opened in your browser. Complete payment there, then return to Morphly.');
         navigate('/wallet', { replace: true });
@@ -620,6 +715,7 @@ function Subscription() {
 
       const openedCheckoutWindow = checkoutWindow!;
       openedCheckoutWindow.location.replace(data.checkoutUrl);
+      setIsCheckoutOpen(false);
       flutterwaveCheckoutCloseTimerRef.current = window.setInterval(() => {
         if (!openedCheckoutWindow.closed) return;
 
@@ -652,8 +748,9 @@ function Subscription() {
         clearPendingFlutterwavePayment();
       }
       console.error(error);
-      trackPaymentFailed({ packageId: selectedPlan.id!, reason: 'gateway_init_failed' });
-      toast.error(error instanceof Error ? error.message : 'Failed to initialize payment gateway');
+      trackPaymentFailed({ packageId: selectedPlan.id!, country, currency: quote.currency, reason: 'gateway_init_failed' });
+      setQuote(null);
+      setQuoteError(error instanceof Error ? error.message : 'Failed to initialize payment gateway');
       setIsProcessing(false);
     }
   };
@@ -696,7 +793,7 @@ function Subscription() {
               }`}
             >
               <CreditCard className="w-3.5 h-3.5" />
-              <span>Card / Bank (NGN)</span>
+              <span>Flutterwave</span>
             </button>
             <button
               type="button"
@@ -921,13 +1018,68 @@ function Subscription() {
               {isProcessing ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
               ) : (
-                paymentMethod === 'crypto' ? 'Pay with Crypto' : 'Pay with Card / Bank'
+                paymentMethod === 'crypto' ? 'Pay with Crypto' : 'Continue to Checkout'
               )}
               {!isProcessing && <ArrowRight className="w-3.5 h-3.5 ml-1.5" />}
             </Button>
           </div>
         </div>
       )}
+      <Dialog open={isCheckoutOpen} onOpenChange={(open) => {
+        if (!isProcessing) setIsCheckoutOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-sm" showCloseButton={!isProcessing}>
+          <DialogTitle>Purchase credits</DialogTitle>
+          <DialogDescription>
+            {(quote?.credits ?? selectedPlan?.credits)?.toLocaleString()} credits
+            {' · Base price '}
+            {formatPaymentAmount(quote?.amountNGN ?? selectedPlan?.priceNGN ?? 0, 'NGN')}
+          </DialogDescription>
+          <div className="grid gap-1.5">
+            <label className="text-sm font-medium" htmlFor="payment-country">Payment country</label>
+            <select
+              id="payment-country"
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+              value={country}
+              disabled={isProcessing}
+              onChange={(event) => {
+                setQuote(null);
+                setQuoteError('');
+                setCountry(event.target.value);
+                void trackEvent('payment_country_selected', {
+                  metadata: { country: event.target.value }, allowDuplicate: true,
+                });
+              }}
+            >
+              {markets.map((market) => <option key={market.country} value={market.country}>{market.name}</option>)}
+            </select>
+          </div>
+          <div className="min-h-16" aria-live="polite">
+            {quoteError ? (
+              <>
+                <p className="text-sm text-destructive">{quoteError}</p>
+                <Button type="button" variant="link" className="px-0" onClick={() => {
+                  setQuoteError('');
+                  setQuoteAttempt((attempt) => attempt + 1);
+                }}>Refresh quote</Button>
+              </>
+            ) : quote?.country === country ? (
+              <>
+                <p className="text-sm text-muted-foreground">Checkout total</p>
+                <p className="text-2xl font-semibold tabular-nums">
+                  {formatPaymentAmount(quote.amount, quote.currency)}
+                  <span className="ml-2 text-xs font-medium text-muted-foreground">{quote.currency}</span>
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">{quote.methods.join(' · ')}</p>
+              </>
+            ) : <p className="text-sm text-muted-foreground">Getting your payment quote…</p>}
+          </div>
+          <Button onClick={handleFlutterwavePayment} disabled={isProcessing || quote?.country !== country}>
+            {isProcessing && <Loader2 className="size-4 animate-spin" />}
+            Continue to Flutterwave
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

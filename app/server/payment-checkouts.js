@@ -22,10 +22,13 @@ const PROVIDER_FAILED_STATES = ['failed', 'cancelled', 'canceled', 'error', 'dec
 
 const recordRef = (db, reference) => db.collection('payment_checkouts').doc(hash(String(reference)));
 
-export async function createCheckoutRecord(db, { reference, userId, packageId, credits, amountNGN, gateway = 'flutterwave' }) {
+export async function createCheckoutRecord(db, {
+  reference, userId, packageId, credits, amountNGN,
+  packageName = null, country = 'NG', currency = 'NGN', amount = amountNGN, rate = 1, gateway = 'flutterwave',
+}) {
   const now = new Date().toISOString();
   await recordRef(db, reference).create({
-    reference, userId, packageId, credits, amountNGN, gateway,
+    reference, userId, packageId, packageName, credits, amountNGN, country, currency, amount, rate, gateway,
     status: 'pending', created_at: now, updated_at: now,
   });
 }
@@ -61,6 +64,10 @@ export async function settleCheckout(db, reference, { secretKey, transactionId =
     ? await verifyFlutterwaveTransaction(transactionId, secretKey)
     : await verifyFlutterwaveTransactionByReference(reference, secretKey);
   const ageMs = Date.now() - Date.parse(record.created_at);
+  const verifiedReference = verification.transaction?.tx_ref || verification.transaction?.reference;
+  if (verification.transaction && verifiedReference !== reference) {
+    return { state: 'failed', message: 'Payment reference mismatch' };
+  }
 
   if (!verification.isVerified) {
     const providerStatus = String(verification.transaction?.status || '').toLowerCase();
@@ -89,20 +96,27 @@ export async function settleCheckout(db, reference, { secretKey, transactionId =
     await updateRecord(db, reference, { status: 'failed', failure_reason: 'checkout_mismatch' });
     return { state: 'failed', message: 'Verified payment does not match the Morphly checkout.' };
   }
-  const validation = validateFlutterwaveTransaction(verification.transaction, reference);
+  const validation = validateFlutterwaveTransaction(verification.transaction, reference, record);
   if (!validation.ok) {
     await updateRecord(db, reference, { status: 'failed', failure_reason: validation.message });
     return { state: 'failed', message: validation.message };
   }
 
   const providerTransactionId = verification.transaction?.id || transactionId;
+  const gatewayFee = Number(verification.transaction?.app_fee || 0);
+  const gatewayFeeNGN = Number((gatewayFee / (record.rate ?? 1)).toFixed(2));
   const result = await applyVerifiedFlutterwavePayment({
     reference: validation.reference,
     userId: record.userId,
     packageId: record.packageId,
     transactionId: providerTransactionId,
     amountPaidNGN: validation.amountPaidNGN,
-    gatewayFeeNGN: Number(verification.transaction?.app_fee || 0),
+    gatewayFeeNGN,
+    checkout: record.packageName ? {
+      packageName: record.packageName, credits: record.credits, amountNGN: record.amountNGN,
+      country: record.country, currency: record.currency, amountPaid: validation.amountPaid, gatewayFee,
+      rate: record.rate,
+    } : undefined,
   });
 
   const credited = {
@@ -110,7 +124,9 @@ export async function settleCheckout(db, reference, { secretKey, transactionId =
     creditsAdded: result.creditsAdded ?? record.credits,
     newCredits: result.newCredits,
   };
-  await updateRecord(db, reference, { status: 'credited', ...credited });
+  await updateRecord(db, reference, {
+    status: 'credited', ...credited, amountPaid: validation.amountPaid, gatewayFee,
+  });
   await logPaymentEvent('checkout.credited', {
     reference, userId: record.userId, duplicate: Boolean(result.duplicate), creditsAdded: credited.creditsAdded,
   });

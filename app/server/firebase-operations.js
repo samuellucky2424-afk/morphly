@@ -95,7 +95,12 @@ export function createFirebaseOperations(db,auth,env=process.env){
     if(name==='bill_voice_convert')return realtime.billVoiceConvert(p);
     if(name==='release_voice_convert')return realtime.releaseVoiceConvert(p);
     if(name==='apply_verified_package_payment'||name==='apply_verified_ivorypay_payment'){
-      const result=await payment.applyPayment({userId:p.p_user,packageId:p.p_package,reference:p.p_reference,gateway:name==='apply_verified_package_payment'?'flutterwave':'ivorypay',gatewayId:String(p.p_gateway_id),amount:p.p_amount,fee:p.p_fee??0});
+      const isFlutterwave = name === 'apply_verified_package_payment';
+      const result = await payment.applyPayment({
+        userId: p.p_user, packageId: p.p_package, reference: p.p_reference,
+        gateway: isFlutterwave ? 'flutterwave' : 'ivorypay', gatewayId: String(p.p_gateway_id),
+        amount: p.p_amount, fee: p.p_fee ?? 0, checkout: isFlutterwave ? p.p_checkout : undefined,
+      });
       if(result.transactionId){
         // The payment transaction already wrote a durable outbox. Its worker
         // recovers email jobs if a queue write fails after credits are granted.

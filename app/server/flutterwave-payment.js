@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { supabaseAdmin } from './supabase-admin.js';
+import { firebaseAdmin } from './firebase-admin.js';
 import { tryDeliverCustomerEmails } from './customer-engagement.js';
 import { logPaymentEvent } from '../../shared/backend-logger.js';
 import { ensureUserWallet } from '../../shared/ensure-user-wallet.js';
@@ -50,6 +50,9 @@ export function buildFlutterwaveStandardPaymentPayload({
   email,
   customerName,
   amountNGN,
+  amount = amountNGN,
+  currency = 'NGN',
+  paymentOptions = 'card,banktransfer,ussd',
   credits,
   packageId,
   priceUSD,
@@ -69,14 +72,14 @@ export function buildFlutterwaveStandardPaymentPayload({
   const normalizedReference = String(reference || '').trim();
   const normalizedPackageId = String(packageId || '').trim();
   const normalizedUserId = String(userId || '').trim();
-  const normalizedAmount = Number(amountNGN);
+  const normalizedAmount = Number(amount);
   const normalizedCredits = Number(credits);
 
   if (!normalizedEmail || !normalizedReference || !normalizedPackageId || !normalizedUserId) {
     throw new Error('Missing required Flutterwave payment details');
   }
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
-    throw new Error('A positive Naira amount is required for a Flutterwave payment');
+    throw new Error('A positive amount is required for a Flutterwave payment');
   }
   if (!Number.isFinite(normalizedCredits) || normalizedCredits <= 0) {
     throw new Error('A positive credit package is required for a Flutterwave payment');
@@ -110,10 +113,10 @@ export function buildFlutterwaveStandardPaymentPayload({
   return {
     tx_ref: normalizedReference,
     amount: normalizedAmount,
-    currency: 'NGN',
+    currency,
     redirect_url: parsedRedirectUrl.toString(),
     link_expiration: parsedLinkExpiration.toISOString(),
-    payment_options: 'card,banktransfer,ussd',
+    payment_options: paymentOptions,
     customer: {
       email: normalizedEmail,
       name: String(customerName || normalizedEmail.split('@')[0] || 'Morphly User').trim(),
@@ -140,6 +143,9 @@ export async function initiateFlutterwavePayment({
   email,
   customerName,
   amountNGN,
+  amount,
+  currency,
+  paymentOptions,
   credits,
   packageId,
   priceUSD,
@@ -166,6 +172,9 @@ export async function initiateFlutterwavePayment({
     email,
     customerName,
     amountNGN,
+    amount,
+    currency,
+    paymentOptions,
     credits,
     packageId,
     priceUSD,
@@ -334,47 +343,57 @@ export function extractFlutterwavePaymentContext(transaction, fallback = {}) {
   return { reference, userId, credits, packageId };
 }
 
-export function validateFlutterwaveTransaction(transaction, expectedReference) {
+export function validateFlutterwaveTransaction(transaction, expectedReference, checkout) {
   const reference = transaction?.tx_ref || transaction?.reference || null;
-  if (expectedReference && reference && reference !== expectedReference) {
+  if ((checkout || reference) && expectedReference && reference !== expectedReference) {
     return { ok: false, message: 'Payment reference mismatch' };
   }
 
-  if (transaction?.currency && transaction.currency.toUpperCase() !== 'NGN') {
+  const currency = String(transaction?.currency || '').toUpperCase();
+  if ((checkout || currency) && currency !== (checkout?.currency ?? 'NGN')) {
     return { ok: false, message: 'Unexpected payment currency' };
   }
 
-  const amountPaidNGN = Number(transaction?.amount || 0);
-  if (!(amountPaidNGN > 0)) {
+  const amountPaid = Number(transaction?.amount || 0);
+  if (!Number.isFinite(amountPaid) || amountPaid <= 0) {
     return { ok: false, message: 'Invalid verified amount' };
   }
 
-  return { ok: true, reference: reference || expectedReference, amountPaidNGN };
+  if (checkout && (checkout.amount != null ? amountPaid !== checkout.amount : amountPaid < checkout.amountNGN)) {
+    return { ok: false, message: 'Verified amount does not match the Morphly checkout' };
+  }
+  return {
+    ok: true, reference: reference || expectedReference, amountPaid,
+    amountPaidNGN: currency && currency !== 'NGN' ? checkout.amountNGN : amountPaid,
+  };
 }
 
-export async function applyVerifiedFlutterwavePayment({ reference, userId, packageId, transactionId, amountPaidNGN, gatewayFeeNGN = 0 }) {
+export async function applyVerifiedFlutterwavePayment({
+  reference, userId, packageId, transactionId, amountPaidNGN, gatewayFeeNGN = 0, checkout,
+}) {
   if (!reference || !userId || !packageId || !transactionId) {
     throw new Error('Missing verified payment context');
   }
-  let { data: profile, error: profileError } = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
+  let { data: profile, error: profileError } = await firebaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
   if (profileError) throw profileError;
 
   if (!profile) {
-    const { data: authRecord, error: authError } = await supabaseAdmin.auth.admin.getUserById(userId);
+    const { data: authRecord, error: authError } = await firebaseAdmin.auth.admin.getUserById(userId);
     if (authError) throw authError;
     if (!authRecord?.user) throw new Error('Payment user not found');
-    await ensureUserWallet(supabaseAdmin, authRecord.user);
+    await ensureUserWallet(firebaseAdmin, authRecord.user);
 
-    const profileResult = await supabaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
+    const profileResult = await firebaseAdmin.from('users').select('account_status').eq('id', userId).maybeSingle();
     if (profileResult.error) throw profileResult.error;
     profile = profileResult.data;
   }
 
   if (profile?.account_status === 'suspended') throw new Error('Account suspended');
 
-  const { data, error } = await supabaseAdmin.rpc('apply_verified_package_payment', {
+  const { data, error } = await firebaseAdmin.rpc('apply_verified_package_payment', {
     p_user: userId, p_package: packageId, p_reference: reference,
     p_gateway_id: String(transactionId), p_amount: amountPaidNGN, p_fee: gatewayFeeNGN,
+    ...(checkout ? { p_checkout: checkout } : {}),
   });
   if (error && error.code !== '23505') throw error;
 
@@ -382,14 +401,14 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, packa
     ? { status: 'success', duplicate: true }
     : (data || {});
   if (normalizedData.duplicate && (normalizedData.newCredits == null || normalizedData.creditsAdded == null)) {
-    let transactionQuery = supabaseAdmin.from('transactions')
+    let transactionQuery = firebaseAdmin.from('transactions')
       .select('id, user_id, credits, package_credits_snapshot');
     transactionQuery = normalizedData.transactionId
       ? transactionQuery.eq('id', normalizedData.transactionId)
       : transactionQuery.eq('reference', reference);
 
     const [walletResult, transactionResult] = await Promise.all([
-      supabaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
+      firebaseAdmin.from('wallets').select('credits').eq('user_id', userId).maybeSingle(),
       transactionQuery.limit(1).maybeSingle(),
     ]);
     if (walletResult.error) throw walletResult.error;
@@ -414,7 +433,7 @@ export async function applyVerifiedFlutterwavePayment({ reference, userId, packa
     duplicate: Boolean(normalizedData.duplicate),
   });
 
-  await tryDeliverCustomerEmails(supabaseAdmin, { userId, sourceId: normalizedData.transactionId || null });
+  await tryDeliverCustomerEmails(firebaseAdmin, { userId, sourceId: normalizedData.transactionId || null });
   return {
     status: 'success',
     message: normalizedData.duplicate ? 'Payment already processed' : 'Payment verified and credits applied',

@@ -1,12 +1,11 @@
 // @ts-nocheck
 import crypto from 'crypto';
 import { sandboxPayments, createSandboxPayment } from '../firebase-sandbox-payment.js';
-import { firebaseDb } from '../firebase-admin.js';
 import { createCheckoutRecord, settleUserPendingCheckouts } from '../payment-checkouts.js';
-
-import { supabaseAdmin, supabaseAdminConfigError } from '../supabase-admin.js';
+import { firebaseAdmin, firebaseAdminConfigError, firebaseDb } from '../firebase-admin.js';
 import { logErrorEvent, logPaymentEvent, logRequestEvent } from '../../../shared/backend-logger.js';
 import { authenticateRequestUser } from '../../../shared/admin-auth.js';
+import { createPaymentQuote, enabledPaymentMarkets, readPaymentQuote } from '../payment-quotes.js';
 import {
   FLUTTERWAVE_MAIN_SHARE,
   FLUTTERWAVE_SAVINGS_SHARE,
@@ -143,20 +142,33 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method === 'GET') return handleFlutterwaveReturn(req, res);
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-  if (!supabaseAdmin) return res.status(503).json({ status: 'failed', message: supabaseAdminConfigError });
+  res.setHeader('Cache-Control', 'no-store');
+  if (!firebaseAdmin) return res.status(503).json({ status: 'failed', message: firebaseAdminConfigError });
 
   let userId = null;
   let packageId = null;
   let reference = null;
+  let country = 'NG';
+  let action;
 
   try {
-    const authResult = await authenticateRequestUser(req, supabaseAdmin);
+    const authResult = await authenticateRequestUser(req, firebaseAdmin);
     if (authResult.error) {
       return res.status(authResult.status).json({ status: 'failed', message: authResult.error });
     }
 
     const user = authResult.user;
     userId = user.id;
+    action = req.body?.action;
+    const markets = enabledPaymentMarkets();
+    if (action === 'markets') {
+      return res.json({ markets: markets.map(({ country, name }) => ({ country, name })) });
+    }
+    const market = markets.find(({ country }) => country === (req.body?.country ?? 'NG'));
+    if (!market) {
+      return res.status(400).json({ status: 'failed', message: 'Payment is unavailable in this country' });
+    }
+    country = market.country;
     packageId = String(req.body?.packageId || '').trim();
     const priceUSD = Number(req.body?.priceUSD);
 
@@ -164,7 +176,18 @@ export default async function handler(req, res) {
       return res.status(400).json({ status: 'failed', message: 'A credit package is required' });
     }
 
-    if (sandboxPayments()) return res.json(await createSandboxPayment(user, packageId, resolveRequestOrigin(req)));
+    if (sandboxPayments()) {
+      if (action !== 'quote') return res.json(await createSandboxPayment(user, packageId, resolveRequestOrigin(req)));
+      const snapshot = await firebaseDb.collection('credit_packages').doc(packageId).get();
+      const pkg = snapshot.data();
+      if (!pkg?.is_active || pkg.status !== 'active') {
+        return res.status(400).json({ status: 'failed', message: 'Credit package is no longer active' });
+      }
+      return res.json({
+        country, amountNGN: Number(pkg.price_ngn), amount: Number(pkg.price_ngn), credits: Number(pkg.credits),
+        currency: 'NGN', methods: ['Test card'], expiresAt: Date.now() + 5 * 60 * 1000,
+      });
+    }
 
     const savingsSubaccountId = String(process.env.FLUTTERWAVE_SAVINGS_SUBACCOUNT_ID || '')
       .trim()
@@ -178,12 +201,12 @@ export default async function handler(req, res) {
     }
 
     const [packageResult, profileResult] = await Promise.all([
-      supabaseAdmin
+      firebaseAdmin
         .from('credit_packages')
-        .select('id, credits, price_ngn, is_active, status')
+        .select('id, name, credits, price_ngn, is_active, status')
         .eq('id', packageId)
         .maybeSingle(),
-      supabaseAdmin
+      firebaseAdmin
         .from('users')
         .select('account_status')
         .eq('id', userId)
@@ -204,10 +227,30 @@ export default async function handler(req, res) {
 
     const credits = Number(packageResult.data.credits);
     const amountNGN = Number(packageResult.data.price_ngn);
-    if (!Number.isFinite(credits) || credits <= 0 || !Number.isFinite(amountNGN) || amountNGN <= 0) {
+    if (!Number.isSafeInteger(credits) || credits <= 0 || !Number.isFinite(amountNGN) || amountNGN <= 0) {
       return res.status(500).json({ status: 'failed', message: 'Credit package payment configuration is invalid' });
     }
 
+    const checkout = { userId, packageId, amountNGN, credits };
+    const signingKey = process.env.FLUTTERWAVE_SECRET_KEY?.trim().replace(/^["']|["']$/g, '');
+    if (!signingKey) {
+      const error = new Error('Missing Flutterwave secret key');
+      error.code = 'FLUTTERWAVE_CONFIGURATION_ERROR';
+      throw error;
+    }
+    if (action === 'quote') {
+      const { userId: _quoteOwner, ...quote } = await createPaymentQuote(market, checkout, signingKey);
+      return res.json(quote);
+    }
+
+    // Older clients still send only a package ID and use the standard NGN flow.
+    const token = req.body?.quoteToken;
+    const quote = token || country !== 'NG' ? readPaymentQuote(token, market, checkout, signingKey) : null;
+    if ((token || country !== 'NG') && !quote) {
+      return res.status(409).json({ status: 'failed', message: 'Your payment quote changed or expired. Refresh the quote and try again.' });
+    }
+    const amount = quote?.amount ?? amountNGN;
+    const currency = market.currency;
     reference = createFlutterwaveReference();
     const redirectUrl = resolveFlutterwaveRedirectUrl(req);
 
@@ -217,7 +260,7 @@ export default async function handler(req, res) {
       reference,
       credits,
       amountNGN,
-      currency: 'NGN',
+      country, currency, amount,
     });
     await logPaymentEvent('flutterwave.split_payment.enabled', {
       message: 'Flutterwave split payment enabled',
@@ -236,13 +279,19 @@ export default async function handler(req, res) {
     await settleUserPendingCheckouts(firebaseDb, userId, { secretKey: process.env.FLUTTERWAVE_SECRET_KEY });
     // Record the checkout server-side before the user can pay. Verification
     // grants credits only from this record.
-    await createCheckoutRecord(firebaseDb, { reference, userId, packageId, credits, amountNGN });
+    await createCheckoutRecord(firebaseDb, {
+      ...checkout, packageName: packageResult.data.name || 'Credit package',
+      reference, country, currency, amount, rate: quote?.rate ?? 1,
+    });
 
     const session = await initiateFlutterwavePayment({
       userId,
       email: user.email,
       customerName: user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0],
       amountNGN,
+      amount,
+      currency,
+      paymentOptions: market.options,
       credits,
       packageId,
       priceUSD: Number.isFinite(priceUSD) && priceUSD > 0 ? priceUSD : undefined,
@@ -263,6 +312,7 @@ export default async function handler(req, res) {
         userId,
         packageId,
         reference,
+        country,
         providerStatus: Number(error?.providerStatus) || undefined,
         mainShare: '60%',
         savingsSubaccountShare: '40%',
@@ -275,8 +325,8 @@ export default async function handler(req, res) {
     return res.status(configurationError ? 503 : 502).json({
       status: 'failed',
       message: configurationError
-        ? 'Flutterwave checkout is unavailable because split-payment configuration is incomplete'
-        : 'Failed to initialize Flutterwave checkout',
+        ? 'Flutterwave checkout is temporarily unavailable'
+        : action === 'quote' ? 'Could not get a payment quote. Try again shortly.' : 'Failed to initialize Flutterwave checkout',
     });
   }
 }
