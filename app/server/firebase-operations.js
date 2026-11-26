@@ -17,7 +17,7 @@ export function createFirebaseOperations(db,auth,env=process.env){
   async function provision(user,requestedCode=''){
     const uid=user.id,profileRef=col('users').doc(uid),timestamp=now();
     requestedCode=String(requestedCode||'').trim().toUpperCase();
-    return db.runTransaction(async tx=>{
+    const result=await db.runTransaction(async tx=>{
       const [profile,wallets,referrers]=await Promise.all([tx.get(profileRef),tx.get(query('wallets','user_id',uid)),requestedCode?tx.get(query('users','referral_code',requestedCode)):Promise.resolve(null)]);
       const wallet=one(wallets);
       if(profile.exists){
@@ -51,6 +51,11 @@ export function createFirebaseOperations(db,auth,env=process.env){
         }}
       return {walletCreated:!wallet};
     });
+    // A crashed or force-ended stream can leave the whole balance in a hold.
+    // Give it back on sign-in. A failure must not block login; the balance
+    // read retries the same repair.
+    try{await realtime.repairAbandonedHolds(uid);}catch{}
+    return result;
   }
   async function usage(p,finalize){
     return db.runTransaction(async tx=>{

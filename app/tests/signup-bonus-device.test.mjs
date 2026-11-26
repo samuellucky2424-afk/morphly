@@ -34,6 +34,7 @@ function memoryDb() {
       return result;
     },
     rows: () => [...rows.entries()],
+    setRow(path, data) { rows.set(path, { ...data }); },
   };
 }
 
@@ -48,6 +49,18 @@ test('a second account on the same device still receives its own signup bonus', 
   assert.deepEqual(wallets.map(row => row.credits).sort(), [50, 50]);
   assert.deepEqual(bonuses.map(row => row.reference).sort(), ['signup_bonus:first', 'signup_bonus:second']);
   assert.equal(bonuses.length, 2);
+});
+
+test('signing in again keeps the saved balance and does not open a second wallet', async () => {
+  const db = memoryDb();
+  const ops = createFirebaseOperations(db, {});
+  await ops.provision({ id: 'saver', email: 'saver@example.com' });
+  const [path, row] = db.rows().find(([entry]) => entry.startsWith('wallets/'));
+  db.setRow(path, { ...row, credits: 420 });
+  await ops.provision({ id: 'saver', email: 'saver@example.com' });
+  const wallets = db.rows().filter(([entry]) => entry.startsWith('wallets/')).map(([, saved]) => saved);
+  assert.equal(wallets.length, 1);
+  assert.equal(wallets[0].credits, 420);
 });
 
 test('session start does not gate the signup bonus or a new session on the installation id', () => {

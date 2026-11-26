@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFirebaseRealtimeBilling, pcmDurationSeconds, CONNECT_ALLOWANCE_SECONDS, providerCredentialSeconds } from '../server/firebase-realtime-billing.js';
+import { hash } from '../server/firebase-store.js';
 
 function memoryDb() {
   const rows = new Map();
@@ -286,4 +287,92 @@ test('after output starts, connect time is free and server time is billed', asyn
   assert.equal(live.totalBillableSeconds, 20);
   assert.equal(live.shouldStop, false);
   assert.equal(live.remainingCredits, 50);
+});
+
+test('logging in while a prepaid hold is open still shows the full balance', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 80 });
+  let now = Date.parse('2026-11-17T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('live').set({
+    id: 'live', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 4,
+    provider: 'xmax', provider_max_seconds: 7200, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  const reserved = await billing.reserveVideo({ p_user: 'user', p_session: 'live', p_window: 1800 });
+  assert.equal(reserved.reservedSeconds, 40);
+  assert.equal(db.row('wallets/wallet-user').credits, 0);
+  assert.equal(await billing.balance('user'), 80);
+  assert.equal(db.row('sessions/live').status, 'active');
+  assert.equal(db.row('wallets/wallet-user').credits, 0);
+});
+
+test('a hold with no output is returned after the heartbeat window, including on the next balance read', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 80 });
+  let now = Date.parse('2026-11-17T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('abandoned').set({
+    id: 'abandoned', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 4,
+    provider: 'xmax', provider_max_seconds: 7200, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  await billing.reserveVideo({ p_user: 'user', p_session: 'abandoned', p_window: 1800 });
+  now += 91000;
+  assert.equal(await billing.balance('user'), 80);
+  assert.equal(db.row('wallets/wallet-user').credits, 80);
+  assert.equal(db.row('sessions/abandoned').status, 'ended');
+  assert.equal(Number(db.row('sessions/abandoned').reserved_half || 0), 0);
+  assert.equal(await billing.balance('user'), 80);
+});
+
+test('an ended session that kept its hold gives those credits back once', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 0 });
+  const billing = createFirebaseRealtimeBilling(db);
+  await db.collection('sessions').doc('stranded').set({
+    id: 'stranded', user_id: 'user', status: 'ended', billing_version: 2, video_rate_half: 4,
+    reserved_half: 100, end_reason: 'account_suspended',
+  });
+  assert.equal(await billing.balance('user'), 50);
+  assert.equal(db.row('wallets/wallet-user').credits, 50);
+  assert.equal(Number(db.row('sessions/stranded').reserved_half), 0);
+  const ledger = db.row(`wallet_ledger/${hash('hold-release:stranded')}`);
+  assert.equal(ledger.delta, 50);
+  assert.equal(ledger.entry_type, 'hold_release');
+  assert.equal(await billing.balance('user'), 50);
+  assert.equal(db.row('wallets/wallet-user').credits, 50);
+  assert.equal(db.row(`wallet_ledger/${hash('hold-release:stranded')}`).delta, 50);
+});
+
+test('a stale session that already showed output is billed, and only the unused hold comes back', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 1000 });
+  let now = Date.parse('2026-11-17T00:00:00Z');
+  const billing = createFirebaseRealtimeBilling(db, { now: () => now });
+  await db.collection('sessions').doc('used').set({
+    id: 'used', user_id: 'user', status: 'active', billing_version: 2, video_rate_half: 4,
+    provider: 'xmax', provider_max_seconds: 7200, seconds_used: 0, start_time: new Date(now).toISOString(),
+  });
+  await billing.reserveVideo({ p_user: 'user', p_session: 'used', p_window: 1800 });
+  await confirmOutputAtStart(db, 'used');
+  now += 100000;
+  const shown = await billing.balance('user');
+  assert.equal(shown, 820);
+  assert.equal(db.row('wallets/wallet-user').credits, 820);
+  assert.equal(db.row('sessions/used').status, 'ended');
+  assert.equal(Number(db.row('sessions/used').reserved_half || 0), 0);
+  assert.equal(db.row('sessions/used').seconds_used, 90);
+});
+
+test('a fractional stranded hold is returned once and keeps the half credit', async () => {
+  const db = memoryDb();
+  await account(db, { credits: 0 });
+  const billing = createFirebaseRealtimeBilling(db);
+  await db.collection('sessions').doc('fraction').set({
+    id: 'fraction', user_id: 'user', status: 'ended', reserved_half: 5, video_rate_half: 5,
+  });
+  assert.equal(await billing.balance('user'), 2.5);
+  assert.equal(db.row('wallets/wallet-user').credits, 2);
+  assert.equal(db.row('realtime_credit_carry/user').half_credit, 1);
+  assert.equal(await billing.balance('user'), 2.5);
+  assert.equal(db.row('wallets/wallet-user').credits, 2);
 });
