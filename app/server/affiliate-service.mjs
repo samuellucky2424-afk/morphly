@@ -2,11 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { hash } from './firebase-store.js';
 import {
   DAY_MS,
-  NIGERIAN_BANKS,
   affiliateError,
   affiliateLink,
   assertRecentAuth,
   bankByCode,
+  effectiveBanks,
+  normalizeBankCode,
+  normalizeBankName,
+  publicBanks,
+  selectableBank,
   buildSignupAttribution,
   commissionKobo,
   csvCell,
@@ -53,6 +57,30 @@ export function createAffiliateService(db, options = {}) {
   async function readSettings() {
     const snap = await col('affiliate_settings').doc(SETTINGS_DOC).get();
     return normalizeSettings(snap.exists ? snap.data() : null);
+  }
+
+  async function readBankOverrides() {
+    const snap = await col('affiliate_banks').get();
+    return snap.docs.map((doc) => bankOverrideFromDoc(doc));
+  }
+
+  function bankOverrideFromDoc(doc) {
+    const data = doc.data() || {};
+    const id = String(doc.id || '').trim();
+    const code = /^\d{3,6}$/.test(id) ? id : String(data.code || '').trim();
+    return { ...data, code };
+  }
+
+  function presentCatalogBank(bank) {
+    return {
+      code: bank.code,
+      name: bank.name,
+      enabled: bank.enabled !== false,
+      builtin: Boolean(bank.builtin),
+      createdAt: bank.created_at || bank.createdAt || null,
+      updatedAt: bank.updated_at || bank.updatedAt || null,
+      updatedBy: bank.updated_by || bank.updatedBy || null,
+    };
   }
 
   async function writeAudit(entry) {
@@ -246,7 +274,7 @@ export function createAffiliateService(db, options = {}) {
         .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
         .map((row) => withdrawalView(row, { reveal: false })),
       bank: presentBank(bank, { reveal: false }),
-      banks: NIGERIAN_BANKS.map((item) => ({ code: item.code, name: item.name })),
+      banks: publicBanks(await readBankOverrides()),
     };
   }
 
@@ -662,15 +690,18 @@ export function createAffiliateService(db, options = {}) {
 
   async function saveBankAccount({ userId, bankCode, accountNumber, accountName, authTime }) {
     assertRecentAuth(authTime, now());
-    const bank = bankByCode(bankCode);
-    if (!bank) throw affiliateError('Choose a Nigerian bank from the list');
+    const code = String(bankCode || '').trim();
+    if (!/^\d{3,6}$/.test(code)) throw affiliateError('Choose a Nigerian bank from the list');
     if (!isNuban(accountNumber)) throw affiliateError('Account number must be a 10-digit NUBAN');
     const name = assertAccountName(accountName);
     return db.runTransaction(async (tx) => {
-      const [affiliateSnap, banks] = await Promise.all([
+      const [affiliateSnap, banks, overrideSnap] = await Promise.all([
         tx.get(col('affiliates').doc(userId)),
         tx.get(col('affiliate_bank_accounts').where('affiliate_id', '==', userId)),
+        tx.get(col('affiliate_banks').doc(code)),
       ]);
+      const bank = selectableBank(code, overrideSnap.exists ? [bankOverrideFromDoc(overrideSnap)] : []);
+      if (!bank) throw affiliateError('Choose a Nigerian bank from the list');
       if (!affiliateSnap.exists) throw affiliateError('Affiliate not found', 404);
       for (const doc of banks.docs) {
         if (doc.data().active) tx.update(doc.ref, { active: false, updated_at: iso(now()) });
@@ -847,6 +878,87 @@ export function createAffiliateService(db, options = {}) {
       auditTx(tx, { action: 'settings.updated', actor: adminId, payload: { before, after: next, snapshotId: snapId } });
     });
     return { settings: { ...next, autoPayoutsAvailable: false }, snapshotId: snapId };
+  }
+
+  function requireSuperAdmin(superAdmin) {
+    if (!superAdmin) throw affiliateError('Super admin required', 403);
+  }
+
+  async function listBanks() {
+    return effectiveBanks(await readBankOverrides()).map(presentCatalogBank);
+  }
+
+  async function addBank(adminId, input, { superAdmin = false } = {}) {
+    requireSuperAdmin(superAdmin);
+    const code = normalizeBankCode(input?.code);
+    const name = normalizeBankName(input?.name);
+    return db.runTransaction(async (tx) => {
+      const ref = col('affiliate_banks').doc(code);
+      const existing = await tx.get(ref);
+      if (existing.exists || bankByCode(code)) {
+        throw affiliateError('A bank with that code already exists');
+      }
+      const record = {
+        code,
+        name,
+        enabled: true,
+        created_at: iso(now()),
+        updated_at: iso(now()),
+        updated_by: adminId,
+      };
+      tx.create(ref, record);
+      auditTx(tx, { action: 'bank.added', actor: adminId, payload: { code, name } });
+      return { bank: presentCatalogBank({ ...record, builtin: false }) };
+    });
+  }
+
+  async function updateBank(adminId, input, { superAdmin = false } = {}) {
+    requireSuperAdmin(superAdmin);
+    const code = normalizeBankCode(input?.code);
+    const hasName = input?.name !== undefined;
+    const hasEnabled = input?.enabled !== undefined;
+    if (!hasName && !hasEnabled) throw affiliateError('Nothing to update');
+    if (hasEnabled && typeof input.enabled !== 'boolean') {
+      throw affiliateError('Enabled must be true or false');
+    }
+    const nextName = hasName ? normalizeBankName(input.name) : undefined;
+    const nextEnabled = hasEnabled ? input.enabled : undefined;
+    const builtin = bankByCode(code);
+    return db.runTransaction(async (tx) => {
+      const ref = col('affiliate_banks').doc(code);
+      const existing = await tx.get(ref);
+      if (!existing.exists && !builtin) throw affiliateError('Bank not found', 404);
+      const current = existing.exists ? existing.data() : {};
+      const currentName = String(current.name || builtin?.name || '');
+      const currentEnabled = existing.exists ? current.enabled !== false : true;
+      const name = nextName === undefined ? currentName : nextName;
+      const enabled = nextEnabled === undefined ? currentEnabled : nextEnabled;
+      const bank = presentCatalogBank({
+        code,
+        name,
+        enabled,
+        builtin: Boolean(builtin),
+        created_at: current.created_at || null,
+        updated_at: current.updated_at || null,
+        updated_by: current.updated_by || null,
+      });
+      if (name === currentName && enabled === currentEnabled) return { bank };
+      const record = {
+        code,
+        name,
+        enabled,
+        created_at: current.created_at || iso(now()),
+        updated_at: iso(now()),
+        updated_by: adminId,
+      };
+      tx.set(ref, record);
+      auditTx(tx, {
+        action: 'bank.updated',
+        actor: adminId,
+        payload: { code, before: { name: currentName, enabled: currentEnabled }, after: { name, enabled } },
+      });
+      return { bank: presentCatalogBank({ ...record, builtin: Boolean(builtin) }) };
+    });
   }
 
   async function adjustWallet(adminId, affiliateId, amountKobo, reason, { superAdmin = false } = {}) {
@@ -1100,6 +1212,9 @@ export function createAffiliateService(db, options = {}) {
     requestWithdrawal,
     decideWithdrawal,
     updateSettings,
+    listBanks,
+    addBank,
+    updateBank,
     adjustWallet,
     listAffiliates,
     listCommissions,

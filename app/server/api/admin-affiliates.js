@@ -67,6 +67,9 @@ export function createAdminAffiliateHandler({ supabaseAdmin: admin, db }) {
       if (action === 'settings' && req.method === 'GET') {
         return res.json({ role: context.admin.role, settings: await api.readSettings(), autoPayoutsAvailable: false });
       }
+      if (action === 'banks' && req.method === 'GET') {
+        return res.json({ role: context.admin.role, banks: await api.listBanks() });
+      }
       if (action === 'audit') return res.json({ role: context.admin.role, audit: await api.listAudit() });
       if (req.method !== 'POST') return send(res, 404, { error: 'Admin route not found' });
       if (action === 'approve') return res.json(await api.approve(adminId, String(req.body?.affiliateId || '')));
@@ -85,6 +88,16 @@ export function createAdminAffiliateHandler({ supabaseAdmin: admin, db }) {
       if (action === 'refund') return res.json(await api.refundPayment({ paymentTxId: req.body?.paymentTxId, reference: req.body?.reference, adminId, reason: req.body?.reason }));
       if (action === 'adjust') return res.json(await api.adjustWallet(adminId, String(req.body?.affiliateId || ''), req.body?.amountKobo, req.body?.reason, { superAdmin }));
       if (action === 'settings') return res.json(await api.updateSettings(adminId, req.body?.settings || req.body || {}, { superAdmin }));
+      if (action === 'bank-add') {
+        return res.json(await api.addBank(adminId, { code: req.body?.code, name: req.body?.name }, { superAdmin }));
+      }
+      if (action === 'bank-update') {
+        return res.json(await api.updateBank(adminId, {
+          code: req.body?.code,
+          name: req.body?.name,
+          enabled: req.body?.enabled,
+        }, { superAdmin }));
+      }
       if (action === 'withdrawal-approve') return res.json(await api.decideWithdrawal(adminId, String(req.body?.withdrawalId || ''), 'approve'));
       if (action === 'withdrawal-processing') return res.json(await api.decideWithdrawal(adminId, String(req.body?.withdrawalId || ''), 'processing'));
       if (action === 'withdrawal-transfer') return res.json(await api.decideWithdrawal(adminId, String(req.body?.withdrawalId || ''), 'transfer', { transferRef: req.body?.transferRef }));
@@ -103,10 +116,10 @@ export function createAdminAffiliateHandler({ supabaseAdmin: admin, db }) {
 }
 
 export const ADMIN_AFFILIATE_ACTIONS = [
-  'overview', 'affiliates', 'commissions', 'withdrawals', 'withdrawals-csv', 'analytics', 'settings', 'audit',
+  'overview', 'affiliates', 'commissions', 'withdrawals', 'withdrawals-csv', 'analytics', 'settings', 'banks', 'audit',
   'approve', 'reject', 'suspend', 'activate', 'flag', 'clear-flag', 'clear-suspicion', 'rate', 'verify-bank',
-  'refund', 'adjust', 'withdrawal-approve', 'withdrawal-processing', 'withdrawal-transfer', 'withdrawal-paid',
-  'withdrawal-reject', 'withdrawal-fail',
+  'refund', 'adjust', 'bank-add', 'bank-update', 'withdrawal-approve', 'withdrawal-processing', 'withdrawal-transfer',
+  'withdrawal-paid', 'withdrawal-reject', 'withdrawal-fail',
 ];
 
 export default createAdminAffiliateHandler({ supabaseAdmin, db: firebaseDb });
